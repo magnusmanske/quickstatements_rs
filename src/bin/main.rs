@@ -1,8 +1,8 @@
 extern crate mediawiki;
 extern crate wikibase;
 //#[macro_use]
+extern crate config;
 extern crate mysql;
-//extern crate config;
 
 use quickstatements::*;
 use std::sync::{Arc, Mutex};

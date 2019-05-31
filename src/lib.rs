@@ -1,3 +1,4 @@
+use config::*;
 use mysql as my;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -103,7 +104,8 @@ impl QuickStatements {
             None => {}
         }
 
-        self.pool = match my::Pool::new(builder) {
+        // Min 2, max 7 connections
+        self.pool = match my::Pool::new_manual(2, 7, builder) {
             Ok(pool) => Some(pool),
             _ => None,
         }
@@ -195,6 +197,55 @@ impl QuickStatements {
             pe.unwrap();
         }
     }
+
+    fn get_oauth_for_batch(self: &mut Self, batch_id: i64) -> Option<mediawiki::api::OAuthParams> {
+        let pool = match &self.pool {
+            Some(pool) => pool,
+            None => return None,
+        };
+        let auth_db = "s53220__quickstatements_auth";
+        let sql = format!(r#"SELECT * FROM {}.batch_oauth WHERE batch_id=?"#, auth_db);
+        for row in pool.prep_exec(sql, (my::Value::from(batch_id),)).unwrap() {
+            let row = row.unwrap();
+            let serialized_json = match &row["serialized_json"] {
+                my::Value::Bytes(x) => String::from_utf8_lossy(x),
+                _ => return None,
+            };
+
+            match serde_json::from_str(&serialized_json) {
+                Ok(j) => return Some(mediawiki::api::OAuthParams::new_from_json(&j)),
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    pub fn set_bot_api_auth(self: &mut Self, mw_api: &mut mediawiki::api::Api, batch_id: i64) {
+        match self.get_oauth_for_batch(batch_id) {
+            Some(oauth_params) => {
+                // Using OAuth
+                mw_api.set_oauth(Some(oauth_params));
+            }
+            None => {
+                match self.params["config"]["bot_config_file"].as_str() {
+                    Some(filename) => {
+                        // Using Bot
+                        let mut settings = Config::default();
+                        settings.merge(config::File::with_name(filename)).unwrap();
+                        let lgname = settings.get_str("user.user").unwrap();
+                        let lgpassword = settings.get_str("user.pass").unwrap();
+                        mw_api
+                            .login(lgname, lgpassword)
+                            .expect("Cannot login as bot");
+                    }
+                    None => panic!(
+                        "Neither OAuth nor bot info available for batch #{}",
+                        batch_id
+                    ),
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -223,7 +274,9 @@ impl QuickStatementsBot {
         let mut config = self.config.lock().unwrap();
         match config.get_api_url() {
             Some(url) => {
-                self.mw_api = Some(mediawiki::api::Api::new(url).unwrap());
+                let mut mw_api = mediawiki::api::Api::new(url).unwrap();
+                config.set_bot_api_auth(&mut mw_api, self.batch_id);
+                self.mw_api = Some(mw_api);
             }
             None => {
                 panic!("No site/API info available");
