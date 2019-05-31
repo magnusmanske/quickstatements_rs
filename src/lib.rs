@@ -57,14 +57,31 @@ impl QuickStatements {
     pub fn new_from_config_json(filename: &str) -> Self {
         let file = File::open(filename).unwrap();
         let params: Value = serde_json::from_reader(file).unwrap();
+        let mut params = params.clone();
+
+        // Load the PHP/JS config into params as ["config"], or create empty object
+        params["config"] = match params["config_file"].as_str() {
+            Some(filename) => {
+                let file = File::open(filename).unwrap();
+                serde_json::from_reader(file).unwrap()
+            }
+            None => serde_json::from_str("{}").unwrap(),
+        };
 
         let mut ret = Self {
-            params: params.clone(),
+            params: params,
             pool: None,
             running_batch_ids: HashSet::new(),
         };
         ret.create_mysql_pool();
         ret
+    }
+
+    pub fn get_api_url(&self) -> Option<&str> {
+        match self.params["config"]["site"].as_str() {
+            Some(site) => self.params["config"]["sites"][site]["api"].as_str(),
+            None => None,
+        }
     }
 
     fn create_mysql_pool(&mut self) {
@@ -184,6 +201,7 @@ impl QuickStatements {
 pub struct QuickStatementsBot {
     batch_id: i64,
     config: Arc<Mutex<QuickStatements>>,
+    mw_api: Option<mediawiki::api::Api>,
     last_entity_id: Option<String>,
     current_entity_id: Option<String>,
     current_property_id: Option<String>,
@@ -194,6 +212,7 @@ impl QuickStatementsBot {
         Self {
             batch_id: batch_id,
             config: config.clone(),
+            mw_api: None,
             last_entity_id: None,
             current_entity_id: None,
             current_property_id: None,
@@ -202,6 +221,15 @@ impl QuickStatementsBot {
 
     pub fn start(self: &mut Self) {
         let mut config = self.config.lock().unwrap();
+        match config.get_api_url() {
+            Some(url) => {
+                self.mw_api = Some(mediawiki::api::Api::new(url).unwrap());
+            }
+            None => {
+                panic!("No site/API info available");
+            }
+        }
+
         config.set_batch_running(self.batch_id);
     }
 
@@ -233,40 +261,117 @@ impl QuickStatementsBot {
         // TODO
     }
 
+    fn set_label(self: &mut Self, _command: &mut QuickStatementsCommand) {
+        // TODO
+    }
+
+    fn add_alias(self: &mut Self, _command: &mut QuickStatementsCommand) {
+        // TODO
+    }
+
+    fn set_description(self: &mut Self, _command: &mut QuickStatementsCommand) {
+        // TODO
+    }
+
+    fn set_sitelink(self: &mut Self, _command: &mut QuickStatementsCommand) {
+        // TODO
+    }
+
+    fn add_statement(self: &mut Self, command: &mut QuickStatementsCommand) {
+        if !self.propagate_last_item(command) {
+            return self.command_error("No (last) item available", command);
+        }
+        // TODO
+    }
+
+    fn add_qualifier(self: &mut Self, command: &mut QuickStatementsCommand) {
+        if !self.propagate_last_item(command) {
+            return self.command_error("No (last) item available", command);
+        }
+        let _statement_id = match self.get_statement_id(command) {
+            Some(id) => id,
+            None => return self.command_error("No statement ID available", command),
+        };
+        // TODO
+    }
+
+    fn add_sources(self: &mut Self, command: &mut QuickStatementsCommand) {
+        if !self.propagate_last_item(command) {
+            return self.command_error("No (last) item available", command);
+        }
+        let _statement_id = match self.get_statement_id(command) {
+            Some(id) => id,
+            None => return self.command_error("No statement ID available", command),
+        };
+        // TODO
+    }
+
+    fn get_statement_id(self: &mut Self, command: &mut QuickStatementsCommand) -> Option<String> {
+        if command.json["property"].as_str().is_none() {
+            return None;
+        }
+        if command.json["datavalue"].as_object().is_none() {
+            return None;
+        }
+        // TODO load item and find statement
+        None
+    }
+
+    fn propagate_last_item(self: &mut Self, _command: &mut QuickStatementsCommand) -> bool {
+        // TODO
+        true
+    }
+
     fn add_to_entity(self: &mut Self, command: &mut QuickStatementsCommand) {
         self.load_command_items(command);
         if self.current_entity_id.is_none() {
-            return self.set_command_status(
-                "ERROR",
-                Some("No (last) item available".to_string()),
-                command,
-            );
+            return self.command_error("No (last) item available", command);
         }
+
         println!(
             "{:?}/{:?}",
             &self.current_entity_id, &self.current_property_id
         );
         println!("{}", &command.json);
+
+        match command.json["what"].as_str() {
+            Some("label") => self.set_label(command),
+            Some("alias") => self.add_alias(command),
+            Some("description") => self.set_description(command),
+            Some("sitelink") => self.set_sitelink(command),
+            Some("statement") => self.add_statement(command),
+            Some("qualifier") => self.add_qualifier(command),
+            Some("sources") => self.add_sources(command),
+            _other => return self.command_error("BAD 'WHAT'", command),
+        }
+
         panic!("OK");
         // TODO
+    }
+
+    fn command_error(self: &mut Self, message: &str, command: &mut QuickStatementsCommand) {
+        self.set_command_status("ERROR", Some(message.to_string()), command);
     }
 
     fn remove_from_entity(self: &mut Self, command: &mut QuickStatementsCommand) {
         self.load_command_items(command);
         if self.current_entity_id.is_none() {
-            return self.set_command_status(
-                "ERROR",
-                Some("No (last) item available".to_string()),
-                command,
-            );
+            return self.command_error("No (last) item available", command);
         }
         // TODO
     }
 
+    fn get_entity_id_option(&self, v: &Value) -> Option<String> {
+        match v.as_str() {
+            Some(s) => Some(self.fix_entity_id(s.to_string())),
+            None => None,
+        }
+    }
+
     fn load_command_items(self: &mut Self, command: &mut QuickStatementsCommand) {
         // Reset
-        self.current_property_id = command.json["property"].as_str().map(|s| s.to_string());
-        self.current_entity_id = command.json["item"].as_str().map(|s| s.to_string());
+        self.current_property_id = self.get_entity_id_option(&command.json["property"]);
+        self.current_entity_id = self.get_entity_id_option(&command.json["item"]);
 
         // Special case
         match command.json["what"].as_str() {
@@ -290,6 +395,11 @@ impl QuickStatementsBot {
             Some(q) => command.json["item"] = Value::from(q.clone()),
             None => {}
         }
+
+        println!(
+            "Q:{:?} / P:{:?}",
+            &self.current_entity_id, &self.current_property_id
+        );
     }
 
     fn fix_entity_id(&self, id: String) -> String {

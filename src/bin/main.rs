@@ -167,7 +167,7 @@ fn run_bot(config_arc: Arc<Mutex<QuickStatements>>) {
 
 fn main() {
     let config = Arc::new(Mutex::new(QuickStatements::new_from_config_json(
-        "config.json",
+        "config_rs.json",
     )));
 
     loop {
