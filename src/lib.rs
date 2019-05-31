@@ -159,21 +159,24 @@ impl QuickStatements {
             Some(pool) => pool,
             None => panic!("set_command_status: MySQL pool not available"),
         };
-        let pe = match new_message {
-            Some(message) => pool.prep_exec(
-                r#"UPDATE command SET status=?,message=? WHERE id=?"#,
-                (
-                    my::Value::from(new_status),
-                    my::Value::from(message),
-                    my::Value::from(command_id),
+        if false {
+            // TODO deactivated for testing
+            let pe = match new_message {
+                Some(message) => pool.prep_exec(
+                    r#"UPDATE command SET status=?,message=? WHERE id=?"#,
+                    (
+                        my::Value::from(new_status),
+                        my::Value::from(message),
+                        my::Value::from(command_id),
+                    ),
                 ),
-            ),
-            None => pool.prep_exec(
-                r#"UPDATE command SET status=? WHERE id=?"#,
-                (my::Value::from(new_status), my::Value::from(command_id)),
-            ),
-        };
-        pe.unwrap();
+                None => pool.prep_exec(
+                    r#"UPDATE command SET status=? WHERE id=?"#,
+                    (my::Value::from(new_status), my::Value::from(command_id)),
+                ),
+            };
+            pe.unwrap();
+        }
     }
 }
 
@@ -261,13 +264,32 @@ impl QuickStatementsBot {
     }
 
     fn load_command_items(self: &mut Self, command: &mut QuickStatementsCommand) {
-        self.current_property_id = None;
-        /*
-        self.current_entity_id = match command.json["item"].as_str() {
-            Some(id) => Some(self.fix_entity_id(id.to_string())),
-            None => self.last_entity_id.clone(),
-        };
-        */
+        // Reset
+        self.current_property_id = command.json["property"].as_str().map(|s| s.to_string());
+        self.current_entity_id = command.json["item"].as_str().map(|s| s.to_string());
+
+        // Special case
+        match command.json["what"].as_str() {
+            Some(what) => {
+                if what == "statement"
+                    && command.json["item"].as_str().is_none()
+                    && command.json["id"].as_str().is_some()
+                {
+                    let q = command.json["id"].as_str().unwrap();
+                    let q = self.fix_entity_id(q.to_string());
+                    self.current_entity_id = Some(q.clone());
+                }
+            }
+            None => {}
+        }
+
+        if self.current_entity_id == Some("LAST".to_string()) {
+            self.current_entity_id = self.last_entity_id.clone();
+        }
+        match &self.current_entity_id {
+            Some(q) => command.json["item"] = Value::from(q.clone()),
+            None => {}
+        }
     }
 
     fn fix_entity_id(&self, id: String) -> String {
@@ -276,7 +298,6 @@ impl QuickStatementsBot {
 
     fn execute_command(self: &mut Self, command: &mut QuickStatementsCommand) {
         self.set_command_status("RUN", None, command);
-        // TODO set status to RUN
         self.current_property_id = None;
         self.current_entity_id = None;
 
