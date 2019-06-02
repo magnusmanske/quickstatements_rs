@@ -168,11 +168,11 @@ impl QuickStatements {
         None
     }
 
-    pub fn set_command_status(
+    pub fn set_command_status<S: Into<String>>(
         self: &mut Self,
         command_id: i64,
         new_status: &str,
-        new_message: Option<String>,
+        new_message: Option<S>,
     ) {
         let pool = match &self.pool {
             Some(pool) => pool,
@@ -185,7 +185,7 @@ impl QuickStatements {
                     r#"UPDATE command SET status=?,message=? WHERE id=?"#,
                     (
                         my::Value::from(new_status),
-                        my::Value::from(message),
+                        my::Value::from(message.into()),
                         my::Value::from(command_id),
                     ),
                 ),
@@ -290,7 +290,10 @@ impl QuickStatementsBot {
         println!("Batch #{}: doing stuff", self.batch_id);
         match self.get_next_command() {
             Some(mut command) => {
-                self.execute_command(&mut command);
+                match self.execute_command(&mut command) {
+                    Ok(_) => {}
+                    Err(message) => self.set_command_status("ERROR", Some(&message), &mut command),
+                }
                 true
             }
             None => {
@@ -306,38 +309,54 @@ impl QuickStatementsBot {
         config.get_next_command(self.batch_id)
     }
 
-    fn create_new_entity(self: &mut Self, _command: &mut QuickStatementsCommand) {
+    fn create_new_entity(
+        self: &mut Self,
+        _command: &mut QuickStatementsCommand,
+    ) -> Result<(), String> {
         // TODO
+        Ok(())
     }
 
-    fn merge_entities(self: &mut Self, _command: &mut QuickStatementsCommand) {
+    fn merge_entities(
+        self: &mut Self,
+        _command: &mut QuickStatementsCommand,
+    ) -> Result<(), String> {
         // TODO
+        Ok(())
     }
 
-    fn set_label(self: &mut Self, _command: &mut QuickStatementsCommand) {
+    fn set_label(self: &mut Self, _command: &mut QuickStatementsCommand) -> Result<(), String> {
         // TODO
+        Ok(())
     }
 
-    fn add_alias(self: &mut Self, _command: &mut QuickStatementsCommand) {
+    fn add_alias(self: &mut Self, _command: &mut QuickStatementsCommand) -> Result<(), String> {
         // TODO
+        Ok(())
     }
 
-    fn set_description(self: &mut Self, _command: &mut QuickStatementsCommand) {
+    fn set_description(
+        self: &mut Self,
+        _command: &mut QuickStatementsCommand,
+    ) -> Result<(), String> {
         // TODO
+        Ok(())
     }
 
-    fn set_sitelink(self: &mut Self, _command: &mut QuickStatementsCommand) {
+    fn set_sitelink(self: &mut Self, _command: &mut QuickStatementsCommand) -> Result<(), String> {
         // TODO
+        Ok(())
     }
 
-    fn add_statement(self: &mut Self, command: &mut QuickStatementsCommand) {
+    fn add_statement(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         if !self.propagate_last_item(command) {
             return self.command_error("No (last) item available", command);
         }
         // TODO
+        Ok(())
     }
 
-    fn add_qualifier(self: &mut Self, command: &mut QuickStatementsCommand) {
+    fn add_qualifier(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         if !self.propagate_last_item(command) {
             return self.command_error("No (last) item available", command);
         }
@@ -346,9 +365,10 @@ impl QuickStatementsBot {
             None => return self.command_error("No statement ID available", command),
         };
         // TODO
+        Ok(())
     }
 
-    fn add_sources(self: &mut Self, command: &mut QuickStatementsCommand) {
+    fn add_sources(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         if !self.propagate_last_item(command) {
             return self.command_error("No (last) item available", command);
         }
@@ -357,6 +377,7 @@ impl QuickStatementsBot {
             None => return self.command_error("No statement ID available", command),
         };
         // TODO
+        Ok(())
     }
 
     fn get_statement_id(self: &mut Self, command: &mut QuickStatementsCommand) -> Option<String> {
@@ -375,7 +396,7 @@ impl QuickStatementsBot {
         true
     }
 
-    fn add_to_entity(self: &mut Self, command: &mut QuickStatementsCommand) {
+    fn add_to_entity(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         self.load_command_items(command);
         if self.current_entity_id.is_none() {
             return self.command_error("No (last) item available", command);
@@ -397,21 +418,27 @@ impl QuickStatementsBot {
             Some("sources") => self.add_sources(command),
             _other => return self.command_error("BAD 'WHAT'", command),
         }
-
-        panic!("OK");
-        // TODO
     }
 
-    fn command_error(self: &mut Self, message: &str, command: &mut QuickStatementsCommand) {
-        self.set_command_status("ERROR", Some(message.to_string()), command);
+    fn command_error(
+        self: &mut Self,
+        message: &str,
+        command: &mut QuickStatementsCommand,
+    ) -> Result<(), String> {
+        self.set_command_status("ERROR", Some(message), command);
+        return Err(message.to_string());
     }
 
-    fn remove_from_entity(self: &mut Self, command: &mut QuickStatementsCommand) {
+    fn remove_from_entity(
+        self: &mut Self,
+        command: &mut QuickStatementsCommand,
+    ) -> Result<(), String> {
         self.load_command_items(command);
         if self.current_entity_id.is_none() {
             return self.command_error("No (last) item available", command);
         }
         // TODO
+        Ok(())
     }
 
     fn get_entity_id_option(&self, v: &Value) -> Option<String> {
@@ -459,7 +486,10 @@ impl QuickStatementsBot {
         id.trim().to_uppercase()
     }
 
-    fn execute_command(self: &mut Self, command: &mut QuickStatementsCommand) {
+    fn execute_command(
+        self: &mut Self,
+        command: &mut QuickStatementsCommand,
+    ) -> Result<(), String> {
         self.set_command_status("RUN", None, command);
         self.current_property_id = None;
         self.current_entity_id = None;
@@ -468,29 +498,26 @@ impl QuickStatementsBot {
         // $summary = "[[:toollabs:quickstatements/#/batch/{$batch_id}|batch #{$batch_id}]] by [[User:{$this->user_name}|]]" ;
         // if ( !isset($cmd->json->summary) ) $cmd->summary = $summary ; else $cmd->summary .= '; ' . $summary ;
 
-        match command.json["action"].as_str().unwrap() {
+        let result = match command.json["action"].as_str().unwrap() {
             "create" => self.create_new_entity(command),
             "merge" => self.merge_entities(command),
             "add" => self.add_to_entity(command),
             "remove" => self.remove_from_entity(command),
-            other => {
-                println!(
-                    "Batch {} command {} (ID {}): Unknown action '{}'",
-                    command.batch_id, command.num, command.id, &other
-                );
-                self.set_command_status(
-                    "ERROR",
-                    Some("Incomplete or unknown command".to_string()),
-                    command,
-                )
-            }
+            other => Err(format!("Unknown action '{}'", &other)),
+        };
+
+        // TODO update last item if Ok(())
+        match &result {
+            Err(message) => self.set_command_status("ERROR", Some(message), command),
+            _ => self.set_command_status("DONE", None, command),
         }
+        result
     }
 
     fn set_command_status(
         self: &mut Self,
         status: &str,
-        message: Option<String>,
+        message: Option<&str>,
         command: &mut QuickStatementsCommand,
     ) {
         if status == "DONE" {
