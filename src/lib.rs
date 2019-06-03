@@ -1,12 +1,17 @@
 #[macro_use]
 extern crate serde_json;
+#[macro_use]
+extern crate lazy_static;
 
 use config::*;
 use mysql as my;
+use regex::Regex;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::File;
 use std::sync::{Arc, Mutex};
+use wikibase;
 
 #[derive(Debug, Clone)]
 pub struct QuickStatementsCommand {
@@ -227,11 +232,13 @@ impl QuickStatements {
         match self.get_oauth_for_batch(batch_id) {
             Some(oauth_params) => {
                 // Using OAuth
+                println!("USING OAUTH");
                 mw_api.set_oauth(Some(oauth_params));
             }
             None => {
                 match self.params["config"]["bot_config_file"].as_str() {
                     Some(filename) => {
+                        println!("USING BOT");
                         // Using Bot
                         let mut settings = Config::default();
                         settings.merge(config::File::with_name(filename)).unwrap();
@@ -256,6 +263,7 @@ pub struct QuickStatementsBot {
     batch_id: i64,
     config: Arc<Mutex<QuickStatements>>,
     mw_api: Option<mediawiki::api::Api>,
+    entities: wikibase::entity_container::EntityContainer,
     last_entity_id: Option<String>,
     current_entity_id: Option<String>,
     current_property_id: Option<String>,
@@ -267,6 +275,7 @@ impl QuickStatementsBot {
             batch_id: batch_id,
             config: config.clone(),
             mw_api: None,
+            entities: wikibase::entity_container::EntityContainer::new(),
             last_entity_id: None,
             current_entity_id: None,
             current_property_id: None,
@@ -328,22 +337,44 @@ impl QuickStatementsBot {
         Ok(())
     }
 
-    fn set_label(self: &mut Self, _command: &mut QuickStatementsCommand) -> Result<(), String> {
-        // TODO
-        Ok(())
+    fn set_label(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
+        let i = self.get_item_from_command(command)?.to_owned();
+        let language = command.json["language"].as_str().unwrap();
+        let text = command.json["value"].as_str().unwrap();
+        match i.label_in_locale(language) {
+            Some(s) => {
+                if s == text {
+                    return Ok(());
+                }
+            }
+            None => {}
+        }
+        self.run_action(json!({"action":"wbsetlabel","id":self.get_prefixed_id(i.id()),"language":language,"value":text}),command) // TODO baserevid?
     }
 
-    fn add_alias(self: &mut Self, _command: &mut QuickStatementsCommand) -> Result<(), String> {
-        // TODO
-        Ok(())
+    fn add_alias(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
+        let i = self.get_item_from_command(command)?.to_owned();
+        let language = command.json["language"].as_str().unwrap();
+        let text = command.json["value"].as_str().unwrap();
+        self.run_action(json!({"action":"wbsetaliases","id":self.get_prefixed_id(i.id()),"language":language,"add":text}),command) // TODO baserevid?
     }
 
     fn set_description(
         self: &mut Self,
-        _command: &mut QuickStatementsCommand,
+        command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
-        // TODO
-        Ok(())
+        let i = self.get_item_from_command(command)?.to_owned();
+        let language = command.json["language"].as_str().unwrap();
+        let text = command.json["value"].as_str().unwrap();
+        match i.description_in_locale(language) {
+            Some(s) => {
+                if s == text {
+                    return Ok(());
+                }
+            }
+            None => {}
+        }
+        self.run_action(json!({"action":"wbsetdescription","id":self.get_prefixed_id(i.id()),"language":language,"value":text}),command) // TODO baserevid?
     }
 
     fn set_sitelink(self: &mut Self, _command: &mut QuickStatementsCommand) -> Result<(), String> {
@@ -352,40 +383,267 @@ impl QuickStatementsBot {
     }
 
     fn add_statement(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
+        println!("ADD STATEMENT 0");
         self.insert_last_item_into_sources_and_qualifiers(command)?;
-        // TODO
-        Ok(())
+        println!("ADD STATEMENT 1");
+        let i = self.get_item_from_command(command)?.to_owned();
+        println!("ADD STATEMENT 2");
+
+        let property = match command.json["property"].as_str() {
+            Some(p) => p.to_owned(),
+            None => return Err("Property not found".to_string()),
+        };
+        println!("ADD STATEMENT 3");
+        let value = match serde_json::to_string(&command.json["datavalue"]["value"]) {
+            Ok(v) => v,
+            Err(_) => return Err("Bad datavalue.value".to_string()),
+        };
+        println!("ADD STATEMENT 4");
+
+        match self.get_statement_id(command) {
+            Ok(_) => {
+                println!("Such a statement already exists, return");
+                return Ok(());
+            }
+            _ => {}
+        }
+        println!("ADD STATEMENT 5");
+
+        self.run_action(
+            json!({
+                "action":"wbcreateclaim",
+                "entity":self.get_prefixed_id(i.id()),
+                "snaktype":self.get_snak_type_for_datavalue(&command.json["datavalue"])?,
+                "property":property,
+                "value":value
+            }),
+            command,
+        ) // TODO baserevid?
+    }
+
+    fn get_snak_type_for_datavalue(&self, dv: &Value) -> Result<String, String> {
+        let ret = match &dv["value"].as_str() {
+            Some("novalue") => "novalue",
+            Some("somevalue") => "somevalue",
+            Some(_) => "value",
+            None => return Err("Cannot determine snak type".to_string()),
+        };
+        Ok(ret.to_string())
     }
 
     fn add_qualifier(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         self.insert_last_item_into_sources_and_qualifiers(command)?;
-        let _statement_id = match self.get_statement_id(command) {
-            Some(id) => id,
-            None => return Err("No statement ID available".to_string()),
-        };
+        let _statement_id = self.get_statement_id(command)?;
         // TODO
         Ok(())
     }
 
     fn add_sources(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         self.insert_last_item_into_sources_and_qualifiers(command)?;
-        let _statement_id = match self.get_statement_id(command) {
-            Some(id) => id,
-            None => return Err("No statement ID available".to_string()),
-        };
+        let _statement_id = self.get_statement_id(command)?;
         // TODO
         Ok(())
     }
 
-    fn get_statement_id(self: &mut Self, command: &mut QuickStatementsCommand) -> Option<String> {
-        if command.json["property"].as_str().is_none() {
+    fn run_action(
+        self: &mut Self,
+        j: Value,
+        _command: &mut QuickStatementsCommand,
+    ) -> Result<(), String> {
+        // TODO
+        println!("Running action {}", &j);
+        let mut params: HashMap<String, String> = HashMap::new();
+        for (k, v) in j.as_object().unwrap() {
+            params.insert(k.to_string(), v.as_str().unwrap().to_string());
+            // serde_json::to_string(v).unwrap()
+        }
+        let mut mw_api = self.mw_api.to_owned().unwrap();
+        params.insert("token".to_string(), mw_api.get_edit_token().unwrap());
+        println!("As: {:?}", &params);
+        match mw_api.post_query_api_json_mut(&params) {
+            Ok(x) => {
+                println!("WIKIDATA OK: {:?}", &x);
+                Ok(())
+            }
+            Err(e) => {
+                println!("WIKIDATA ERROR: {:?}", &e);
+                Err("Wikidata editing fail".to_string())
+            }
+        }
+    }
+
+    fn get_prefixed_id(&self, s: &str) -> String {
+        s.to_string() // TODO FIXME
+    }
+
+    fn is_claim_base_for_command(
+        &self,
+        claim: &wikibase::Statement,
+        existing: &wikibase::Statement,
+    ) -> Option<String> {
+        lazy_static! {
+            static ref RE_TIME: Regex = Regex::new("^(?P<a>[+-]{0,1})0*(?P<b>.+)$").unwrap();
+        }
+        if claim.main_snak().datatype() != existing.main_snak().datatype() {
             return None;
         }
-        if command.json["datavalue"].as_object().is_none() {
+        if claim.main_snak().data_value().is_none() || existing.main_snak().data_value().is_none() {
             return None;
         }
-        // TODO load item and find statement
-        None
+
+        let statement_id = match claim.id() {
+            Some(id) => id,
+            None => return None,
+        };
+
+        let dv_c = match claim.main_snak().data_value() {
+            Some(dv) => dv,
+            None => return None,
+        };
+        let dv_e = match existing.main_snak().data_value() {
+            Some(dv) => dv,
+            None => return None,
+        };
+
+        if dv_c.value_type() != dv_e.value_type() {
+            return None;
+        }
+
+        if claim.main_snak().snak_type() != existing.main_snak().snak_type() {
+            return None;
+        }
+
+        match claim.main_snak().snak_type() {
+            wikibase::SnakType::NoValue => return Some(statement_id),
+            wikibase::SnakType::UnknownValue => return Some(statement_id),
+            _ => {}
+        }
+
+        match (dv_c.value(), dv_e.value()) {
+            (wikibase::Value::Coordinate(vc), wikibase::Value::Coordinate(ve)) => {
+                if vc.globe() != ve.globe()
+                    || vc.latitude() != ve.latitude()
+                    || vc.longitude() != ve.longitude()
+                {
+                    return None;
+                }
+            }
+            (wikibase::Value::MonoLingual(vc), wikibase::Value::MonoLingual(ve)) => {
+                if vc.language() != ve.language()
+                    || self.normalize_string(&vc.text().to_string())
+                        != self.normalize_string(&ve.text().to_string())
+                {
+                    return None;
+                }
+            }
+            (wikibase::Value::Entity(vc), wikibase::Value::Entity(ve)) => {
+                if vc.id() != ve.id() {
+                    return None;
+                }
+            }
+            (wikibase::Value::Quantity(vc), wikibase::Value::Quantity(ve)) => {
+                if *vc.amount() != *ve.amount() {
+                    return None;
+                }
+            }
+            (wikibase::Value::StringValue(vc), wikibase::Value::StringValue(ve)) => {
+                if self.normalize_string(vc) != self.normalize_string(ve) {
+                    return None;
+                }
+            }
+            (wikibase::Value::Time(vc), wikibase::Value::Time(ve)) => {
+                if vc.calendarmodel() != ve.calendarmodel() || vc.precision() != ve.precision() {
+                    return None;
+                }
+                let tc = RE_TIME.replace_all(vc.time(), "$a$b");
+                let te = RE_TIME.replace_all(ve.time(), "$a$b");
+                if tc != te {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+
+        Some(statement_id)
+    }
+
+    fn normalize_string(&self, s: &String) -> String {
+        // TODO necessary?
+        // In PHP: normalizer_normalize (using Form D)
+        s.to_string()
+    }
+
+    fn get_item_from_command(
+        &mut self,
+        command: &mut QuickStatementsCommand,
+    ) -> Result<&wikibase::Entity, String> {
+        let q = match command.json["item"].as_str() {
+            Some(q) => q.to_string(),
+            None => return Err("Item expected but not set".to_string()),
+        };
+        let mw_api = self.mw_api.to_owned().unwrap();
+        println!("LOADING ENTITY {}", &q);
+        match self.entities.load_entities(&mw_api, &vec![q.to_owned()]) {
+            Ok(_) => {}
+            Err(e) => {
+                println!("ERROR: {:?}", &e);
+                return Err("Error while loading into entities".to_string());
+            }
+        }
+
+        let i = match self.entities.get_entity(q) {
+            Some(i) => i,
+            None => return Err("Failed to get item".to_string()),
+        };
+        Ok(i)
+    }
+
+    fn create_fake_item_from_command(
+        &self,
+        command: &mut QuickStatementsCommand,
+    ) -> Result<wikibase::Entity, wikibase::WikibaseError> {
+        let mut j = json!({"id":"Q0","claims":[{}],"labels":[],"descriptions":[],"aliases":[],"sitelinks":[]});
+        j["claims"][0] = json!({
+            "value":command.json["datavalue"].clone(),
+            "property":command.json["property"].clone()
+        });
+        wikibase::from_json::entity_from_json(&j)
+    }
+
+    fn get_statement_id(
+        self: &mut Self,
+        command: &mut QuickStatementsCommand,
+    ) -> Result<String, String> {
+        let _property = match command.json["property"].as_str() {
+            Some(p) => p,
+            None => return Err("Property expected but not set".to_string()),
+        };
+        let _datavalue = match command.json["datavalue"].as_object() {
+            Some(dv) => dv,
+            None => return Err("Datavalue expected but not set".to_string()),
+        };
+
+        let i = self.get_item_from_command(command)?.to_owned();
+        let dummy_item = match self.create_fake_item_from_command(command) {
+            Ok(item) => item,
+            _ => return Err("Cannot create dummy item/statement".to_string()),
+        };
+
+        let dummy_statement = match dummy_item.claims().get(0) {
+            Some(statement) => statement,
+            None => return Err("Can't create statement".to_string()),
+        };
+
+        for claim in i.claims() {
+            match self.is_claim_base_for_command(&claim, &dummy_statement) {
+                Some(id) => {
+                    return Ok(id);
+                }
+                None => {}
+            }
+        }
+
+        Err("Base statement not found".to_string())
     }
 
     fn replace_last_item(&self, v: &mut Value) -> Result<(), String> {
@@ -393,7 +651,7 @@ impl QuickStatementsBot {
             return Ok(());
         }
         if self.last_entity_id.is_none() {
-            return Err("Last item expected but not set".to_string());
+            return Ok(()); //Err("Last item expected but not set".to_string());
         }
         match &v["type"].as_str() {
             Some("wikibase-entityid") => {}
@@ -411,11 +669,12 @@ impl QuickStatementsBot {
         }
     }
 
+    /// Replaces LAST in the command with the last item, or fails
+    /// This method is called propagateLastItem in the PHP version
     fn insert_last_item_into_sources_and_qualifiers(
         self: &mut Self,
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
-        // This is called propagateLastItem in the PHP version
         self.replace_last_item(&mut command.json["datavalue"])?;
         self.replace_last_item(&mut command.json["qualifier"]["value"])?;
         match command.json["sources"].as_array_mut() {
