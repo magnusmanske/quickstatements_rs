@@ -130,30 +130,43 @@ impl QuickStatements {
         None
     }
 
-    pub fn set_command_status<S: Into<String>>(
+    pub fn set_command_status(
         self: &mut Self,
-        command_id: i64,
+        command: &mut QuickStatementsCommand,
         new_status: &str,
-        new_message: Option<S>,
+        new_message: Option<String>,
     ) {
         let pool = match &self.pool {
             Some(pool) => pool,
             None => panic!("set_command_status: MySQL pool not available"),
         };
-        if false {
+        if true {
+            command.json["meta"]["status"] = json!(new_status.to_string().trim().to_uppercase());
+            let msg: String = match &new_message {
+                Some(s) => s.to_string(),
+                None => "".to_string(),
+            };
+
+            command.json["meta"]["message"] = json!(msg);
+            let json = serde_json::to_string(&command.json).unwrap();
             // TODO deactivated for testing
             let pe = match new_message {
                 Some(message) => pool.prep_exec(
-                    r#"UPDATE command SET status=?,message=? WHERE id=?"#,
+                    r#"UPDATE command SET json=?,status=?,message=? WHERE id=?"#,
                     (
+                        my::Value::from(json),
                         my::Value::from(new_status),
-                        my::Value::from(message.into()),
-                        my::Value::from(command_id),
+                        my::Value::from(message),
+                        my::Value::from(command.id),
                     ),
                 ),
                 None => pool.prep_exec(
-                    r#"UPDATE command SET status=? WHERE id=?"#,
-                    (my::Value::from(new_status), my::Value::from(command_id)),
+                    r#"UPDATE command SET json=?,status=? WHERE id=?"#,
+                    (
+                        my::Value::from(json),
+                        my::Value::from(new_status),
+                        my::Value::from(command.id),
+                    ),
                 ),
             };
             pe.unwrap();

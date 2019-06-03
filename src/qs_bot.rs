@@ -1,12 +1,8 @@
 use crate::qs_command::QuickStatementsCommand;
 use crate::qs_config::QuickStatements;
-//use config::*;
-//use mysql as my;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
-//use std::collections::HashSet;
-//use std::fs::File;
 use std::sync::{Arc, Mutex};
 use wikibase;
 
@@ -560,7 +556,7 @@ impl QuickStatementsBot {
         }
 
         let mut config = self.config.lock().unwrap();
-        config.set_command_status(command.id, status, message);
+        config.set_command_status(command, status, message.map(|s| s.to_string()));
     }
 }
 
