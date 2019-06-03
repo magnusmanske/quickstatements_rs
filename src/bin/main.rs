@@ -149,7 +149,7 @@ fn main() {
 }*/
 
 fn run_bot(config_arc: Arc<Mutex<QuickStatements>>) {
-    println!("BOT!");
+    //println!("BOT!");
     let batch_id;
     {
         let config = config_arc.lock().unwrap();

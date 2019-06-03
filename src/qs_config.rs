@@ -1,4 +1,5 @@
 use crate::qs_command::QuickStatementsCommand;
+use chrono::prelude::*;
 use config::*;
 use mysql as my;
 //use regex::Regex;
@@ -40,11 +41,60 @@ impl QuickStatements {
         ret
     }
 
-    pub fn get_api_url(&self) -> Option<&str> {
-        match self.params["config"]["site"].as_str() {
-            Some(site) => self.params["config"]["sites"][site]["api"].as_str(),
-            None => None,
+    pub fn get_site_from_batch(&self, batch_id: i64) -> Option<String> {
+        let pool = match &self.pool {
+            Some(pool) => pool,
+            None => return None,
+        };
+        for row in pool
+            .prep_exec(
+                r#"SELECT site FROM batch WHERE id=?"#,
+                (my::Value::Int(batch_id),),
+            )
+            .unwrap()
+        {
+            let row = row.unwrap();
+            let site: String = match &row["site"] {
+                my::Value::Bytes(x) => String::from_utf8_lossy(&x).to_string(),
+                _ => continue,
+            };
+            println!("Site from batch: {}", &site);
+            return Some(site);
         }
+        None
+    }
+
+    pub fn timestamp(&self) -> String {
+        let now = Utc::now();
+        now.format("%Y%m%d%H%M%S").to_string()
+    }
+
+    pub fn restart_batch(&self, batch_id: i64) {
+        let pool = match &self.pool {
+            Some(pool) => pool,
+            None => return,
+        };
+        let ts = self.timestamp();
+        /* TODO TEST uncomment for production
+        pool.prep_exec(
+            r#"UPDATE `batch` SET `status`="RUN",`message`="",`ts_last_change`=? WHERE id=?"#,
+            (my::Value::from(ts),my::Value::Int(batch_id),),
+        )
+        .unwrap();
+        */
+        pool.prep_exec(
+            r#"UPDATE `command` SET `status`="INIT",`message`="",`ts_change`=? WHERE `status`="RUN" AND `batch_id`=?"#,
+            (my::Value::from(ts),my::Value::Int(batch_id),),
+        )
+        .unwrap();
+    }
+
+    pub fn get_api_url(&self, batch_id: i64) -> Option<&str> {
+        let site: String = match self.get_site_from_batch(batch_id) {
+            Some(site) => site,
+            None => self.params["config"]["site"].as_str().unwrap().to_string(),
+        };
+        self.params["config"]["sites"][site]["api"].as_str()
     }
 
     fn create_mysql_pool(&mut self) {
@@ -140,20 +190,21 @@ impl QuickStatements {
             Some(pool) => pool,
             None => panic!("set_command_status: MySQL pool not available"),
         };
-        if true {
-            command.json["meta"]["status"] = json!(new_status.to_string().trim().to_uppercase());
-            let msg: String = match &new_message {
-                Some(s) => s.to_string(),
-                None => "".to_string(),
-            };
 
-            command.json["meta"]["message"] = json!(msg);
-            let json = serde_json::to_string(&command.json).unwrap();
-            // TODO deactivated for testing
-            let pe = match new_message {
+        command.json["meta"]["status"] = json!(new_status.to_string().trim().to_uppercase());
+        let msg: String = match &new_message {
+            Some(s) => s.to_string(),
+            None => "".to_string(),
+        };
+
+        command.json["meta"]["message"] = json!(msg);
+        let json = serde_json::to_string(&command.json).unwrap();
+        let ts = self.timestamp();
+        let pe = match new_message {
                 Some(message) => pool.prep_exec(
-                    r#"UPDATE command SET json=?,status=?,message=? WHERE id=?"#,
+                    r#"UPDATE `command` SET `ts_change`=?,`json`=?,`status`=?,`message`=? WHERE `id`=?"#,
                     (
+                        my::Value::from(ts),
                         my::Value::from(json),
                         my::Value::from(new_status),
                         my::Value::from(message),
@@ -161,16 +212,16 @@ impl QuickStatements {
                     ),
                 ),
                 None => pool.prep_exec(
-                    r#"UPDATE command SET json=?,status=? WHERE id=?"#,
+                    r#"UPDATE `command` SET `ts_change`=?,`json`=?,`status`=? WHERE `id`=?"#,
                     (
+                        my::Value::from(ts),
                         my::Value::from(json),
                         my::Value::from(new_status),
                         my::Value::from(command.id),
                     ),
                 ),
             };
-            pe.unwrap();
-        }
+        pe.unwrap();
     }
 
     fn get_oauth_for_batch(self: &mut Self, batch_id: i64) -> Option<mediawiki::api::OAuthParams> {

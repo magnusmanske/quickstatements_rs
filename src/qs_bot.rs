@@ -32,7 +32,8 @@ impl QuickStatementsBot {
 
     pub fn start(self: &mut Self) {
         let mut config = self.config.lock().unwrap();
-        match config.get_api_url() {
+        config.restart_batch(self.batch_id);
+        match config.get_api_url(self.batch_id) {
             Some(url) => {
                 let mut mw_api = mediawiki::api::Api::new(url).unwrap();
                 config.set_bot_api_auth(&mut mw_api, self.batch_id);
@@ -52,7 +53,7 @@ impl QuickStatementsBot {
             Some(mut command) => {
                 match self.execute_command(&mut command) {
                     Ok(_) => {}
-                    Err(message) => self.set_command_status("ERROR", Some(&message), &mut command),
+                    Err(_message) => {}//self.set_command_status("ERROR", Some(&message), &mut command),
                 }
                 true
             }
@@ -208,6 +209,8 @@ impl QuickStatementsBot {
         let mut mw_api = self.mw_api.to_owned().unwrap();
         params.insert("token".to_string(), mw_api.get_edit_token().unwrap());
         println!("As: {:?}", &params);
+        panic!("OK");
+        /*
         match mw_api.post_query_api_json_mut(&params) {
             Ok(x) => {
                 println!("WIKIDATA OK: {:?}", &x);
@@ -218,6 +221,7 @@ impl QuickStatementsBot {
                 Err("Wikidata editing fail".to_string())
             }
         }
+        */
     }
 
     fn get_prefixed_id(&self, s: &str) -> String {
@@ -537,7 +541,6 @@ impl QuickStatementsBot {
             other => Err(format!("Unknown action '{}'", &other)),
         };
 
-        // TODO update last item if Ok(())
         match &result {
             Err(message) => self.set_command_status("ERROR", Some(message), command),
             _ => self.set_command_status("DONE", None, command),
