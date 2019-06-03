@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate serde_json;
+
 use config::*;
 use mysql as my;
 use serde_json::Value;
@@ -349,32 +352,26 @@ impl QuickStatementsBot {
     }
 
     fn add_statement(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
-        if !self.propagate_last_item(command) {
-            return self.command_error("No (last) item available", command);
-        }
+        self.insert_last_item_into_sources_and_qualifiers(command)?;
         // TODO
         Ok(())
     }
 
     fn add_qualifier(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
-        if !self.propagate_last_item(command) {
-            return self.command_error("No (last) item available", command);
-        }
+        self.insert_last_item_into_sources_and_qualifiers(command)?;
         let _statement_id = match self.get_statement_id(command) {
             Some(id) => id,
-            None => return self.command_error("No statement ID available", command),
+            None => return Err("No statement ID available".to_string()),
         };
         // TODO
         Ok(())
     }
 
     fn add_sources(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
-        if !self.propagate_last_item(command) {
-            return self.command_error("No (last) item available", command);
-        }
+        self.insert_last_item_into_sources_and_qualifiers(command)?;
         let _statement_id = match self.get_statement_id(command) {
             Some(id) => id,
-            None => return self.command_error("No statement ID available", command),
+            None => return Err("No statement ID available".to_string()),
         };
         // TODO
         Ok(())
@@ -391,15 +388,51 @@ impl QuickStatementsBot {
         None
     }
 
-    fn propagate_last_item(self: &mut Self, _command: &mut QuickStatementsCommand) -> bool {
-        // TODO
-        true
+    fn replace_last_item(&self, v: &mut Value) -> Result<(), String> {
+        if !v.is_object() {
+            return Ok(());
+        }
+        if self.last_entity_id.is_none() {
+            return Err("Last item expected but not set".to_string());
+        }
+        match &v["type"].as_str() {
+            Some("wikibase-entityid") => {}
+            _ => return Ok(()),
+        }
+        match &v["value"]["id"].as_str() {
+            Some(id) => {
+                if &self.fix_entity_id(id.to_string()) == "LAST" {
+                    let id = self.last_entity_id.clone().unwrap();
+                    v["value"]["id"] = json!(id);
+                }
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+
+    fn insert_last_item_into_sources_and_qualifiers(
+        self: &mut Self,
+        command: &mut QuickStatementsCommand,
+    ) -> Result<(), String> {
+        // This is called propagateLastItem in the PHP version
+        self.replace_last_item(&mut command.json["datavalue"])?;
+        self.replace_last_item(&mut command.json["qualifier"]["value"])?;
+        match command.json["sources"].as_array_mut() {
+            Some(arr) => {
+                for mut v in arr {
+                    self.replace_last_item(&mut v)?
+                }
+            }
+            None => {}
+        }
+        Ok(())
     }
 
     fn add_to_entity(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         self.load_command_items(command);
         if self.current_entity_id.is_none() {
-            return self.command_error("No (last) item available", command);
+            return Err("No (last) item available".to_string());
         }
 
         println!(
@@ -416,17 +449,8 @@ impl QuickStatementsBot {
             Some("statement") => self.add_statement(command),
             Some("qualifier") => self.add_qualifier(command),
             Some("sources") => self.add_sources(command),
-            _other => return self.command_error("BAD 'WHAT'", command),
+            _other => Err("Bad 'what'".to_string()),
         }
-    }
-
-    fn command_error(
-        self: &mut Self,
-        message: &str,
-        command: &mut QuickStatementsCommand,
-    ) -> Result<(), String> {
-        self.set_command_status("ERROR", Some(message), command);
-        return Err(message.to_string());
     }
 
     fn remove_from_entity(
@@ -435,7 +459,7 @@ impl QuickStatementsBot {
     ) -> Result<(), String> {
         self.load_command_items(command);
         if self.current_entity_id.is_none() {
-            return self.command_error("No (last) item available", command);
+            return Err("No (last) item available".to_string());
         }
         // TODO
         Ok(())
