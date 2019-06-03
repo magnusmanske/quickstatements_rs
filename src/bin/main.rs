@@ -3,7 +3,9 @@ extern crate mediawiki;
 extern crate mysql;
 extern crate wikibase;
 
-use quickstatements::*;
+use quickstatements::qs_bot::QuickStatementsBot;
+//use quickstatements::qs_command::QuickStatementsCommand;
+use quickstatements::qs_config::QuickStatements;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
