@@ -222,6 +222,7 @@ impl QuickStatementsBot {
             Some(sources) => {
                 let mut snaks = json!({});
                 for source in sources.iter() {
+                    println!("SOURCE: {}", &source);
                     let prop = self.check_prop(source["property"].as_str().unwrap())?;
                     let snaktype = self.get_snak_type_for_datavalue(&source)?;
                     let snaktype = snaktype.to_owned();
