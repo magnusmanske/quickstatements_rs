@@ -173,7 +173,7 @@ impl QuickStatementsBot {
             Some("novalue") => "novalue",
             Some("somevalue") => "somevalue",
             Some(_) => "value",
-            None => return Err("Cannot determine snak type".to_string()),
+            None => return Err(format!("Cannot determine snak type: {}", dv)),
         };
         Ok(ret.to_string())
     }
@@ -223,14 +223,18 @@ impl QuickStatementsBot {
                 let mut snaks = json!({});
                 for source in sources.iter() {
                     println!("SOURCE: {}", &source);
-                    let prop = self.check_prop(source["property"].as_str().unwrap())?;
+                    let prop = match source["prop"].as_str() {
+                        Some(prop) => prop,
+                        None => return Err("No prop value in source".to_string()),
+                    };
+                    let prop = self.check_prop(prop)?;
                     let snaktype = self.get_snak_type_for_datavalue(&source)?;
                     let snaktype = snaktype.to_owned();
                     let snak = match snaktype.as_str() {
                         "value" => json!({
                             "property":prop.to_owned(),
-                            "snaktype":"match",
-                            "datavalue":source["datavalue"],
+                            "snaktype":"value",
+                            "datavalue":source["value"],
                         }),
                         other => json!({
                             "property":prop.to_owned(),
@@ -252,13 +256,21 @@ impl QuickStatementsBot {
                 "action":"wbsetreference",
                 "statement":statement_id,
                 "snaks":serde_json::to_string(&snaks).unwrap(),
-                "snaktype":self.get_snak_type_for_datavalue(&command.json["qualifier"])?,
             }),
             command,
         ) // TODO baserevid?
     }
 
     fn reset_entities(self: &mut Self, res: &Value, command: &QuickStatementsCommand) {
+        match command.json["item"].as_str() {
+            Some(q) => {
+                self.last_entity_id = Some(q.to_string());
+                self.entities.remove_entity(q);
+                return;
+            }
+            None => {}
+        }
+
         match &res["entity"] {
             serde_json::Value::Null => {}
             entity_json => match wikibase::entity_diff::EntityDiff::get_entity_id(&entity_json) {
@@ -267,18 +279,11 @@ impl QuickStatementsBot {
                     self.entities
                         .set_entity_from_json(&entity_json)
                         .expect("Setting entity from JSON failed");
+                    return;
                 }
                 None => {}
             },
         };
-
-        match command.json["item"].as_str() {
-            Some(q) => {
-                self.last_entity_id = Some(q.to_string());
-                self.entities.remove_entity(q);
-            }
-            None => {}
-        }
     }
 
     fn run_action(
