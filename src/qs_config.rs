@@ -74,17 +74,14 @@ impl QuickStatements {
             Some(pool) => pool,
             None => return,
         };
-        let ts = self.timestamp();
-        /* TODO TEST uncomment for production
         pool.prep_exec(
             r#"UPDATE `batch` SET `status`="RUN",`message`="",`ts_last_change`=? WHERE id=?"#,
-            (my::Value::from(ts),my::Value::Int(batch_id),),
+            (my::Value::from(self.timestamp()), my::Value::Int(batch_id)),
         )
         .unwrap();
-        */
         pool.prep_exec(
             r#"UPDATE `command` SET `status`="INIT",`message`="",`ts_change`=? WHERE `status`="RUN" AND `batch_id`=?"#,
-            (my::Value::from(ts),my::Value::Int(batch_id),),
+            (my::Value::from(self.timestamp()),my::Value::Int(batch_id),),
         )
         .unwrap();
     }
@@ -162,7 +159,15 @@ impl QuickStatements {
 
     pub fn set_batch_finished(&mut self, batch_id: i64) {
         println!("set_batch_finished: Batch #{}", batch_id);
-        // TODO update batch status/time
+        let pool = match &self.pool {
+            Some(pool) => pool,
+            None => return,
+        };
+        pool.prep_exec(
+            r#"UPDATE `batch` SET `status`="DONE",`message`="",`ts_last_change`=? WHERE id=?"#,
+            (my::Value::from(self.timestamp()), my::Value::Int(batch_id)),
+        )
+        .unwrap();
         self.running_batch_ids.remove(&batch_id);
     }
 

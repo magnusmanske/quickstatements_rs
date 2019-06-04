@@ -209,19 +209,42 @@ impl QuickStatementsBot {
         let mut mw_api = self.mw_api.to_owned().unwrap();
         params.insert("token".to_string(), mw_api.get_edit_token().unwrap());
         println!("As: {:?}", &params);
-        panic!("OK");
-        /*
-        match mw_api.post_query_api_json_mut(&params) {
+
+        let res = match mw_api.post_query_api_json_mut(&params) {
             Ok(x) => {
                 println!("WIKIDATA OK: {:?}", &x);
-                Ok(())
+                x
             }
             Err(e) => {
                 println!("WIKIDATA ERROR: {:?}", &e);
-                Err("Wikidata editing fail".to_string())
+                return Err("Wikidata editing fail".to_string());
             }
+        };
+
+        match res["success"].as_i64() {
+            Some(num) => {
+                if num == 1 {
+                    // Success, now use updated item JSON
+                    match &res["entity"] {
+                        serde_json::Value::Null => {}
+                        entity_json => {
+                            self.entities
+                                .set_entity_from_json(&entity_json)
+                                .expect("Setting entity from JSON failed");
+                            match wikibase::entity_diff::EntityDiff::get_entity_id(&entity_json) {
+                                Some(q) => self.last_entity_id = Some(q),
+                                None => {}
+                            }
+                            //return Ok(entity_json.to_owned());
+                        }
+                    };
+                    Ok(())
+                } else {
+                    Err(format!("Success flag is '{}' in API result", num))
+                }
+            }
+            None => Err("No success flag set in API result".to_string()),
         }
-        */
     }
 
     fn get_prefixed_id(&self, s: &str) -> String {
