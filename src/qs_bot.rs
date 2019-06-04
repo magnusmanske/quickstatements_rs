@@ -190,7 +190,15 @@ impl QuickStatementsBot {
 
     fn add_qualifier(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         self.insert_last_item_into_sources_and_qualifiers(command)?;
-        let statement_id = self.get_statement_id(command)?;
+        let statement_id = match self.get_statement_id(command)? {
+            Some(id) => id,
+            None => {
+                return Err(format!(
+                    "add_qualifier: Could not get statement ID for {:?}",
+                    command
+                ))
+            }
+        };
 
         let qual_prop = match command.json["qualifier"]["prop"].as_str() {
             Some(p) => self.check_prop(p)?,
@@ -216,7 +224,15 @@ impl QuickStatementsBot {
 
     fn add_sources(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         self.insert_last_item_into_sources_and_qualifiers(command)?;
-        let statement_id = self.get_statement_id(command)?;
+        let statement_id = match self.get_statement_id(command)? {
+            Some(id) => id,
+            None => {
+                return Err(format!(
+                    "add_sources: Could not get statement ID for {:?}",
+                    command
+                ))
+            }
+        };
 
         let snaks = match &command.json["sources"].as_array() {
             Some(sources) => {
@@ -352,7 +368,9 @@ impl QuickStatementsBot {
                         == self.normalize_string(&v2["text"].as_str()?.to_string()),
             ),
             wikibase::Value::Entity(v) => Some(v.id() == v2["id"].as_str()?),
-            wikibase::Value::Quantity(v) => Some(*v.amount() == v2["amount"].as_f64()?),
+            wikibase::Value::Quantity(v) => dbg!(Some(
+                *v.amount() == v2["amount"].as_str()?.parse::<f64>().unwrap()
+            )),
             wikibase::Value::StringValue(v) => Some(
                 self.normalize_string(&v.to_string())
                     == self.normalize_string(&v2.as_str()?.to_string()),
@@ -423,7 +441,9 @@ impl QuickStatementsBot {
             match self.is_same_datavalue(&dv, &command.json["datavalue"]) {
                 Some(b) => {
                     if b {
-                        return Ok(Some(claim.id().unwrap().to_string()));
+                        let id = claim.id().unwrap().to_string();
+                        println!("Using statement ID '{}'", &id);
+                        return Ok(Some(id));
                     }
                 }
                 None => continue,
@@ -498,16 +518,44 @@ impl QuickStatementsBot {
         }
     }
 
+    fn remove_statement(
+        self: &mut Self,
+        command: &mut QuickStatementsCommand,
+    ) -> Result<(), String> {
+        let statement_id = match self.get_statement_id(command)? {
+            Some(id) => id,
+            None => return Err("remove_statement: Statement not found".to_string()),
+        };
+        println!("remove_statement: Using statement ID {}", &statement_id);
+        self.run_action(
+            json!({"action":"wbremoveclaims","claim":statement_id}),
+            command,
+        ) // TODO baserevid?
+    }
+
+    fn remove_sitelink(
+        self: &mut Self,
+        _command: &mut QuickStatementsCommand,
+    ) -> Result<(), String> {
+        //let i = self.get_item_from_command(command)?.to_owned();
+        Err("Not implemented: remove_sitelink".to_string()) // TODO
+    }
+
     fn remove_from_entity(
         self: &mut Self,
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
         self.load_command_items(command);
+        self.insert_last_item_into_sources_and_qualifiers(command)?;
         if self.current_entity_id.is_none() {
             return Err("No (last) item available".to_string());
         }
-        // TODO
-        Ok(())
+
+        match command.json["what"].as_str() {
+            Some("statement") => self.remove_statement(command),
+            Some("sitelink") => self.remove_sitelink(command),
+            _other => Err("Bad 'what'".to_string()),
+        }
     }
 
     fn get_entity_id_option(&self, v: &Value) -> Option<String> {
