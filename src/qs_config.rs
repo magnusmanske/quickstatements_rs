@@ -255,7 +255,7 @@ impl QuickStatements {
 
         let ts = self.timestamp();
         pool.prep_exec(
-            r#"UPDATE `batch` SET `ts_change`=?,`last_item`=? WHERE `id`=?"#,
+            r#"UPDATE `batch` SET `ts_last_change`=?,`last_item`=? WHERE `id`=?"#,
             (
                 my::Value::from(ts),
                 my::Value::from(last_item),
