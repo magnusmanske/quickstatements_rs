@@ -221,28 +221,23 @@ impl QuickStatements {
         };
 
         command.json["meta"]["status"] = json!(new_status.to_string().trim().to_uppercase());
-        let msg: String = match &new_message {
+
+        let message: String = match &new_message {
             Some(s) => s.to_string(),
             None => "".to_string(),
         };
+        command.json["meta"]["message"] = json!(message);
 
-        command.json["meta"]["message"] = json!(msg);
         let json = serde_json::to_string(&command.json).unwrap();
-        let ts = self.timestamp();
-
-        let message = match new_message {
-            Some(message) => message,
-            None => "".to_string(),
-        };
 
         pool.prep_exec(
             r#"UPDATE `command` SET `ts_change`=?,`json`=?,`status`=?,`message`=? WHERE `id`=?"#,
             (
-                my::Value::from(ts),
+                my::Value::from(self.timestamp()),
                 my::Value::from(json),
                 my::Value::from(new_status),
                 my::Value::from(message),
-                my::Value::from(command.id),
+                my::Value::from(&command.id),
             ),
         )
         .unwrap();
@@ -260,7 +255,7 @@ impl QuickStatements {
 
         let ts = self.timestamp();
         pool.prep_exec(
-            r#"UPDATE `batch` SET `ts_change`=?,`last_item` WHERE `id`=?"#,
+            r#"UPDATE `batch` SET `ts_change`=?,`last_item`=? WHERE `id`=?"#,
             (
                 my::Value::from(ts),
                 my::Value::from(last_item),
