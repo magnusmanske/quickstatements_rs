@@ -155,7 +155,7 @@ impl QuickStatements {
         sql += "'INIT','RUN'";
         //sql += "'TEST'" ;
         sql += ")";
-        sql += " AND id=13445";
+        //sql += " AND id=13445"; // TESTING: Specific batch only
         //sql += " AND user=4420"; // TESTING: [[User:Magnus Manske]] only
         sql += r#" AND NOT EXISTS (SELECT * FROM command WHERE batch_id=batch.id AND json rlike '"item":"L\\d')"# ; // TESTING: Available batches that do NOT use lexemes
         sql += " ORDER BY `ts_last_change`";
@@ -227,24 +227,24 @@ impl QuickStatements {
         };
 
         command.json["meta"]["message"] = json!(msg);
-        let _json = serde_json::to_string(&command.json).unwrap(); // JSON update deactivated, seems to break things
+        let json = serde_json::to_string(&command.json).unwrap();
         let ts = self.timestamp();
         let pe = match new_message {
             Some(message) => pool.prep_exec(
-                r#"UPDATE `command` SET `ts_change`=?,`status`=?,`message`=? WHERE `id`=?"#, // `json`=?,
+                r#"UPDATE `command` SET `ts_change`=?,`json`=?,`status`=?,`message`=? WHERE `id`=?"#,
                 (
                     my::Value::from(ts),
-                    //my::Value::from(json),
+                    my::Value::from(json),
                     my::Value::from(new_status),
                     my::Value::from(message),
                     my::Value::from(command.id),
                 ),
             ),
             None => pool.prep_exec(
-                r#"UPDATE `command` SET `ts_change`=?,`status`=? WHERE `id`=?"#, // `json`=?,
+                r#"UPDATE `command` SET `ts_change`=?,`json`=?,`status`=? WHERE `id`=?"#,
                 (
                     my::Value::from(ts),
-                    //my::Value::from(json),
+                    my::Value::from(json),
                     my::Value::from(new_status),
                     my::Value::from(command.id),
                 ),

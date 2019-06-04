@@ -291,7 +291,8 @@ impl QuickStatementsBot {
                 ))
             }
         };
-        println!("SOURCES:{}", &command.json["sources"]);
+        //println!("SOURCES:{}", &command.json["sources"]);
+
         let snaks = match &command.json["sources"].as_array() {
             Some(sources) => {
                 let mut snaks = json!({});
@@ -393,10 +394,11 @@ impl QuickStatementsBot {
         let mut mw_api = self.mw_api.to_owned().unwrap();
         params.insert("token".to_string(), mw_api.get_edit_token().unwrap());
 
-        // TESTING
+        /*
         if params.get("action").unwrap().as_str() == "wbsetreference" {
             println!("ACTION: {:?}", &params);
         }
+        */
 
         let res = match mw_api.post_query_api_json_mut(&params) {
             Ok(x) => {
@@ -418,7 +420,16 @@ impl QuickStatementsBot {
                     Err(format!("Success flag is '{}' in API result", num))
                 }
             }
-            None => Err("No success flag set in API result".to_string()),
+            None => {
+                println!("\nCOMMAND ERROR #{}:\n{:?}\n{}", &command.id, &params, &res);
+                match res["error"]["info"].as_str() {
+                    Some(s) => {
+                        command.json["meta"]["message"] = json!(s);
+                    }
+                    None => {}
+                }
+                Err("No success flag set in API result".to_string())
+            }
         }
     }
 
