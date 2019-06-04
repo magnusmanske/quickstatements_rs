@@ -153,9 +153,40 @@ impl QuickStatementsBot {
         self.run_action(json!({"action":"wbsetdescription","id":self.get_prefixed_id(i.id()),"language":language,"value":text}),command) // baserevid?
     }
 
-    fn set_sitelink(self: &mut Self, _command: &mut QuickStatementsCommand) -> Result<(), String> {
-        // TODO
-        Ok(())
+    fn set_sitelink(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
+        self.insert_last_item_into_sources_and_qualifiers(command)?;
+        let i = self.get_item_from_command(command)?.to_owned();
+        let site = match &command.json["site"].as_str() {
+            Some(s) => s.to_owned(),
+            None => return Err("site not set".to_string()),
+        };
+        let title = match &command.json["value"].as_str() {
+            Some(s) => s.to_owned(),
+            None => return Err("value (title) not set".to_string()),
+        };
+
+        // Check if this same sitelink is already set
+        match i.sitelinks() {
+            Some(sitelinks) => {
+                let title_underscores = title.replace(" ", "_");
+                for sl in sitelinks {
+                    if sl.site() == site && sl.title().replace(" ", "_") == title_underscores {
+                        return Ok(());
+                    }
+                }
+            }
+            None => {}
+        }
+
+        self.run_action(
+            json!({
+                "action":"wbsetsitelink",
+                "id":self.get_prefixed_id(i.id()),
+                "linksite":site,
+                "linktitle":title,
+            }),
+            command,
+        ) // baserevid?
     }
 
     fn add_statement(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
