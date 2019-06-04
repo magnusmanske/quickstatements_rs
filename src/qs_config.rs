@@ -58,7 +58,7 @@ impl QuickStatements {
                 my::Value::Bytes(x) => String::from_utf8_lossy(&x).to_string(),
                 _ => continue,
             };
-            println!("Site from batch: {}", &site);
+            //println!("Site from batch: {}", &site);
             return Some(site);
         }
         None
@@ -147,8 +147,14 @@ impl QuickStatements {
             None => return None,
         };
 
-        // TESTING: Available batches that do NOT use lexemes
-        let sql = r#"SELECT * FROM batch WHERE `status` IN ('TEST') AND NOT EXISTS (SELECT * FROM command WHERE batch_id=batch.id AND json rlike '"item":"L\\d') ORDER BY `ts_last_change`"# ; // 'INIT','RUN'
+        let mut sql: String = "SELECT * FROM batch WHERE `status` IN (".to_string();
+        sql += "'INIT','RUN'";
+        //sql += "'TEST'" ;
+        sql += ")";
+        sql += r#" AND NOT EXISTS (SELECT * FROM command WHERE batch_id=batch.id AND json rlike '"item":"L\\d')"# ; // TESTING: Available batches that do NOT use lexemes
+        sql += " AND user=4420"; // TESTING: [[User:Magnus Manske]] only
+        sql += " ORDER BY `ts_last_change`";
+        //let sql = r#"SELECT * FROM batch WHERE `status` IN ('TEST') AND NOT EXISTS (SELECT * FROM command WHERE batch_id=batch.id AND json rlike '"item":"L\\d') ORDER BY `ts_last_change`"# ; // 'INIT','RUN'
         for row in pool.prep_exec(sql, ()).unwrap() {
             let row = row.unwrap();
             let id = match &row["id"] {
@@ -266,13 +272,11 @@ impl QuickStatements {
         match self.get_oauth_for_batch(batch_id) {
             Some(oauth_params) => {
                 // Using OAuth
-                println!("USING OAUTH");
                 mw_api.set_oauth(Some(oauth_params));
             }
             None => {
                 match self.params["config"]["bot_config_file"].as_str() {
                     Some(filename) => {
-                        println!("USING BOT");
                         // Using Bot
                         let mut settings = Config::default();
                         settings.merge(config::File::with_name(filename)).unwrap();

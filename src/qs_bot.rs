@@ -49,7 +49,7 @@ impl QuickStatementsBot {
     }
 
     pub fn run(self: &mut Self) -> bool {
-        println!("Batch #{}: doing stuff", self.batch_id);
+        //println!("Batch #{}: doing stuff", self.batch_id);
         match self.get_next_command() {
             Some(mut command) => {
                 match self.execute_command(&mut command) {
@@ -203,8 +203,8 @@ impl QuickStatementsBot {
         };
 
         match self.get_statement_id(command)? {
-            Some(statement_id) => {
-                println!("Such a statement already exists as {}", &statement_id);
+            Some(_statement_id) => {
+                //println!("Such a statement already exists as {}", &statement_id);
                 return Ok(());
             }
             None => {}
@@ -295,7 +295,7 @@ impl QuickStatementsBot {
             Some(sources) => {
                 let mut snaks = json!({});
                 for source in sources.iter() {
-                    println!("SOURCE: {}", &source);
+                    //println!("SOURCE: {}", &source);
                     let prop = match source["prop"].as_str() {
                         Some(prop) => prop,
                         None => return Err("No prop value in source".to_string()),
@@ -382,7 +382,7 @@ impl QuickStatementsBot {
         j: Value,
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
-        println!("Running action {}", &j);
+        //println!("Running action {}", &j);
         let mut params: HashMap<String, String> = HashMap::new();
         for (k, v) in j.as_object().unwrap() {
             params.insert(k.to_string(), v.as_str().unwrap().to_string());
@@ -391,15 +391,15 @@ impl QuickStatementsBot {
         // TODO baserev?
         let mut mw_api = self.mw_api.to_owned().unwrap();
         params.insert("token".to_string(), mw_api.get_edit_token().unwrap());
-        println!("As: {:?}", &params);
+        //println!("As: {:?}", &params);
 
         let res = match mw_api.post_query_api_json_mut(&params) {
             Ok(x) => {
-                println!("WIKIDATA OK: {:?}", &x);
+                //println!("WIKIDATA OK: {:?}", &x);
                 x
             }
-            Err(e) => {
-                println!("WIKIDATA ERROR: {:?}", &e);
+            Err(_e) => {
+                //println!("WIKIDATA ERROR: {:?}", &e);
                 return Err("Wikidata editing fail".to_string());
             }
         };
@@ -473,11 +473,11 @@ impl QuickStatementsBot {
             None => return Err("Item expected but not set".to_string()),
         };
         let mw_api = self.mw_api.to_owned().unwrap();
-        println!("LOADING ENTITY {}", &q);
+        //println!("LOADING ENTITY {}", &q);
         match self.entities.load_entities(&mw_api, &vec![q.to_owned()]) {
             Ok(_) => {}
-            Err(e) => {
-                println!("ERROR: {:?}", &e);
+            Err(_e) => {
+                //println!("ERROR: {:?}", &e);
                 return Err("Error while loading into entities".to_string());
             }
         }
@@ -499,10 +499,12 @@ impl QuickStatementsBot {
             Some(p) => p,
             None => return Err("Property expected but not set".to_string()),
         };
+        /*
         let datavalue = match command.json["datavalue"].as_object() {
             Some(dv) => dv,
             None => return Err("Datavalue expected but not set".to_string()),
         };
+        */
 
         for claim in i.claims() {
             if claim.main_snak().property() != property {
@@ -512,12 +514,12 @@ impl QuickStatementsBot {
                 Some(dv) => dv,
                 None => continue,
             };
-            println!("!!{:?} : {:?}", &dv, &datavalue);
+            //println!("!!{:?} : {:?}", &dv, &datavalue);
             match self.is_same_datavalue(&dv, &command.json["datavalue"]) {
                 Some(b) => {
                     if b {
                         let id = claim.id().unwrap().to_string();
-                        println!("Using statement ID '{}'", &id);
+                        //println!("Using statement ID '{}'", &id);
                         return Ok(Some(id));
                     }
                 }
@@ -575,11 +577,13 @@ impl QuickStatementsBot {
             return Err("No (last) item available".to_string());
         }
 
+        /*
         println!(
             "{:?}/{:?}",
             &self.current_entity_id, &self.current_property_id
         );
         println!("{}", &command.json);
+        */
 
         match command.json["what"].as_str() {
             Some("label") => self.set_label(command),
@@ -601,7 +605,7 @@ impl QuickStatementsBot {
             Some(id) => id,
             None => return Err("remove_statement: Statement not found".to_string()),
         };
-        println!("remove_statement: Using statement ID {}", &statement_id);
+        //println!("remove_statement: Using statement ID {}", &statement_id);
         self.run_action(
             json!({"action":"wbremoveclaims","claim":statement_id}),
             command,
@@ -668,10 +672,7 @@ impl QuickStatementsBot {
             None => {}
         }
 
-        println!(
-            "Q:{:?} / P:{:?}",
-            &self.current_entity_id, &self.current_property_id
-        );
+        //println!("Q:{:?} / P:{:?}",&self.current_entity_id, &self.current_property_id);
     }
 
     fn fix_entity_id(&self, id: String) -> String {
