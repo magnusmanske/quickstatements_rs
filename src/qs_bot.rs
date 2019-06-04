@@ -73,18 +73,44 @@ impl QuickStatementsBot {
 
     fn create_new_entity(
         self: &mut Self,
-        _command: &mut QuickStatementsCommand,
+        command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
-        // TODO
-        Ok(())
+        let data = match &command.json["data"].as_object() {
+            Some(_) => serde_json::to_string(&command.json["data"]).unwrap(),
+            None => "{}".to_string(),
+        };
+        let new_type = match command.json["type"].as_str() {
+            Some(t) => t,
+            None => return Err("No type set".to_string()),
+        };
+        self.run_action(
+            json!({
+                "action":"wbeditentity",
+                "new":new_type,
+                "data":data,
+            }),
+            command,
+        ) // baserevid?
     }
 
-    fn merge_entities(
-        self: &mut Self,
-        _command: &mut QuickStatementsCommand,
-    ) -> Result<(), String> {
-        // TODO
-        Ok(())
+    fn merge_entities(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
+        let item1 = match command.json["item1"].as_str() {
+            Some(t) => t,
+            None => return Err("item1 not set".to_string()),
+        };
+        let item2 = match command.json["item2"].as_str() {
+            Some(t) => t,
+            None => return Err("item2 not set".to_string()),
+        };
+        self.run_action(
+            json!({
+                "action":"wbmergeitems",
+                "fromid":item1,
+                "toid":item2,
+                "ignoreconflicts":"description"
+            }),
+            command,
+        ) // baserevid?
     }
 
     fn set_label(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
@@ -99,14 +125,14 @@ impl QuickStatementsBot {
             }
             None => {}
         }
-        self.run_action(json!({"action":"wbsetlabel","id":self.get_prefixed_id(i.id()),"language":language,"value":text}),command) // TODO baserevid?
+        self.run_action(json!({"action":"wbsetlabel","id":self.get_prefixed_id(i.id()),"language":language,"value":text}),command) // baserevid?
     }
 
     fn add_alias(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         let i = self.get_item_from_command(command)?.to_owned();
         let language = command.json["language"].as_str().unwrap();
         let text = command.json["value"].as_str().unwrap();
-        self.run_action(json!({"action":"wbsetaliases","id":self.get_prefixed_id(i.id()),"language":language,"add":text}),command) // TODO baserevid?
+        self.run_action(json!({"action":"wbsetaliases","id":self.get_prefixed_id(i.id()),"language":language,"add":text}),command) // baserevid?
     }
 
     fn set_description(
@@ -124,7 +150,7 @@ impl QuickStatementsBot {
             }
             None => {}
         }
-        self.run_action(json!({"action":"wbsetdescription","id":self.get_prefixed_id(i.id()),"language":language,"value":text}),command) // TODO baserevid?
+        self.run_action(json!({"action":"wbsetdescription","id":self.get_prefixed_id(i.id()),"language":language,"value":text}),command) // baserevid?
     }
 
     fn set_sitelink(self: &mut Self, _command: &mut QuickStatementsCommand) -> Result<(), String> {
@@ -162,7 +188,7 @@ impl QuickStatementsBot {
                 "value":value
             }),
             command,
-        ) // TODO baserevid?
+        ) // baserevid?
     }
 
     fn get_snak_type_for_datavalue(&self, dv: &Value) -> Result<String, String> {
@@ -219,7 +245,7 @@ impl QuickStatementsBot {
                 "snaktype":self.get_snak_type_for_datavalue(&command.json["qualifier"])?,
             }),
             command,
-        ) // TODO baserevid?
+        ) // baserevid?
     }
 
     fn add_sources(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
@@ -274,15 +300,17 @@ impl QuickStatementsBot {
                 "snaks":serde_json::to_string(&snaks).unwrap(),
             }),
             command,
-        ) // TODO baserevid?
+        ) // baserevid?
     }
 
     fn reset_entities(self: &mut Self, res: &Value, command: &QuickStatementsCommand) {
         match command.json["item"].as_str() {
             Some(q) => {
-                self.last_entity_id = Some(q.to_string());
-                self.entities.remove_entity(q);
-                return;
+                if q.to_uppercase() != "LAST" {
+                    self.last_entity_id = Some(q.to_string());
+                    self.entities.remove_entity(q);
+                    return;
+                }
             }
             None => {}
         }
@@ -530,7 +558,7 @@ impl QuickStatementsBot {
         self.run_action(
             json!({"action":"wbremoveclaims","claim":statement_id}),
             command,
-        ) // TODO baserevid?
+        ) // baserevid?
     }
 
     fn remove_sitelink(
