@@ -366,7 +366,6 @@ impl QuickStatementsBot {
         j: Value,
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
-        // TODO
         println!("Running action {}", &j);
         let mut params: HashMap<String, String> = HashMap::new();
         for (k, v) in j.as_object().unwrap() {
@@ -594,10 +593,10 @@ impl QuickStatementsBot {
 
     fn remove_sitelink(
         self: &mut Self,
-        _command: &mut QuickStatementsCommand,
+        command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
-        //let i = self.get_item_from_command(command)?.to_owned();
-        Err("Not implemented: remove_sitelink".to_string()) // TODO
+        command.json["value"] = json!("");
+        self.set_sitelink(command)
     }
 
     fn remove_from_entity(
