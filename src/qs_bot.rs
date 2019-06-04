@@ -444,9 +444,9 @@ impl QuickStatementsBot {
                         == self.normalize_string(&v2["text"].as_str()?.to_string()),
             ),
             wikibase::Value::Entity(v) => Some(v.id() == v2["id"].as_str()?),
-            wikibase::Value::Quantity(v) => dbg!(Some(
-                *v.amount() == v2["amount"].as_str()?.parse::<f64>().unwrap()
-            )),
+            wikibase::Value::Quantity(v) => {
+                Some(*v.amount() == v2["amount"].as_str()?.parse::<f64>().unwrap())
+            }
             wikibase::Value::StringValue(v) => Some(
                 self.normalize_string(&v.to_string())
                     == self.normalize_string(&v2.as_str()?.to_string()),

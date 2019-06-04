@@ -64,6 +64,10 @@ impl QuickStatements {
         None
     }
 
+    pub fn number_of_bots_running(&self) -> usize {
+        self.running_batch_ids.len()
+    }
+
     pub fn timestamp(&self) -> String {
         let now = Utc::now();
         now.format("%Y%m%d%H%M%S").to_string()
@@ -151,8 +155,8 @@ impl QuickStatements {
         sql += "'INIT','RUN'";
         //sql += "'TEST'" ;
         sql += ")";
+        //sql += " AND user=4420"; // TESTING: [[User:Magnus Manske]] only
         sql += r#" AND NOT EXISTS (SELECT * FROM command WHERE batch_id=batch.id AND json rlike '"item":"L\\d')"# ; // TESTING: Available batches that do NOT use lexemes
-        sql += " AND user=4420"; // TESTING: [[User:Magnus Manske]] only
         sql += " ORDER BY `ts_last_change`";
         //let sql = r#"SELECT * FROM batch WHERE `status` IN ('TEST') AND NOT EXISTS (SELECT * FROM command WHERE batch_id=batch.id AND json rlike '"item":"L\\d') ORDER BY `ts_last_change`"# ; // 'INIT','RUN'
         for row in pool.prep_exec(sql, ()).unwrap() {
@@ -172,6 +176,7 @@ impl QuickStatements {
     pub fn set_batch_running(&mut self, batch_id: i64) {
         println!("set_batch_running: Starting batch #{}", batch_id);
         self.running_batch_ids.insert(batch_id);
+        println!("Currently {} bots running", self.number_of_bots_running());
     }
 
     pub fn set_batch_finished(&mut self, batch_id: i64) {
@@ -186,6 +191,7 @@ impl QuickStatements {
         )
         .unwrap();
         self.running_batch_ids.remove(&batch_id);
+        println!("Currently {} bots running", self.number_of_bots_running());
     }
 
     pub fn get_next_command(&mut self, batch_id: i64) -> Option<QuickStatementsCommand> {
