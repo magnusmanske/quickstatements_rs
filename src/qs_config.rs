@@ -229,28 +229,45 @@ impl QuickStatements {
         command.json["meta"]["message"] = json!(msg);
         let json = serde_json::to_string(&command.json).unwrap();
         let ts = self.timestamp();
-        let pe = match new_message {
-            Some(message) => pool.prep_exec(
-                r#"UPDATE `command` SET `ts_change`=?,`json`=?,`status`=?,`message`=? WHERE `id`=?"#,
-                (
-                    my::Value::from(ts),
-                    my::Value::from(json),
-                    my::Value::from(new_status),
-                    my::Value::from(message),
-                    my::Value::from(command.id),
-                ),
-            ),
-            None => pool.prep_exec(
-                r#"UPDATE `command` SET `ts_change`=?,`json`=?,`status`=? WHERE `id`=?"#,
-                (
-                    my::Value::from(ts),
-                    my::Value::from(json),
-                    my::Value::from(new_status),
-                    my::Value::from(command.id),
-                ),
-            ),
+
+        let message = match new_message {
+            Some(message) => message,
+            None => "".to_string(),
         };
-        pe.unwrap();
+
+        pool.prep_exec(
+            r#"UPDATE `command` SET `ts_change`=?,`json`=?,`status`=?,`message`=? WHERE `id`=?"#,
+            (
+                my::Value::from(ts),
+                my::Value::from(json),
+                my::Value::from(new_status),
+                my::Value::from(message),
+                my::Value::from(command.id),
+            ),
+        )
+        .unwrap();
+    }
+
+    pub fn set_last_item_for_batch(self: &mut Self, batch_id: i64, last_item: &Option<String>) {
+        let pool = match &self.pool {
+            Some(pool) => pool,
+            None => panic!("set_command_status: MySQL pool not available"),
+        };
+        let last_item = match last_item {
+            Some(q) => q.to_string(),
+            None => "".to_string(),
+        };
+
+        let ts = self.timestamp();
+        pool.prep_exec(
+            r#"UPDATE `batch` SET `ts_change`=?,`last_item` WHERE `id`=?"#,
+            (
+                my::Value::from(ts),
+                my::Value::from(last_item),
+                my::Value::from(batch_id),
+            ),
+        )
+        .unwrap();
     }
 
     fn get_oauth_for_batch(self: &mut Self, batch_id: i64) -> Option<mediawiki::api::OAuthParams> {

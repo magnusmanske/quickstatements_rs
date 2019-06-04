@@ -730,6 +730,7 @@ impl QuickStatementsBot {
 
         let mut config = self.config.lock().unwrap();
         config.set_command_status(command, status, message.map(|s| s.to_string()));
+        config.set_last_item_for_batch(self.batch_id, &self.last_entity_id);
     }
 }
 
