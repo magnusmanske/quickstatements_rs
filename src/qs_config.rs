@@ -155,6 +155,7 @@ impl QuickStatements {
         sql += "'INIT','RUN'";
         //sql += "'TEST'" ;
         sql += ")";
+        sql += " AND id=13445";
         //sql += " AND user=4420"; // TESTING: [[User:Magnus Manske]] only
         sql += r#" AND NOT EXISTS (SELECT * FROM command WHERE batch_id=batch.id AND json rlike '"item":"L\\d')"# ; // TESTING: Available batches that do NOT use lexemes
         sql += " ORDER BY `ts_last_change`";
