@@ -149,12 +149,12 @@ impl QuickStatementsBot {
         };
         println!("ADD STATEMENT 4");
 
-        match self.get_statement_id(command) {
-            Ok(_) => {
-                println!("Such a statement already exists, return");
+        match self.get_statement_id(command)? {
+            Some(statement_id) => {
+                println!("Such a statement already exists as {}", &statement_id);
                 return Ok(());
             }
-            _ => {}
+            None => {}
         }
         println!("ADD STATEMENT 5");
 
@@ -228,7 +228,8 @@ impl QuickStatementsBot {
         s.to_string() // TODO FIXME
     }
 
-    fn is_claim_base_for_command(
+    fn _is_claim_base_for_command(
+        // REMOVE
         &self,
         claim: &wikibase::Statement,
         existing: &wikibase::Statement,
@@ -265,58 +266,42 @@ impl QuickStatementsBot {
             return None;
         }
 
-        match claim.main_snak().snak_type() {
-            wikibase::SnakType::NoValue => return Some(statement_id),
-            wikibase::SnakType::UnknownValue => return Some(statement_id),
-            _ => {}
-        }
-
-        match (dv_c.value(), dv_e.value()) {
-            (wikibase::Value::Coordinate(vc), wikibase::Value::Coordinate(ve)) => {
-                if vc.globe() != ve.globe()
-                    || vc.latitude() != ve.latitude()
-                    || vc.longitude() != ve.longitude()
-                {
-                    return None;
-                }
-            }
-            (wikibase::Value::MonoLingual(vc), wikibase::Value::MonoLingual(ve)) => {
-                if vc.language() != ve.language()
-                    || self.normalize_string(&vc.text().to_string())
-                        != self.normalize_string(&ve.text().to_string())
-                {
-                    return None;
-                }
-            }
-            (wikibase::Value::Entity(vc), wikibase::Value::Entity(ve)) => {
-                if vc.id() != ve.id() {
-                    return None;
-                }
-            }
-            (wikibase::Value::Quantity(vc), wikibase::Value::Quantity(ve)) => {
-                if *vc.amount() != *ve.amount() {
-                    return None;
-                }
-            }
-            (wikibase::Value::StringValue(vc), wikibase::Value::StringValue(ve)) => {
-                if self.normalize_string(vc) != self.normalize_string(ve) {
-                    return None;
-                }
-            }
-            (wikibase::Value::Time(vc), wikibase::Value::Time(ve)) => {
-                if vc.calendarmodel() != ve.calendarmodel() || vc.precision() != ve.precision() {
-                    return None;
-                }
-                let tc = RE_TIME.replace_all(vc.time(), "$a$b");
-                let te = RE_TIME.replace_all(ve.time(), "$a$b");
-                if tc != te {
-                    return None;
-                }
-            }
-            _ => return None,
-        }
-
         Some(statement_id)
+    }
+
+    fn is_same_datavalue(&self, dv1: &wikibase::DataValue, dv2: &Value) -> Option<bool> {
+        lazy_static! {
+            static ref RE_TIME: Regex = Regex::new("^(?P<a>[+-]{0,1})0*(?P<b>.+)$").unwrap();
+        }
+
+        if dv1.value_type().string_value() != dv2["type"].as_str()? {
+            return Some(false);
+        }
+
+        let v2 = &dv2["value"];
+        match dv1.value() {
+            wikibase::Value::Coordinate(v) => Some(
+                v.globe() == v2["globe"].as_str()?
+                    && *v.latitude() == v2["latitude"].as_f64()?
+                    && *v.longitude() == v2["longitude"].as_f64()?,
+            ),
+            wikibase::Value::MonoLingual(v) => Some(
+                v.language() == v2["language"].as_str()?
+                    && self.normalize_string(&v.text().to_string())
+                        == self.normalize_string(&v2["text"].as_str()?.to_string()),
+            ),
+            wikibase::Value::Entity(v) => Some(v.id() == v2["id"].as_str()?),
+            wikibase::Value::Quantity(v) => Some(*v.amount() == v2["amount"].as_f64()?),
+            wikibase::Value::StringValue(v) => Some(
+                self.normalize_string(&v.to_string())
+                    == self.normalize_string(&v2.as_str()?.to_string()),
+            ),
+            wikibase::Value::Time(v) => {
+                let t1 = RE_TIME.replace_all(v.time(), "$a$b");
+                let t2 = RE_TIME.replace_all(v2["time"].as_str()?, "$a$b");
+                Some(v.calendarmodel() == v2["calendarmodel"].as_str()? && t1 == t2)
+            }
+        }
     }
 
     fn normalize_string(&self, s: &String) -> String {
@@ -350,36 +335,47 @@ impl QuickStatementsBot {
         Ok(i)
     }
 
-    fn create_fake_item_from_command(
-        &self,
-        command: &mut QuickStatementsCommand,
-    ) -> Result<wikibase::Entity, wikibase::WikibaseError> {
-        let mut j = json!({"id":"Q0","claims":[{}],"labels":[],"descriptions":[],"aliases":[],"sitelinks":[]});
-        j["claims"][0] = json!({
-            "value":command.json["datavalue"].clone(),
-            "property":command.json["property"].clone()
-        });
-        wikibase::from_json::entity_from_json(&j)
-    }
-
     fn get_statement_id(
         self: &mut Self,
         command: &mut QuickStatementsCommand,
-    ) -> Result<String, String> {
-        let _property = match command.json["property"].as_str() {
+    ) -> Result<Option<String>, String> {
+        let i = self.get_item_from_command(command)?.to_owned();
+
+        let property = match command.json["property"].as_str() {
             Some(p) => p,
             None => return Err("Property expected but not set".to_string()),
         };
-        let _datavalue = match command.json["datavalue"].as_object() {
+        let datavalue = match command.json["datavalue"].as_object() {
             Some(dv) => dv,
             None => return Err("Datavalue expected but not set".to_string()),
         };
 
-        let i = self.get_item_from_command(command)?.to_owned();
+        for claim in i.claims() {
+            if claim.main_snak().property() != property {
+                continue;
+            }
+            let dv = match claim.main_snak().data_value() {
+                Some(dv) => dv,
+                None => continue,
+            };
+            println!("!!{:?} : {:?}", &dv, &datavalue);
+            match self.is_same_datavalue(&dv, &command.json["datavalue"]) {
+                Some(b) => {
+                    if b {
+                        return Ok(Some(i.id().to_string()));
+                    }
+                }
+                None => continue,
+            }
+        }
+
+        /*
         let dummy_item = match self.create_fake_item_from_command(command) {
             Ok(item) => item,
             _ => return Err("Cannot create dummy item/statement".to_string()),
         };
+
+        println!("DUMMY ITEM: {:?}", &dummy_item);
 
         let dummy_statement = match dummy_item.claims().get(0) {
             Some(statement) => statement,
@@ -389,13 +385,13 @@ impl QuickStatementsBot {
         for claim in i.claims() {
             match self.is_claim_base_for_command(&claim, &dummy_statement) {
                 Some(id) => {
-                    return Ok(id);
+                    return Ok(Some(id));
                 }
                 None => {}
             }
         }
-
-        Err("Base statement not found".to_string())
+        */
+        Ok(None)
     }
 
     fn replace_last_item(&self, v: &mut Value) -> Result<(), String> {
