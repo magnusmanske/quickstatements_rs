@@ -75,7 +75,7 @@ impl QuickStatements {
             None => return,
         };
         pool.prep_exec(
-            r#"UPDATE `batch` SET `status`="RUN",`message`="",`ts_last_change`=? WHERE id=?"#,
+            r#"UPDATE `batch` SET `status`="RUN",`message`="",`ts_last_change`=? WHERE id=? AND `status`!="TEST""#, // TEST
             (my::Value::from(self.timestamp()), my::Value::Int(batch_id)),
         )
         .unwrap();
@@ -120,6 +120,27 @@ impl QuickStatements {
         }
     }
 
+    pub fn get_last_item_from_batch(&self, batch_id: i64) -> Option<String> {
+        let pool = match &self.pool {
+            Some(pool) => pool,
+            None => return None,
+        };
+        for row in pool
+            .prep_exec(
+                r#"SELECT last_item FROM batch WHERE `id`=?"#,
+                (my::Value::from(batch_id),),
+            )
+            .unwrap()
+        {
+            let row = row.unwrap();
+            return match &row["last_item"] {
+                my::Value::Bytes(x) => Some(String::from_utf8_lossy(x).to_string()),
+                _ => None,
+            };
+        }
+        None
+    }
+
     pub fn get_next_batch(&self) -> Option<i64> {
         let pool = match &self.pool {
             Some(pool) => pool,
@@ -141,13 +162,6 @@ impl QuickStatements {
                 continue;
             }
             return Some(id);
-            /*
-            let status = match &row["status"] {
-                my::Value::Bytes(x) => String::from_utf8_lossy(x),
-                _ => continue,
-            };
-            println!("{}:{}", &id, &status);
-            */
         }
         None
     }
@@ -203,29 +217,29 @@ impl QuickStatements {
         };
 
         command.json["meta"]["message"] = json!(msg);
-        let json = serde_json::to_string(&command.json).unwrap();
+        let _json = serde_json::to_string(&command.json).unwrap(); // JSON update deactivated, seems to break things
         let ts = self.timestamp();
         let pe = match new_message {
-                Some(message) => pool.prep_exec(
-                    r#"UPDATE `command` SET `ts_change`=?,`json`=?,`status`=?,`message`=? WHERE `id`=?"#,
-                    (
-                        my::Value::from(ts),
-                        my::Value::from(json),
-                        my::Value::from(new_status),
-                        my::Value::from(message),
-                        my::Value::from(command.id),
-                    ),
+            Some(message) => pool.prep_exec(
+                r#"UPDATE `command` SET `ts_change`=?,`status`=?,`message`=? WHERE `id`=?"#, // `json`=?,
+                (
+                    my::Value::from(ts),
+                    //my::Value::from(json),
+                    my::Value::from(new_status),
+                    my::Value::from(message),
+                    my::Value::from(command.id),
                 ),
-                None => pool.prep_exec(
-                    r#"UPDATE `command` SET `ts_change`=?,`json`=?,`status`=? WHERE `id`=?"#,
-                    (
-                        my::Value::from(ts),
-                        my::Value::from(json),
-                        my::Value::from(new_status),
-                        my::Value::from(command.id),
-                    ),
+            ),
+            None => pool.prep_exec(
+                r#"UPDATE `command` SET `ts_change`=?,`status`=? WHERE `id`=?"#, // `json`=?,
+                (
+                    my::Value::from(ts),
+                    //my::Value::from(json),
+                    my::Value::from(new_status),
+                    my::Value::from(command.id),
                 ),
-            };
+            ),
+        };
         pe.unwrap();
     }
 

@@ -33,6 +33,7 @@ impl QuickStatementsBot {
     pub fn start(self: &mut Self) {
         let mut config = self.config.lock().unwrap();
         config.restart_batch(self.batch_id);
+        self.last_entity_id = config.get_last_item_from_batch(self.batch_id);
         match config.get_api_url(self.batch_id) {
             Some(url) => {
                 let mut mw_api = mediawiki::api::Api::new(url).unwrap();
@@ -132,22 +133,17 @@ impl QuickStatementsBot {
     }
 
     fn add_statement(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
-        println!("ADD STATEMENT 0");
         self.insert_last_item_into_sources_and_qualifiers(command)?;
-        println!("ADD STATEMENT 1");
         let i = self.get_item_from_command(command)?.to_owned();
-        println!("ADD STATEMENT 2");
 
         let property = match command.json["property"].as_str() {
             Some(p) => p.to_owned(),
             None => return Err("Property not found".to_string()),
         };
-        println!("ADD STATEMENT 3");
         let value = match serde_json::to_string(&command.json["datavalue"]["value"]) {
             Ok(v) => v,
             Err(_) => return Err("Bad datavalue.value".to_string()),
         };
-        println!("ADD STATEMENT 4");
 
         match self.get_statement_id(command)? {
             Some(statement_id) => {
@@ -156,7 +152,6 @@ impl QuickStatementsBot {
             }
             None => {}
         }
-        println!("ADD STATEMENT 5");
 
         self.run_action(
             json!({
@@ -171,6 +166,9 @@ impl QuickStatementsBot {
     }
 
     fn get_snak_type_for_datavalue(&self, dv: &Value) -> Result<String, String> {
+        if dv["value"].as_object().is_some() {
+            return Ok("value".to_string());
+        }
         let ret = match &dv["value"].as_str() {
             Some("novalue") => "novalue",
             Some("somevalue") => "somevalue",
@@ -180,24 +178,112 @@ impl QuickStatementsBot {
         Ok(ret.to_string())
     }
 
+    fn check_prop(&self, s: &str) -> Result<String, String> {
+        lazy_static! {
+            static ref RE_PROP: Regex = Regex::new(r#"^P\d+$"#).unwrap();
+        }
+        match RE_PROP.is_match(s) {
+            true => Ok(s.to_string()),
+            false => Err(format!("'{}' is not a property", &s)),
+        }
+    }
+
     fn add_qualifier(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         self.insert_last_item_into_sources_and_qualifiers(command)?;
-        let _statement_id = self.get_statement_id(command)?;
-        // TODO
-        Ok(())
+        let statement_id = self.get_statement_id(command)?;
+
+        let qual_prop = match command.json["qualifier"]["prop"].as_str() {
+            Some(p) => self.check_prop(p)?,
+            None => return Err("Incomplete command parameters: prop".to_string()),
+        };
+
+        let qual_value = &command.json["qualifier"]["value"]["value"];
+        if !qual_value.is_string() && !qual_value.is_object() {
+            return Err("Incomplete command parameters: value.value".to_string());
+        }
+
+        self.run_action(
+            json!({
+                "action":"wbsetqualifier",
+                "claim":statement_id,
+                "property":qual_prop,
+                "value":serde_json::to_string(&qual_value).unwrap(),
+                "snaktype":self.get_snak_type_for_datavalue(&command.json["qualifier"])?,
+            }),
+            command,
+        ) // TODO baserevid?
     }
 
     fn add_sources(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         self.insert_last_item_into_sources_and_qualifiers(command)?;
-        let _statement_id = self.get_statement_id(command)?;
-        // TODO
-        Ok(())
+        let statement_id = self.get_statement_id(command)?;
+
+        let snaks = match &command.json["sources"].as_array() {
+            Some(sources) => {
+                let mut snaks = json!({});
+                for source in sources.iter() {
+                    let prop = self.check_prop(source["property"].as_str().unwrap())?;
+                    let snaktype = self.get_snak_type_for_datavalue(&source)?;
+                    let snaktype = snaktype.to_owned();
+                    let snak = match snaktype.as_str() {
+                        "value" => json!({
+                            "property":prop.to_owned(),
+                            "snaktype":"match",
+                            "datavalue":source["datavalue"],
+                        }),
+                        other => json!({
+                            "property":prop.to_owned(),
+                            "snaktype":other,
+                        }),
+                    };
+                    if snaks[&prop].as_array().is_none() {
+                        snaks[&prop] = json!([]);
+                    }
+                    snaks[prop].as_array_mut().unwrap().push(snak);
+                }
+                snaks
+            }
+            None => return Err("Incomplete command parameters: sources".to_string()),
+        };
+
+        self.run_action(
+            json!({
+                "action":"wbsetreference",
+                "statement":statement_id,
+                "snaks":serde_json::to_string(&snaks).unwrap(),
+                "snaktype":self.get_snak_type_for_datavalue(&command.json["qualifier"])?,
+            }),
+            command,
+        ) // TODO baserevid?
+    }
+
+    fn reset_entities(self: &mut Self, res: &Value, command: &QuickStatementsCommand) {
+        match &res["entity"] {
+            serde_json::Value::Null => {}
+            entity_json => match wikibase::entity_diff::EntityDiff::get_entity_id(&entity_json) {
+                Some(q) => {
+                    self.last_entity_id = Some(q);
+                    self.entities
+                        .set_entity_from_json(&entity_json)
+                        .expect("Setting entity from JSON failed");
+                }
+                None => {}
+            },
+        };
+
+        match command.json["item"].as_str() {
+            Some(q) => {
+                self.last_entity_id = Some(q.to_string());
+                self.entities.remove_entity(q);
+            }
+            None => {}
+        }
     }
 
     fn run_action(
         self: &mut Self,
         j: Value,
-        _command: &mut QuickStatementsCommand,
+        command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
         // TODO
         println!("Running action {}", &j);
@@ -224,20 +310,7 @@ impl QuickStatementsBot {
         match res["success"].as_i64() {
             Some(num) => {
                 if num == 1 {
-                    // Success, now use updated item JSON
-                    match &res["entity"] {
-                        serde_json::Value::Null => {}
-                        entity_json => {
-                            self.entities
-                                .set_entity_from_json(&entity_json)
-                                .expect("Setting entity from JSON failed");
-                            match wikibase::entity_diff::EntityDiff::get_entity_id(&entity_json) {
-                                Some(q) => self.last_entity_id = Some(q),
-                                None => {}
-                            }
-                            //return Ok(entity_json.to_owned());
-                        }
-                    };
+                    self.reset_entities(&res, command);
                     Ok(())
                 } else {
                     Err(format!("Success flag is '{}' in API result", num))
@@ -249,47 +322,6 @@ impl QuickStatementsBot {
 
     fn get_prefixed_id(&self, s: &str) -> String {
         s.to_string() // TODO FIXME
-    }
-
-    fn _is_claim_base_for_command(
-        // REMOVE
-        &self,
-        claim: &wikibase::Statement,
-        existing: &wikibase::Statement,
-    ) -> Option<String> {
-        lazy_static! {
-            static ref RE_TIME: Regex = Regex::new("^(?P<a>[+-]{0,1})0*(?P<b>.+)$").unwrap();
-        }
-        if claim.main_snak().datatype() != existing.main_snak().datatype() {
-            return None;
-        }
-        if claim.main_snak().data_value().is_none() || existing.main_snak().data_value().is_none() {
-            return None;
-        }
-
-        let statement_id = match claim.id() {
-            Some(id) => id,
-            None => return None,
-        };
-
-        let dv_c = match claim.main_snak().data_value() {
-            Some(dv) => dv,
-            None => return None,
-        };
-        let dv_e = match existing.main_snak().data_value() {
-            Some(dv) => dv,
-            None => return None,
-        };
-
-        if dv_c.value_type() != dv_e.value_type() {
-            return None;
-        }
-
-        if claim.main_snak().snak_type() != existing.main_snak().snak_type() {
-            return None;
-        }
-
-        Some(statement_id)
     }
 
     fn is_same_datavalue(&self, dv1: &wikibase::DataValue, dv2: &Value) -> Option<bool> {
@@ -385,35 +417,12 @@ impl QuickStatementsBot {
             match self.is_same_datavalue(&dv, &command.json["datavalue"]) {
                 Some(b) => {
                     if b {
-                        return Ok(Some(i.id().to_string()));
+                        return Ok(Some(claim.id().unwrap().to_string()));
                     }
                 }
                 None => continue,
             }
         }
-
-        /*
-        let dummy_item = match self.create_fake_item_from_command(command) {
-            Ok(item) => item,
-            _ => return Err("Cannot create dummy item/statement".to_string()),
-        };
-
-        println!("DUMMY ITEM: {:?}", &dummy_item);
-
-        let dummy_statement = match dummy_item.claims().get(0) {
-            Some(statement) => statement,
-            None => return Err("Can't create statement".to_string()),
-        };
-
-        for claim in i.claims() {
-            match self.is_claim_base_for_command(&claim, &dummy_statement) {
-                Some(id) => {
-                    return Ok(Some(id));
-                }
-                None => {}
-            }
-        }
-        */
         Ok(None)
     }
 
