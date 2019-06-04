@@ -361,6 +361,22 @@ impl QuickStatementsBot {
         };
     }
 
+    fn add_summary(
+        &self,
+        params: &mut HashMap<String, String>,
+        command: &mut QuickStatementsCommand,
+    ) {
+        let summary: String = format!(
+            "[[:toollabs:quickstatements/#/batch/{}|batch #{}]]",
+            command.batch_id, command.batch_id
+        );
+        let new_summary = match &params.get("summary") {
+            Some(s) => s.to_string() + &"; ".to_string() + &summary,
+            None => summary,
+        };
+        params.insert("summary".to_string(), new_summary);
+    }
+
     fn run_action(
         self: &mut Self,
         j: Value,
@@ -370,8 +386,9 @@ impl QuickStatementsBot {
         let mut params: HashMap<String, String> = HashMap::new();
         for (k, v) in j.as_object().unwrap() {
             params.insert(k.to_string(), v.as_str().unwrap().to_string());
-            // serde_json::to_string(v).unwrap()
         }
+        self.add_summary(&mut params, command);
+        // TODO baserev?
         let mut mw_api = self.mw_api.to_owned().unwrap();
         params.insert("token".to_string(), mw_api.get_edit_token().unwrap());
         println!("As: {:?}", &params);
@@ -401,7 +418,7 @@ impl QuickStatementsBot {
     }
 
     fn get_prefixed_id(&self, s: &str) -> String {
-        s.to_string() // TODO FIXME
+        s.to_string() // TODO necessary?
     }
 
     fn is_same_datavalue(&self, dv1: &wikibase::DataValue, dv2: &Value) -> Option<bool> {
@@ -668,10 +685,6 @@ impl QuickStatementsBot {
         self.set_command_status("RUN", None, command);
         self.current_property_id = None;
         self.current_entity_id = None;
-
-        // TODO
-        // $summary = "[[:toollabs:quickstatements/#/batch/{$batch_id}|batch #{$batch_id}]] by [[User:{$this->user_name}|]]" ;
-        // if ( !isset($cmd->json->summary) ) $cmd->summary = $summary ; else $cmd->summary .= '; ' . $summary ;
 
         let result = match command.json["action"].as_str().unwrap() {
             "create" => self.create_new_entity(command),

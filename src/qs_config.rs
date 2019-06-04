@@ -75,7 +75,7 @@ impl QuickStatements {
             None => return,
         };
         pool.prep_exec(
-            r#"UPDATE `batch` SET `status`="RUN",`message`="",`ts_last_change`=? WHERE id=? AND `status`!="TEST""#, // TEST
+            r#"UPDATE `batch` SET `status`="RUN",`message`="",`ts_last_change`=? WHERE id=? AND `status`!="TEST""#,
             (my::Value::from(self.timestamp()), my::Value::Int(batch_id)),
         )
         .unwrap();
@@ -146,13 +146,10 @@ impl QuickStatements {
             Some(pool) => pool,
             None => return None,
         };
-        for row in pool
-            .prep_exec(
-                r#"SELECT * FROM batch WHERE `status` IN ('TEST') ORDER BY `ts_last_change`"#, // 'INIT','RUN' TESTING
-                (),
-            )
-            .unwrap()
-        {
+
+        // TESTING: Available batches that do NOT use lexemes
+        let sql = r#"SELECT * FROM batch WHERE `status` IN ('TEST') AND NOT EXISTS (SELECT * FROM command WHERE batch_id=batch.id AND json rlike '"item":"L\\d') ORDER BY `ts_last_change`"# ; // 'INIT','RUN'
+        for row in pool.prep_exec(sql, ()).unwrap() {
             let row = row.unwrap();
             let id = match &row["id"] {
                 my::Value::Int(x) => *x as i64,
