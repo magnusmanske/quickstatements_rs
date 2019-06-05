@@ -99,6 +99,23 @@ impl QuickStatementsCommand {
         }))
     }
 
+    pub fn action_add_statement(&self, q: &str) -> Result<Value, String> {
+        let property = match self.json["property"].as_str() {
+            Some(p) => p.to_owned(),
+            None => return Err("Property not found".to_string()),
+        };
+        let value = serde_json::to_string(&self.json["datavalue"]["value"])
+            .map_err(|e| format!("{:?}", e))?;
+
+        Ok(json!({
+            "action":"wbcreateclaim",
+            "entity":self.get_prefixed_id(q),
+            "snaktype":self.get_snak_type_for_datavalue(&self.json["datavalue"])?,
+            "property":property,
+            "value":value
+        }))
+    }
+
     pub fn action_create_entity(&self) -> Result<Value, String> {
         let data = match &self.json["data"].as_object() {
             Some(_) => match serde_json::to_string(&self.json["data"]) {
@@ -183,5 +200,69 @@ impl QuickStatementsCommand {
 
     pub fn get_prefixed_id(&self, s: &str) -> String {
         s.to_string() // TODO necessary?
+    }
+
+    pub fn get_snak_type_for_datavalue(&self, dv: &Value) -> Result<String, String> {
+        if dv["value"].as_object().is_some() {
+            return Ok("value".to_string());
+        }
+        let ret = match &dv["value"].as_str() {
+            Some("novalue") => "novalue",
+            Some("somevalue") => "somevalue",
+            Some(_) => "value",
+            None => return Err(format!("Cannot determine snak type: {}", dv)),
+        };
+        Ok(ret.to_string())
+    }
+
+    pub fn get_statement_id(&self, item: &wikibase::Entity) -> Result<Option<String>, String> {
+        let property = match self.json["property"].as_str() {
+            Some(p) => p,
+            None => {
+                return Err(
+                    "QuickStatementsCommand::get_statement_id: Property expected but not set"
+                        .to_string(),
+                )
+            }
+        };
+
+        for claim in item.claims() {
+            if claim.main_snak().property() != property {
+                continue;
+            }
+            let dv = match claim.main_snak().data_value() {
+                Some(dv) => dv,
+                None => continue,
+            };
+            //println!("!!{:?} : {:?}", &dv, &datavalue);
+            match self.is_same_datavalue(&dv, &self.json["datavalue"]) {
+                Some(b) => {
+                    if b {
+                        let id = claim
+                            .id()
+                            .ok_or(format!(
+                                "QuickStatementsCommand::get_statement_id batch #{} command {:?}",
+                                &self.batch_id, &self
+                            ))?
+                            .to_string();
+                        //println!("Using statement ID '{}'", &id);
+                        return Ok(Some(id));
+                    }
+                }
+                None => continue,
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn check_prop(&self, s: &str) -> Result<String, String> {
+        lazy_static! {
+            static ref RE_PROP: Regex = Regex::new(r#"^P\d+$"#)
+                .expect("QuickStatementsBot::check_prop:RE_PROP does not compile");
+        }
+        match RE_PROP.is_match(s) {
+            true => Ok(s.to_string()),
+            false => Err(format!("'{}' is not a property", &s)),
+        }
     }
 }

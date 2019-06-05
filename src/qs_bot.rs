@@ -1,6 +1,5 @@
 use crate::qs_command::QuickStatementsCommand;
 use crate::qs_config::QuickStatements;
-use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -157,14 +156,7 @@ impl QuickStatementsBot {
 
     fn add_statement(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         self.insert_last_item_into_sources_and_qualifiers(command)?;
-        let i = self.get_item_from_command(command)?.to_owned();
-
-        let property = match command.json["property"].as_str() {
-            Some(p) => p.to_owned(),
-            None => return Err("Property not found".to_string()),
-        };
-        let value = serde_json::to_string(&command.json["datavalue"]["value"])
-            .map_err(|e| format!("{:?}", e))?;
+        let q = self.get_item_from_command(command)?.id().to_string();
 
         match self.get_statement_id(command)? {
             Some(_statement_id) => {
@@ -173,40 +165,9 @@ impl QuickStatementsBot {
             }
             None => {}
         }
-
-        self.run_action(
-            json!({
-                "action":"wbcreateclaim",
-                "entity":command.get_prefixed_id(i.id()),
-                "snaktype":self.get_snak_type_for_datavalue(&command.json["datavalue"])?,
-                "property":property,
-                "value":value
-            }),
-            command,
-        ) // baserevid?
-    }
-
-    fn get_snak_type_for_datavalue(&self, dv: &Value) -> Result<String, String> {
-        if dv["value"].as_object().is_some() {
-            return Ok("value".to_string());
-        }
-        let ret = match &dv["value"].as_str() {
-            Some("novalue") => "novalue",
-            Some("somevalue") => "somevalue",
-            Some(_) => "value",
-            None => return Err(format!("Cannot determine snak type: {}", dv)),
-        };
-        Ok(ret.to_string())
-    }
-
-    fn check_prop(&self, s: &str) -> Result<String, String> {
-        lazy_static! {
-            static ref RE_PROP: Regex = Regex::new(r#"^P\d+$"#)
-                .expect("QuickStatementsBot::check_prop:RE_PROP does not compile");
-        }
-        match RE_PROP.is_match(s) {
-            true => Ok(s.to_string()),
-            false => Err(format!("'{}' is not a property", &s)),
+        match command.action_add_statement(&q) {
+            Ok(action) => self.run_action(action, command),
+            Err(e) => Err(e),
         }
     }
 
@@ -223,7 +184,7 @@ impl QuickStatementsBot {
         };
 
         let qual_prop = match command.json["qualifier"]["prop"].as_str() {
-            Some(p) => self.check_prop(p)?,
+            Some(p) => command.check_prop(p)?,
             None => return Err("Incomplete command parameters: prop".to_string()),
         };
 
@@ -238,7 +199,7 @@ impl QuickStatementsBot {
                 "claim":statement_id,
                 "property":qual_prop,
                 "value":serde_json::to_string(&qual_value).map_err(|e|format!("{:?}",e))?,
-                "snaktype":self.get_snak_type_for_datavalue(&command.json["qualifier"])?,
+                "snaktype":command.get_snak_type_for_datavalue(&command.json["qualifier"])?,
             }),
             command,
         ) // baserevid?
@@ -266,8 +227,8 @@ impl QuickStatementsBot {
                         Some(prop) => prop,
                         None => return Err("No prop value in source".to_string()),
                     };
-                    let prop = self.check_prop(prop)?;
-                    let snaktype = self.get_snak_type_for_datavalue(&source)?;
+                    let prop = command.check_prop(prop)?;
+                    let snaktype = command.get_snak_type_for_datavalue(&source)?;
                     let snaktype = snaktype.to_owned();
                     let snak = match snaktype.as_str() {
                         "value" => json!({
@@ -445,46 +406,8 @@ impl QuickStatementsBot {
         self: &mut Self,
         command: &mut QuickStatementsCommand,
     ) -> Result<Option<String>, String> {
-        let i = self.get_item_from_command(command)?.to_owned();
-
-        let property = match command.json["property"].as_str() {
-            Some(p) => p,
-            None => return Err("Property expected but not set".to_string()),
-        };
-        /*
-        let datavalue = match command.json["datavalue"].as_object() {
-            Some(dv) => dv,
-            None => return Err("Datavalue expected but not set".to_string()),
-        };
-        */
-
-        for claim in i.claims() {
-            if claim.main_snak().property() != property {
-                continue;
-            }
-            let dv = match claim.main_snak().data_value() {
-                Some(dv) => dv,
-                None => continue,
-            };
-            //println!("!!{:?} : {:?}", &dv, &datavalue);
-            match command.is_same_datavalue(&dv, &command.json["datavalue"]) {
-                Some(b) => {
-                    if b {
-                        let id = claim
-                            .id()
-                            .ok_or(format!(
-                                "QuickStatementsBot::get_statement_id batch #{} command {:?}",
-                                &self.batch_id, &command
-                            ))?
-                            .to_string();
-                        //println!("Using statement ID '{}'", &id);
-                        return Ok(Some(id));
-                    }
-                }
-                None => continue,
-            }
-        }
-        Ok(None)
+        let i = self.get_item_from_command(command)?;
+        command.get_statement_id(&i)
     }
 
     fn replace_last_item(&self, v: &mut Value) -> Result<(), String> {
@@ -536,14 +459,6 @@ impl QuickStatementsBot {
         if self.current_entity_id.is_none() {
             return Err("No (last) item available".to_string());
         }
-
-        /*
-        println!(
-            "{:?}/{:?}",
-            &self.current_entity_id, &self.current_property_id
-        );
-        println!("{}", &command.json);
-        */
 
         match command.json["what"].as_str() {
             Some("label") => self.set_label(command),
