@@ -413,7 +413,15 @@ impl QuickStatementsBot {
             .as_object()
             .ok_or("QUickStatementsBot::run_action: j is not an object".to_string())?
         {
-            params.insert(k.to_string(), v.as_str().unwrap().to_string());
+            params.insert(
+                k.to_string(),
+                v.as_str()
+                    .ok_or(format!(
+                        "QuickStatementsBot::run_action Can't as_str '{}'",
+                        &v
+                    ))?
+                    .to_string(),
+            );
         }
         self.add_summary(&mut params, command);
         // TODO baserev?
@@ -421,7 +429,12 @@ impl QuickStatementsBot {
             "QuickStatementsBot::run_action batch #{} has no mw_api",
             self.batch_id
         ))?;
-        params.insert("token".to_string(), mw_api.get_edit_token().unwrap());
+        params.insert(
+            "token".to_string(),
+            mw_api
+                .get_edit_token()
+                .map_err(|e| format!("QuickStatementsBot::run_action get_edit_token '{}'", e))?,
+        );
 
         let res = match mw_api.post_query_api_json_mut(&params) {
             Ok(x) => x,
@@ -478,7 +491,7 @@ impl QuickStatementsBot {
             ),
             wikibase::Value::Entity(v) => Some(v.id() == v2["id"].as_str()?),
             wikibase::Value::Quantity(v) => {
-                Some(*v.amount() == v2["amount"].as_str()?.parse::<f64>().unwrap())
+                Some(*v.amount() == v2["amount"].as_str()?.parse::<f64>().ok()?)
             }
             wikibase::Value::StringValue(v) => Some(
                 self.normalize_string(&v.to_string())
@@ -555,7 +568,13 @@ impl QuickStatementsBot {
             match self.is_same_datavalue(&dv, &command.json["datavalue"]) {
                 Some(b) => {
                     if b {
-                        let id = claim.id().unwrap().to_string();
+                        let id = claim
+                            .id()
+                            .ok_or(format!(
+                                "QuickStatementsBot::get_statement_id batch #{} command {:?}",
+                                &self.batch_id, &command
+                            ))?
+                            .to_string();
                         //println!("Using statement ID '{}'", &id);
                         return Ok(Some(id));
                     }
@@ -580,7 +599,9 @@ impl QuickStatementsBot {
         match &v["value"]["id"].as_str() {
             Some(id) => {
                 if &self.fix_entity_id(id.to_string()) == "LAST" {
-                    let id = self.last_entity_id.clone().unwrap();
+                    let id = self.last_entity_id.clone().expect(
+                        "QuickStatementsBot::replace_last_item: can't clone last_entity_id",
+                    );
                     v["value"]["id"] = json!(id);
                 }
                 Ok(())
@@ -693,9 +714,13 @@ impl QuickStatementsBot {
                     && command.json["item"].as_str().is_none()
                     && command.json["id"].as_str().is_some()
                 {
-                    let q = command.json["id"].as_str().unwrap();
-                    let q = self.fix_entity_id(q.to_string());
-                    self.current_entity_id = Some(q.clone());
+                    match command.json["id"].as_str() {
+                        Some(q) => {
+                            let q = self.fix_entity_id(q.to_string());
+                            self.current_entity_id = Some(q.clone());
+                        }
+                        None => {}
+                    }
                 }
             }
             None => {}
@@ -724,7 +749,7 @@ impl QuickStatementsBot {
         self.current_property_id = None;
         self.current_entity_id = None;
 
-        let result = match command.json["action"].as_str().unwrap() {
+        let result = match command.json["action"].as_str().unwrap_or("") {
             "create" => self.create_new_entity(command),
             "merge" => self.merge_entities(command),
             "add" => self.add_to_entity(command),

@@ -307,9 +307,15 @@ impl QuickStatements {
                     Some(filename) => {
                         // Using Bot
                         let mut settings = Config::default();
-                        settings.merge(config::File::with_name(filename)).unwrap();
-                        let lgname = settings.get_str("user.user").unwrap();
-                        let lgpassword = settings.get_str("user.pass").unwrap();
+                        settings
+                            .merge(config::File::with_name(filename))
+                            .expect("QuickStatements::set_bot_api_auth: Can't merge settings");
+                        let lgname = settings
+                            .get_str("user.user")
+                            .expect("QuickStatements::set_bot_api_auth: Can't get user name");
+                        let lgpassword = settings
+                            .get_str("user.pass")
+                            .expect("QuickStatements::set_bot_api_auth: Can't get user password");
                         mw_api
                             .login(lgname, lgpassword)
                             .expect("Cannot login as bot");
