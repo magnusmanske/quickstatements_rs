@@ -80,7 +80,7 @@ impl QuickStatementsCommand {
         ret
     }
 
-    pub fn action_set_sitelink(self: &mut Self, item: &wikibase::Entity) -> Result<Value, String> {
+    pub fn action_set_sitelink(&self, item: &wikibase::Entity) -> Result<Value, String> {
         let site = match &self.json["site"].as_str() {
             Some(s) => s.to_owned(),
             None => return Err("site not set".to_string()),
@@ -585,6 +585,40 @@ mod tests {
         assert_eq!(
             QuickStatementsCommand::fix_entity_id(" q12345  ".to_string()),
             "Q12345".to_string()
+        );
+    }
+
+    #[test]
+    fn test_action_remove_statement() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert_eq!(
+            c.action_remove_statement("dummy_statement_id".to_string()),
+            Ok(json!({"action":"wbremoveclaims","claim":"dummy_statement_id"}))
+        );
+    }
+
+    // TODO action_remove_sitelink
+    #[test]
+    fn test_action_set_sitelink() {
+        let c =
+            QuickStatementsCommand::new_from_json(&json!({"site":"enwiki","value":"Jimbo_Wales"}));
+        let item = wikibase::Entity::new_item(
+            "Q12345".to_string(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            None,
+            false,
+        );
+        assert_eq!(
+            c.action_set_sitelink(&item),
+            Ok(json!({
+                "action":"wbsetsitelink",
+                "id":"Q12345",
+                "linksite":"enwiki",
+                "linktitle":"Jimbo_Wales",
+            }))
         );
     }
 }
