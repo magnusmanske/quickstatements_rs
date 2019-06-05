@@ -84,7 +84,7 @@ impl QuickStatementsCommand {
                 let title_underscores = title.replace(" ", "_");
                 for sl in sitelinks {
                     if sl.site() == site && sl.title().replace(" ", "_") == title_underscores {
-                        return Ok(json!({"already_done":1}));
+                        return self.already_done();
                     }
                 }
             }
@@ -97,6 +97,10 @@ impl QuickStatementsCommand {
             "linksite":site,
             "linktitle":title,
         }))
+    }
+
+    fn already_done(&self) -> Result<Value, String> {
+        Ok(json!({"already_done":1}))
     }
 
     pub fn action_add_statement(&self, q: &str) -> Result<Value, String> {
@@ -113,6 +117,141 @@ impl QuickStatementsCommand {
             "snaktype":self.get_snak_type_for_datavalue(&self.json["datavalue"])?,
             "property":property,
             "value":value
+        }))
+    }
+
+    pub fn action_set_label(&self, item: &wikibase::Entity) -> Result<Value, String> {
+        let language = self.json["language"]
+            .as_str()
+            .ok_or("Can't find language".to_string())?;
+        let text = self.json["value"]
+            .as_str()
+            .ok_or("Can't find text (=value)".to_string())?;
+        match item.label_in_locale(language) {
+            Some(s) => {
+                if s == text {
+                    return self.already_done();
+                }
+            }
+            None => {}
+        }
+        Ok(
+            json!({"action":"wbsetlabel","id":self.get_prefixed_id(item.id()),"language":language,"value":text}),
+        )
+    }
+
+    pub fn action_set_description(&self, item: &wikibase::Entity) -> Result<Value, String> {
+        let language = self.json["language"]
+            .as_str()
+            .ok_or("Can't find language".to_string())?;
+        let text = self.json["value"]
+            .as_str()
+            .ok_or("Can't find text (=value)".to_string())?;
+        match item.description_in_locale(language) {
+            Some(s) => {
+                if s == text {
+                    return self.already_done();
+                }
+            }
+            None => {}
+        }
+        Ok(
+            json!({"action":"wbsetdescription","id":self.get_prefixed_id(item.id()),"language":language,"value":text}),
+        )
+    }
+
+    fn replace_last_item(
+        &self,
+        v: &mut Value,
+        last_entity_id: &Option<String>,
+    ) -> Result<(), String> {
+        if !v.is_object() {
+            return Ok(());
+        }
+        if last_entity_id.is_none() {
+            return Ok(());
+        }
+        match &v["type"].as_str() {
+            Some("wikibase-entityid") => {}
+            _ => return Ok(()),
+        }
+        match &v["value"]["id"].as_str() {
+            Some(id) => {
+                if &QuickStatementsCommand::fix_entity_id(id.to_string()) == "LAST" {
+                    let id = last_entity_id.clone().expect(
+                        "QuickStatementsCommand::replace_last_item: can't clone last_entity_id",
+                    );
+                    v["value"]["id"] = json!(id);
+                }
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// Replaces LAST in the command with the last item, or fails
+    /// This method is called propagateLastItem in the PHP version
+    pub fn insert_last_item_into_sources_and_qualifiers(
+        self: &mut Self,
+        last_entity_id: &Option<String>,
+    ) -> Result<(), String> {
+        if last_entity_id.is_none() {
+            return Ok(());
+        }
+        let mut json = self.json.clone();
+        self.replace_last_item(&mut json["datavalue"], last_entity_id)?;
+        self.replace_last_item(&mut json["qualifier"]["value"], &last_entity_id)?;
+        match json["sources"].as_array_mut() {
+            Some(arr) => {
+                for mut v in arr {
+                    self.replace_last_item(&mut v, last_entity_id)?
+                }
+            }
+            None => {}
+        }
+        self.json = json;
+        Ok(())
+    }
+
+    pub fn action_add_alias(&self, item: &wikibase::Entity) -> Result<Value, String> {
+        let language = self.json["language"]
+            .as_str()
+            .ok_or("Can't find language".to_string())?;
+        let text = self.json["value"]
+            .as_str()
+            .ok_or("Can't find text (=value)".to_string())?;
+        Ok(
+            json!({"action":"wbsetaliases","id":self.get_prefixed_id(item.id()),"language":language,"add":text}),
+        )
+    }
+
+    pub fn action_add_qualifier(&self, item: &wikibase::Entity) -> Result<Value, String> {
+        let statement_id = match self.get_statement_id(item)? {
+            Some(id) => id,
+            None => {
+                return Err(format!(
+                    "add_qualifier: Could not get statement ID for {:?}",
+                    self
+                ))
+            }
+        };
+
+        let qual_prop = match self.json["qualifier"]["prop"].as_str() {
+            Some(p) => self.check_prop(p)?,
+            None => return Err("Incomplete command parameters: prop".to_string()),
+        };
+
+        let qual_value = &self.json["qualifier"]["value"]["value"];
+        if !qual_value.is_string() && !qual_value.is_object() {
+            return Err("Incomplete command parameters: value.value".to_string());
+        }
+
+        Ok(json!({
+            "action":"wbsetqualifier",
+            "claim":statement_id,
+            "property":qual_prop,
+            "value":serde_json::to_string(&qual_value).map_err(|e|format!("{:?}",e))?,
+            "snaktype":self.get_snak_type_for_datavalue(&self.json["qualifier"])?,
         }))
     }
 
@@ -275,5 +414,34 @@ impl QuickStatementsCommand {
 
     pub fn fix_entity_id(id: String) -> String {
         id.trim().to_uppercase()
+    }
+
+    pub fn get_main_item(
+        &mut self,
+        mw_api: &Option<mediawiki::api::Api>,
+        entities: &mut wikibase::entity_container::EntityContainer,
+    ) -> Result<wikibase::Entity, String> {
+        let q = match self.json["item"].as_str() {
+            Some(q) => q.to_string(),
+            None => return Err("Item expected but not set".to_string()),
+        };
+        let mw_api = mw_api.to_owned().ok_or(format!(
+            "QuickStatementsBot::get_item_from_command batch #{} has no mw_api",
+            self.batch_id
+        ))?;
+        //println!("LOADING ENTITY {}", &q);
+        match entities.load_entities(&mw_api, &vec![q.to_owned()]) {
+            Ok(_) => {}
+            Err(_e) => {
+                //println!("ERROR: {:?}", &e);
+                return Err("Error while loading into entities".to_string());
+            }
+        }
+
+        let i = match entities.get_entity(q) {
+            Some(i) => i,
+            None => return Err("Failed to get item".to_string()),
+        };
+        Ok(i.clone())
     }
 }

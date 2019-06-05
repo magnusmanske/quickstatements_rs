@@ -77,60 +77,42 @@ impl QuickStatementsBot {
     }
 
     fn set_label(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
-        let i = self.get_item_from_command(command)?.to_owned();
-        let language = command.json["language"]
-            .as_str()
-            .ok_or("Can't find language".to_string())?;
-        let text = command.json["value"]
-            .as_str()
-            .ok_or("Can't find text (=value)".to_string())?;
-        match i.label_in_locale(language) {
-            Some(s) => {
-                if s == text {
-                    return Ok(());
-                }
-            }
-            None => {}
+        let item = command
+            .get_main_item(&self.mw_api, &mut self.entities)?
+            .to_owned();
+        match command.action_set_label(&item) {
+            Ok(action) => self.run_action(action, command),
+            Err(e) => Err(e),
         }
-        self.run_action(json!({"action":"wbsetlabel","id":command.get_prefixed_id(i.id()),"language":language,"value":text}),command) // baserevid?
     }
 
     fn add_alias(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
-        let i = self.get_item_from_command(command)?.to_owned();
-        let language = command.json["language"]
-            .as_str()
-            .ok_or("Can't find language".to_string())?;
-        let text = command.json["value"]
-            .as_str()
-            .ok_or("Can't find text (=value)".to_string())?;
-        self.run_action(json!({"action":"wbsetaliases","id":command.get_prefixed_id(i.id()),"language":language,"add":text}),command) // baserevid?
+        let item = command
+            .get_main_item(&self.mw_api, &mut self.entities)?
+            .to_owned();
+        match command.action_add_alias(&item) {
+            Ok(action) => self.run_action(action, command),
+            Err(e) => Err(e),
+        }
     }
 
     fn set_description(
         self: &mut Self,
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
-        let i = self.get_item_from_command(command)?.to_owned();
-        let language = command.json["language"]
-            .as_str()
-            .ok_or("Can't find language".to_string())?;
-        let text = command.json["value"]
-            .as_str()
-            .ok_or("Can't find text (=value)".to_string())?;
-        match i.description_in_locale(language) {
-            Some(s) => {
-                if s == text {
-                    return Ok(());
-                }
-            }
-            None => {}
+        let item = command
+            .get_main_item(&self.mw_api, &mut self.entities)?
+            .to_owned();
+        match command.action_set_description(&item) {
+            Ok(action) => self.run_action(action, command),
+            Err(e) => Err(e),
         }
-        self.run_action(json!({"action":"wbsetdescription","id":command.get_prefixed_id(i.id()),"language":language,"value":text}),command) // baserevid?
     }
 
     fn set_sitelink(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
-        self.insert_last_item_into_sources_and_qualifiers(command)?;
-        let i = self.get_item_from_command(command)?.to_owned();
+        let i = command
+            .get_main_item(&self.mw_api, &mut self.entities)?
+            .to_owned();
         match command.action_set_sitelink(&i) {
             Ok(action) => self.run_action(action, command),
             Err(e) => return Err(e),
@@ -138,11 +120,10 @@ impl QuickStatementsBot {
     }
 
     fn add_statement(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
-        self.insert_last_item_into_sources_and_qualifiers(command)?;
-        let item = self.get_item_from_command(command)?;
+        let item = command.get_main_item(&self.mw_api, &mut self.entities)?;
         let q = item.id().to_string();
 
-        match command.get_statement_id(item)? {
+        match command.get_statement_id(&item)? {
             Some(_statement_id) => {
                 //println!("Such a statement already exists as {}", &statement_id);
                 return Ok(());
@@ -156,44 +137,16 @@ impl QuickStatementsBot {
     }
 
     fn add_qualifier(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
-        self.insert_last_item_into_sources_and_qualifiers(command)?;
-        let item = self.get_item_from_command(command)?;
-        let statement_id = match command.get_statement_id(item)? {
-            Some(id) => id,
-            None => {
-                return Err(format!(
-                    "add_qualifier: Could not get statement ID for {:?}",
-                    command
-                ))
-            }
-        };
-
-        let qual_prop = match command.json["qualifier"]["prop"].as_str() {
-            Some(p) => command.check_prop(p)?,
-            None => return Err("Incomplete command parameters: prop".to_string()),
-        };
-
-        let qual_value = &command.json["qualifier"]["value"]["value"];
-        if !qual_value.is_string() && !qual_value.is_object() {
-            return Err("Incomplete command parameters: value.value".to_string());
+        let item = command.get_main_item(&self.mw_api, &mut self.entities)?;
+        match command.action_add_qualifier(&item) {
+            Ok(action) => self.run_action(action, command),
+            Err(e) => Err(e),
         }
-
-        self.run_action(
-            json!({
-                "action":"wbsetqualifier",
-                "claim":statement_id,
-                "property":qual_prop,
-                "value":serde_json::to_string(&qual_value).map_err(|e|format!("{:?}",e))?,
-                "snaktype":command.get_snak_type_for_datavalue(&command.json["qualifier"])?,
-            }),
-            command,
-        ) // baserevid?
     }
 
     fn add_sources(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
-        self.insert_last_item_into_sources_and_qualifiers(command)?;
-        let item = self.get_item_from_command(command)?;
-        let statement_id = match command.get_statement_id(item)? {
+        let item = command.get_main_item(&self.mw_api, &mut self.entities)?;
+        let statement_id = match command.get_statement_id(&item)? {
             Some(id) => id,
             None => {
                 return Err(format!(
@@ -360,78 +313,6 @@ impl QuickStatementsBot {
         }
     }
 
-    fn get_item_from_command(
-        &mut self,
-        command: &mut QuickStatementsCommand,
-    ) -> Result<&wikibase::Entity, String> {
-        let q = match command.json["item"].as_str() {
-            Some(q) => q.to_string(),
-            None => return Err("Item expected but not set".to_string()),
-        };
-        let mw_api = self.mw_api.to_owned().ok_or(format!(
-            "QuickStatementsBot::get_item_from_command batch #{} has no mw_api",
-            self.batch_id
-        ))?;
-        //println!("LOADING ENTITY {}", &q);
-        match self.entities.load_entities(&mw_api, &vec![q.to_owned()]) {
-            Ok(_) => {}
-            Err(_e) => {
-                //println!("ERROR: {:?}", &e);
-                return Err("Error while loading into entities".to_string());
-            }
-        }
-
-        let i = match self.entities.get_entity(q) {
-            Some(i) => i,
-            None => return Err("Failed to get item".to_string()),
-        };
-        Ok(i)
-    }
-
-    fn replace_last_item(&self, v: &mut Value) -> Result<(), String> {
-        if !v.is_object() {
-            return Ok(());
-        }
-        if self.last_entity_id.is_none() {
-            return Ok(()); //Err("Last item expected but not set".to_string());
-        }
-        match &v["type"].as_str() {
-            Some("wikibase-entityid") => {}
-            _ => return Ok(()),
-        }
-        match &v["value"]["id"].as_str() {
-            Some(id) => {
-                if &QuickStatementsCommand::fix_entity_id(id.to_string()) == "LAST" {
-                    let id = self.last_entity_id.clone().expect(
-                        "QuickStatementsBot::replace_last_item: can't clone last_entity_id",
-                    );
-                    v["value"]["id"] = json!(id);
-                }
-                Ok(())
-            }
-            None => Ok(()),
-        }
-    }
-
-    /// Replaces LAST in the command with the last item, or fails
-    /// This method is called propagateLastItem in the PHP version
-    fn insert_last_item_into_sources_and_qualifiers(
-        self: &mut Self,
-        command: &mut QuickStatementsCommand,
-    ) -> Result<(), String> {
-        self.replace_last_item(&mut command.json["datavalue"])?;
-        self.replace_last_item(&mut command.json["qualifier"]["value"])?;
-        match command.json["sources"].as_array_mut() {
-            Some(arr) => {
-                for mut v in arr {
-                    self.replace_last_item(&mut v)?
-                }
-            }
-            None => {}
-        }
-        Ok(())
-    }
-
     fn add_to_entity(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         self.load_command_items(command);
         if self.current_entity_id.is_none() {
@@ -455,12 +336,11 @@ impl QuickStatementsBot {
         command: &mut QuickStatementsCommand,
     ) -> Result<Value, String> {
         self.load_command_items(command);
-        self.insert_last_item_into_sources_and_qualifiers(command)?;
         if self.current_entity_id.is_none() {
             return Err("No (last) item available".to_string());
         }
 
-        let item = self.get_item_from_command(command)?;
+        let item = command.get_main_item(&self.mw_api, &mut self.entities)?;
         match command.json["what"].as_str() {
             Some("statement") => {
                 let statement_id = match command.get_statement_id(&item)? {
@@ -516,6 +396,8 @@ impl QuickStatementsBot {
         self.set_command_status("RUN", None, command)?;
         self.current_property_id = None;
         self.current_entity_id = None;
+
+        command.insert_last_item_into_sources_and_qualifiers(&self.last_entity_id)?;
 
         let action = command.json["action"].as_str().unwrap_or("");
 
