@@ -22,8 +22,16 @@ fn run_bot(config_arc: Arc<Mutex<QuickStatements>>) {
     thread::spawn(move || {
         println!("SPAWN: Starting batch {}", &batch_id);
         let mut bot = QuickStatementsBot::new(config_arc.clone(), batch_id);
-        bot.start();
-        while bot.run() {}
+        match bot.start() {
+            Ok(_) => while bot.run() {},
+            Err(error) => {
+                println!(
+                    "Error when starting bot for batch #{}: '{}'",
+                    &batch_id, &error
+                );
+                // TODO mark this as problematic so it doesn't get run again next time?
+            }
+        }
     });
 }
 

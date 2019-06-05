@@ -30,26 +30,27 @@ impl QuickStatementsBot {
         }
     }
 
-    pub fn start(self: &mut Self) {
-        let mut config = self.config.lock().unwrap();
-        config.restart_batch(self.batch_id).unwrap();
+    pub fn start(self: &mut Self) -> Result<(), String> {
+        let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
+        config
+            .restart_batch(self.batch_id)
+            .ok_or("Can't (re)start batch".to_string())?;
         self.last_entity_id = config.get_last_item_from_batch(self.batch_id);
         match config.get_api_url(self.batch_id) {
             Some(url) => {
-                let mut mw_api = mediawiki::api::Api::new(url).unwrap();
+                let mut mw_api = mediawiki::api::Api::new(url).map_err(|e| format!("{:?}", e))?;
                 mw_api.set_edit_delay(Some(1000)); // 1000ms=1sec
                 config.set_bot_api_auth(&mut mw_api, self.batch_id);
                 self.mw_api = Some(mw_api);
             }
-            None => {
-                panic!("No site/API info available");
-            }
+            None => return Err("No site/API info available".to_string()),
         }
 
         config.set_batch_running(self.batch_id);
+        Ok(())
     }
 
-    pub fn run(self: &mut Self) -> bool {
+    pub fn run(self: &mut Self) -> Result<bool, String> {
         //println!("Batch #{}: doing stuff", self.batch_id);
         match self.get_next_command() {
             Some(mut command) => {
@@ -57,12 +58,14 @@ impl QuickStatementsBot {
                     Ok(_) => {}
                     Err(_message) => {}//self.set_command_status("ERROR", Some(&message), &mut command),
                 }
-                true
+                Ok(true)
             }
             None => {
-                let mut config = self.config.lock().unwrap();
-                config.set_batch_finished(self.batch_id).unwrap();
-                false
+                let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
+                config
+                    .set_batch_finished(self.batch_id)
+                    .ok_or("Can't set batch as finished".to_string())?;
+                Ok(false)
             }
         }
     }
