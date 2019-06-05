@@ -139,9 +139,10 @@ impl QuickStatementsBot {
 
     fn add_statement(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         self.insert_last_item_into_sources_and_qualifiers(command)?;
-        let q = self.get_item_from_command(command)?.id().to_string();
+        let item = self.get_item_from_command(command)?;
+        let q = item.id().to_string();
 
-        match self.get_statement_id(command)? {
+        match command.get_statement_id(item)? {
             Some(_statement_id) => {
                 //println!("Such a statement already exists as {}", &statement_id);
                 return Ok(());
@@ -156,7 +157,8 @@ impl QuickStatementsBot {
 
     fn add_qualifier(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         self.insert_last_item_into_sources_and_qualifiers(command)?;
-        let statement_id = match self.get_statement_id(command)? {
+        let item = self.get_item_from_command(command)?;
+        let statement_id = match command.get_statement_id(item)? {
             Some(id) => id,
             None => {
                 return Err(format!(
@@ -190,7 +192,8 @@ impl QuickStatementsBot {
 
     fn add_sources(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         self.insert_last_item_into_sources_and_qualifiers(command)?;
-        let statement_id = match self.get_statement_id(command)? {
+        let item = self.get_item_from_command(command)?;
+        let statement_id = match command.get_statement_id(item)? {
             Some(id) => id,
             None => {
                 return Err(format!(
@@ -385,14 +388,6 @@ impl QuickStatementsBot {
         Ok(i)
     }
 
-    fn get_statement_id(
-        self: &mut Self,
-        command: &mut QuickStatementsCommand,
-    ) -> Result<Option<String>, String> {
-        let i = self.get_item_from_command(command)?;
-        command.get_statement_id(&i)
-    }
-
     fn replace_last_item(&self, v: &mut Value) -> Result<(), String> {
         if !v.is_object() {
             return Ok(());
@@ -406,7 +401,7 @@ impl QuickStatementsBot {
         }
         match &v["value"]["id"].as_str() {
             Some(id) => {
-                if &self.fix_entity_id(id.to_string()) == "LAST" {
+                if &QuickStatementsCommand::fix_entity_id(id.to_string()) == "LAST" {
                     let id = self.last_entity_id.clone().expect(
                         "QuickStatementsBot::replace_last_item: can't clone last_entity_id",
                     );
@@ -455,26 +450,6 @@ impl QuickStatementsBot {
         }
     }
 
-    fn remove_statement(
-        self: &mut Self,
-        command: &mut QuickStatementsCommand,
-    ) -> Result<Value, String> {
-        let statement_id = match self.get_statement_id(command)? {
-            Some(id) => id,
-            None => return Err("remove_statement: Statement not found".to_string()),
-        };
-        command.action_remove_statement(statement_id)
-    }
-
-    fn remove_sitelink(
-        self: &mut Self,
-        command: &mut QuickStatementsCommand,
-    ) -> Result<Value, String> {
-        self.insert_last_item_into_sources_and_qualifiers(command)?;
-        let i = self.get_item_from_command(command)?.to_owned();
-        command.action_remove_sitelink(&i)
-    }
-
     fn remove_from_entity(
         self: &mut Self,
         command: &mut QuickStatementsCommand,
@@ -485,24 +460,24 @@ impl QuickStatementsBot {
             return Err("No (last) item available".to_string());
         }
 
+        let item = self.get_item_from_command(command)?;
         match command.json["what"].as_str() {
-            Some("statement") => self.remove_statement(command),
-            Some("sitelink") => self.remove_sitelink(command),
+            Some("statement") => {
+                let statement_id = match command.get_statement_id(&item)? {
+                    Some(id) => id,
+                    None => return Err("remove_statement: Statement not found".to_string()),
+                };
+                command.action_remove_statement(statement_id)
+            }
+            Some("sitelink") => command.action_remove_sitelink(&item),
             other => return Err(format!("Bad 'what': '{:?}'", other)),
-        }
-    }
-
-    fn get_entity_id_option(&self, v: &Value) -> Option<String> {
-        match v.as_str() {
-            Some(s) => Some(self.fix_entity_id(s.to_string())),
-            None => None,
         }
     }
 
     fn load_command_items(self: &mut Self, command: &mut QuickStatementsCommand) {
         // Reset
-        self.current_property_id = self.get_entity_id_option(&command.json["property"]);
-        self.current_entity_id = self.get_entity_id_option(&command.json["item"]);
+        self.current_property_id = command.get_entity_id_option(&command.json["property"]);
+        self.current_entity_id = command.get_entity_id_option(&command.json["item"]);
 
         // Special case
         match command.json["what"].as_str() {
@@ -513,7 +488,7 @@ impl QuickStatementsBot {
                 {
                     match command.json["id"].as_str() {
                         Some(q) => {
-                            let q = self.fix_entity_id(q.to_string());
+                            let q = QuickStatementsCommand::fix_entity_id(q.to_string());
                             self.current_entity_id = Some(q.clone());
                         }
                         None => {}
@@ -532,10 +507,6 @@ impl QuickStatementsBot {
         }
 
         //println!("Q:{:?} / P:{:?}",&self.current_entity_id, &self.current_property_id);
-    }
-
-    fn fix_entity_id(&self, id: String) -> String {
-        id.trim().to_uppercase()
     }
 
     fn execute_command(

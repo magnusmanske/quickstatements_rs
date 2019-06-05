@@ -265,4 +265,15 @@ impl QuickStatementsCommand {
             false => Err(format!("'{}' is not a property", &s)),
         }
     }
+
+    pub fn get_entity_id_option(&self, v: &Value) -> Option<String> {
+        match v.as_str() {
+            Some(s) => Some(QuickStatementsCommand::fix_entity_id(s.to_string())),
+            None => None,
+        }
+    }
+
+    pub fn fix_entity_id(id: String) -> String {
+        id.trim().to_uppercase()
+    }
 }
