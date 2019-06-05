@@ -103,7 +103,7 @@ impl QuickStatementsCommand {
         Ok(json!({"already_done":1}))
     }
 
-    pub fn action_add_statement(&self, item: &wikibase::Entity) -> Result<Value, String> {
+    fn action_add_statement(&self, item: &wikibase::Entity) -> Result<Value, String> {
         match self.get_statement_id(item)? {
             Some(_statement_id) => {
                 //println!("Such a statement already exists as {}", &statement_id);
@@ -128,7 +128,7 @@ impl QuickStatementsCommand {
         }))
     }
 
-    pub fn action_set_label(&self, item: &wikibase::Entity) -> Result<Value, String> {
+    fn action_set_label(&self, item: &wikibase::Entity) -> Result<Value, String> {
         let language = self.json["language"]
             .as_str()
             .ok_or("Can't find language".to_string())?;
@@ -148,7 +148,7 @@ impl QuickStatementsCommand {
         )
     }
 
-    pub fn action_set_description(&self, item: &wikibase::Entity) -> Result<Value, String> {
+    fn action_set_description(&self, item: &wikibase::Entity) -> Result<Value, String> {
         let language = self.json["language"]
             .as_str()
             .ok_or("Can't find language".to_string())?;
@@ -221,7 +221,7 @@ impl QuickStatementsCommand {
         Ok(())
     }
 
-    pub fn action_add_alias(&self, item: &wikibase::Entity) -> Result<Value, String> {
+    fn action_add_alias(&self, item: &wikibase::Entity) -> Result<Value, String> {
         let language = self.json["language"]
             .as_str()
             .ok_or("Can't find language".to_string())?;
@@ -233,7 +233,7 @@ impl QuickStatementsCommand {
         )
     }
 
-    pub fn action_add_qualifier(&self, item: &wikibase::Entity) -> Result<Value, String> {
+    fn action_add_qualifier(&self, item: &wikibase::Entity) -> Result<Value, String> {
         let statement_id = match self.get_statement_id(item)? {
             Some(id) => id,
             None => {
@@ -263,7 +263,7 @@ impl QuickStatementsCommand {
         }))
     }
 
-    pub fn action_add_sources(&self, item: &wikibase::Entity) -> Result<Value, String> {
+    fn action_add_sources(&self, item: &wikibase::Entity) -> Result<Value, String> {
         let statement_id = match self.get_statement_id(&item)? {
             Some(id) => id,
             None => {
@@ -320,7 +320,7 @@ impl QuickStatementsCommand {
         }))
     }
 
-    pub fn action_create_entity(&self) -> Result<Value, String> {
+    fn action_create_entity(&self) -> Result<Value, String> {
         let data = match &self.json["data"].as_object() {
             Some(_) => match serde_json::to_string(&self.json["data"]) {
                 Ok(s) => s,
@@ -339,7 +339,7 @@ impl QuickStatementsCommand {
         }))
     }
 
-    pub fn action_merge_entities(&self) -> Result<Value, String> {
+    fn action_merge_entities(&self) -> Result<Value, String> {
         self.is_valid_command()?;
         let item1 = match self.json["item1"].as_str() {
             Some(t) => t,
@@ -358,10 +358,7 @@ impl QuickStatementsCommand {
         }))
     }
 
-    pub fn add_to_entity(
-        self: &mut Self,
-        item: &Option<wikibase::Entity>,
-    ) -> Result<Value, String> {
+    fn add_to_entity(self: &mut Self, item: &Option<wikibase::Entity>) -> Result<Value, String> {
         let item = item.to_owned().unwrap();
         match self.json["what"].as_str() {
             Some("label") => self.action_set_label(&item),
@@ -375,7 +372,7 @@ impl QuickStatementsCommand {
         }
     }
 
-    pub fn remove_from_entity(
+    fn remove_from_entity(
         self: &mut Self,
         item: &Option<wikibase::Entity>,
     ) -> Result<Value, String> {
@@ -417,7 +414,7 @@ impl QuickStatementsCommand {
         action
     }
 
-    pub fn is_same_datavalue(&self, dv1: &wikibase::DataValue, dv2: &Value) -> Option<bool> {
+    fn is_same_datavalue(&self, dv1: &wikibase::DataValue, dv2: &Value) -> Option<bool> {
         lazy_static! {
             static ref RE_TIME: Regex = Regex::new("^(?P<a>[+-]{0,1})0*(?P<b>.+)$")
                 .expect("QuickStatementsCommand::is_same_datavalue:RE_TIME does not compile");
@@ -461,11 +458,11 @@ impl QuickStatementsCommand {
         s.to_string()
     }
 
-    pub fn get_prefixed_id(&self, s: &str) -> String {
+    fn get_prefixed_id(&self, s: &str) -> String {
         s.to_string() // TODO necessary?
     }
 
-    pub fn get_snak_type_for_datavalue(&self, dv: &Value) -> Result<String, String> {
+    fn get_snak_type_for_datavalue(&self, dv: &Value) -> Result<String, String> {
         if dv["value"].as_object().is_some() {
             return Ok("value".to_string());
         }
@@ -478,7 +475,7 @@ impl QuickStatementsCommand {
         Ok(ret.to_string())
     }
 
-    pub fn get_statement_id(&self, item: &wikibase::Entity) -> Result<Option<String>, String> {
+    fn get_statement_id(&self, item: &wikibase::Entity) -> Result<Option<String>, String> {
         let property = match self.json["property"].as_str() {
             Some(p) => p,
             None => {
@@ -518,7 +515,7 @@ impl QuickStatementsCommand {
         Ok(None)
     }
 
-    pub fn check_prop(&self, s: &str) -> Result<String, String> {
+    fn check_prop(&self, s: &str) -> Result<String, String> {
         lazy_static! {
             static ref RE_PROP: Regex = Regex::new(r#"^P\d+$"#)
                 .expect("QuickStatementsBot::check_prop:RE_PROP does not compile");
