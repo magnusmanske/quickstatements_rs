@@ -76,79 +76,24 @@ impl QuickStatementsBot {
         config.get_next_command(self.batch_id)
     }
 
-    fn set_label(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<Value, String> {
-        let item = command
-            .get_main_item(&self.mw_api, &mut self.entities)?
-            .to_owned();
-        command.action_set_label(&item)
-    }
-
-    fn add_alias(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<Value, String> {
-        let item = command
-            .get_main_item(&self.mw_api, &mut self.entities)?
-            .to_owned();
-        command.action_add_alias(&item)
-    }
-
-    fn set_description(
+    fn add_to_entity(
         self: &mut Self,
         command: &mut QuickStatementsCommand,
     ) -> Result<Value, String> {
-        let item = command
-            .get_main_item(&self.mw_api, &mut self.entities)?
-            .to_owned();
-        command.action_set_description(&item)
-    }
-
-    fn set_sitelink(
-        self: &mut Self,
-        command: &mut QuickStatementsCommand,
-    ) -> Result<Value, String> {
-        let item = command
-            .get_main_item(&self.mw_api, &mut self.entities)?
-            .to_owned();
-        command.action_set_sitelink(&item)
-    }
-
-    fn add_statement(
-        self: &mut Self,
-        command: &mut QuickStatementsCommand,
-    ) -> Result<Value, String> {
-        let item = command.get_main_item(&self.mw_api, &mut self.entities)?;
-        command.action_add_statement(&item)
-    }
-
-    fn add_qualifier(
-        self: &mut Self,
-        command: &mut QuickStatementsCommand,
-    ) -> Result<Value, String> {
-        let item = command.get_main_item(&self.mw_api, &mut self.entities)?;
-        command.action_add_qualifier(&item)
-    }
-
-    fn add_sources(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<Value, String> {
-        let item = command.get_main_item(&self.mw_api, &mut self.entities)?;
-        command.action_add_sources(&item)
-    }
-
-    fn add_to_entity(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         self.load_command_items(command);
         if self.current_entity_id.is_none() {
             return Err("No (last) item available".to_string());
         }
-        let action = match command.json["what"].as_str() {
-            Some("label") => self.set_label(command),
-            Some("alias") => self.add_alias(command),
-            Some("description") => self.set_description(command),
-            Some("sitelink") => self.set_sitelink(command),
-            Some("statement") => self.add_statement(command),
-            Some("qualifier") => self.add_qualifier(command),
-            Some("sources") => self.add_sources(command),
-            other => return Err(format!("Bad 'what': '{:?}'", other)),
-        };
-        match action {
-            Ok(action) => self.run_action(action, command),
-            Err(e) => Err(e),
+        let item = command.get_main_item(&self.mw_api, &mut self.entities)?;
+        match command.json["what"].as_str() {
+            Some("label") => command.action_set_label(&item),
+            Some("alias") => command.action_add_alias(&item),
+            Some("description") => command.action_set_description(&item),
+            Some("sitelink") => command.action_set_sitelink(&item),
+            Some("statement") => command.action_add_statement(&item),
+            Some("qualifier") => command.action_add_qualifier(&item),
+            Some("sources") => command.action_add_sources(&item),
+            other => Err(format!("Bad 'what': '{:?}'", other)),
         }
     }
 
@@ -327,28 +272,15 @@ impl QuickStatementsBot {
 
         command.insert_last_item_into_sources_and_qualifiers(&self.last_entity_id)?;
 
-        let action = command.json["action"].as_str().unwrap_or("");
-
-        match action {
-            "add" => {
-                let result = self.add_to_entity(command);
-                let ret = match &result {
-                    Err(message) => self.set_command_status("ERROR", Some(message), command),
-                    _ => self.set_command_status("DONE", None, command),
-                };
-                return ret;
-            }
-            _ => {}
-        }
-
-        let action_to_perform = match action {
+        let action = match command.json["action"].as_str().unwrap_or("") {
+            "add" => self.add_to_entity(command),
             "create" => command.action_create_entity(),
             "merge" => command.action_merge_entities(),
             "remove" => self.remove_from_entity(command),
             other => Err(format!("Unknown action '{}'", &other)),
         };
 
-        match action_to_perform {
+        match action {
             Ok(action) => match self.run_action(action, command) {
                 Ok(_) => self.set_command_status("DONE", None, command),
                 Err(e) => {
