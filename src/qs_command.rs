@@ -376,7 +376,9 @@ impl QuickStatementsCommand {
     }
 
     fn add_to_entity(self: &mut Self, item: &Option<wikibase::Entity>) -> Result<Value, String> {
-        let item = item.to_owned().unwrap();
+        let item = item
+            .to_owned()
+            .expect("QuickStatementsCommand::add_to_entity: item is None");
         match self.json["what"].as_str() {
             Some("label") => self.action_set_label(&item),
             Some("alias") => self.action_add_alias(&item),
@@ -393,7 +395,9 @@ impl QuickStatementsCommand {
         self: &mut Self,
         item: &Option<wikibase::Entity>,
     ) -> Result<Value, String> {
-        let item = item.to_owned().unwrap();
+        let item = item
+            .to_owned()
+            .expect("QuickStatementsCommand::remove_from_entity: item is None");
         match self.json["what"].as_str() {
             Some("statement") => {
                 let statement_id = match self.get_statement_id(&item)? {
@@ -422,10 +426,10 @@ impl QuickStatementsCommand {
     ) -> Result<Value, String> {
         let command_action = self.get_action()?;
         let action = match command_action.as_str() {
-            "add" => self.add_to_entity(main_item), // unwrap() OK, prior knowledge
+            "add" => self.add_to_entity(main_item),
             "create" => self.action_create_entity(),
             "merge" => self.action_merge_entities(),
-            "remove" => self.remove_from_entity(main_item), // unwrap() OK, prior knowledge
+            "remove" => self.remove_from_entity(main_item),
             other => Err(format!("Unknown action '{}'", &other)),
         };
         action
@@ -448,31 +452,20 @@ impl QuickStatementsCommand {
                     && *v.latitude() == v2["latitude"].as_f64()?
                     && *v.longitude() == v2["longitude"].as_f64()?,
             ),
-            wikibase::Value::MonoLingual(v) => Some(
-                v.language() == v2["language"].as_str()?
-                    && self.normalize_string(&v.text().to_string())
-                        == self.normalize_string(&v2["text"].as_str()?.to_string()),
-            ),
+            wikibase::Value::MonoLingual(v) => {
+                Some(v.language() == v2["language"].as_str()? && v.text() == v2["text"].as_str()?)
+            }
             wikibase::Value::Entity(v) => Some(v.id() == v2["id"].as_str()?),
             wikibase::Value::Quantity(v) => {
                 Some(*v.amount() == v2["amount"].as_str()?.parse::<f64>().ok()?)
             }
-            wikibase::Value::StringValue(v) => Some(
-                self.normalize_string(&v.to_string())
-                    == self.normalize_string(&v2.as_str()?.to_string()),
-            ),
+            wikibase::Value::StringValue(v) => Some(v.to_string() == v2.as_str()?),
             wikibase::Value::Time(v) => {
                 let t1 = RE_TIME.replace_all(v.time(), "$a$b");
                 let t2 = RE_TIME.replace_all(v2["time"].as_str()?, "$a$b");
                 Some(v.calendarmodel() == v2["calendarmodel"].as_str()? && t1 == t2)
             }
         }
-    }
-
-    fn normalize_string(&self, s: &String) -> String {
-        // TODO necessary?
-        // In PHP: normalizer_normalize (using Form D)
-        s.to_string()
     }
 
     fn get_prefixed_id(&self, s: &str) -> String {
@@ -585,5 +578,13 @@ mod tests {
             Some("Q12345".to_string())
         );
         assert_eq!(c.get_entity_id_option(&json!({})), None);
+    }
+
+    #[test]
+    fn test_fix_entity_id() {
+        assert_eq!(
+            QuickStatementsCommand::fix_entity_id(" q12345  ".to_string()),
+            "Q12345".to_string()
+        );
     }
 }
