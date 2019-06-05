@@ -726,5 +726,22 @@ mod tests {
         );
     }
 
-    // TODO action_add_statement
+    #[test]
+    fn test_action_create_entity() {
+        let c = QuickStatementsCommand::new_from_json(&json!({"type":"item"}));
+        assert_eq!(
+            c.action_create_entity(),
+            Ok(json!({"action":"wbeditentity","new":"item","data":"{}"}))
+        );
+        let c = QuickStatementsCommand::new_from_json(&json!({"type":"item","data":{"k":"v"}}));
+        assert_eq!(
+            c.action_create_entity(),
+            Ok(json!({"action":"wbeditentity","new":"item","data":"{\"k\":\"v\"}"}))
+        );
+    }
+
+    // TODO
+    // action_add_statement
+    // action_add_qualifier
+    // action_add_sources
 }
