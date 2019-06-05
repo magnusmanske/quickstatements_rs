@@ -3,7 +3,7 @@ use chrono::prelude::*;
 use config::*;
 use mysql as my;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 
 #[derive(Debug, Clone)]
@@ -11,6 +11,8 @@ pub struct QuickStatements {
     params: Value,
     pool: Option<my::Pool>,
     running_batch_ids: HashSet<i64>,
+    user_counter: HashMap<i64, i64>,
+    max_batches_per_user: i64,
 }
 
 impl QuickStatements {
@@ -32,6 +34,8 @@ impl QuickStatements {
             params: params,
             pool: None,
             running_batch_ids: HashSet::new(),
+            user_counter: HashMap::new(),
+            max_batches_per_user: 2,
         };
         ret.create_mysql_pool();
         Some(ret)
@@ -98,7 +102,6 @@ impl QuickStatements {
     }
 
     fn create_mysql_pool(&mut self) {
-        // ssh magnus@tools-login.wmflabs.org -L 3307:tools-db:3306 -N
         if !self.params["mysql"].is_object() {
             return;
         }
@@ -144,7 +147,7 @@ impl QuickStatements {
         None
     }
 
-    pub fn get_next_batch(&self) -> Option<i64> {
+    pub fn get_next_batch(&self) -> Option<(i64, i64)> {
         let pool = match &self.pool {
             Some(pool) => pool,
             None => return None,
@@ -157,6 +160,27 @@ impl QuickStatements {
         //sql += " AND id=13445"; // TESTING: Specific batch only
         //sql += " AND user=4420"; // TESTING: [[User:Magnus Manske]] only
         sql += r#" AND NOT EXISTS (SELECT * FROM command WHERE batch_id=batch.id AND json rlike '"item":"L\\d')"# ; // TESTING: Available batches that do NOT use lexemes
+
+        // Find users that are already running the maximum of simultaneous jobs
+        // This is to prevent MW API "too many edits" errors
+        // Also, it's more fair
+        let bad_users: Vec<String> = self
+            .user_counter
+            .iter()
+            .filter_map(|(user_id, cnt)| {
+                if *cnt >= self.max_batches_per_user {
+                    Some(user_id.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !bad_users.is_empty() {
+            sql += " AND user NOT IN (";
+            sql += &bad_users.join(",");
+            sql += ")";
+        }
+
         sql += " ORDER BY `ts_last_change`";
         //let sql = r#"SELECT * FROM batch WHERE `status` IN ('TEST') AND NOT EXISTS (SELECT * FROM command WHERE batch_id=batch.id AND json rlike '"item":"L\\d') ORDER BY `ts_last_change`"# ; // 'INIT','RUN'
         for row in pool.prep_exec(sql, ()).ok()? {
@@ -168,19 +192,43 @@ impl QuickStatements {
             if self.running_batch_ids.contains(&id) {
                 continue;
             }
-            return Some(id);
+            let user = match &row["user"] {
+                my::Value::Int(x) => *x as i64,
+                _ => continue,
+            };
+            return Some((id, user));
         }
         None
     }
 
-    pub fn set_batch_running(&mut self, batch_id: i64) {
-        println!("set_batch_running: Starting batch #{}", batch_id);
+    pub fn set_batch_running(&mut self, batch_id: i64, user_id: i64) {
+        println!(
+            "set_batch_running: Starting batch #{} for user {}",
+            batch_id, user_id
+        );
+
+        // Increase user batch counter
         self.running_batch_ids.insert(batch_id);
+        let user_counter = match self.user_counter.get(&user_id) {
+            Some(cnt) => *cnt,
+            None => 0,
+        };
+        self.user_counter.insert(user_id, user_counter + 1);
+
         println!("Currently {} bots running", self.number_of_bots_running());
     }
 
-    pub fn set_batch_finished(&mut self, batch_id: i64) -> Option<()> {
+    pub fn set_batch_finished(&mut self, batch_id: i64, user_id: i64) -> Option<()> {
         println!("set_batch_finished: Batch #{}", batch_id);
+
+        // Decrease user batch counter
+        self.running_batch_ids.insert(batch_id);
+        let user_counter = match self.user_counter.get(&user_id) {
+            Some(cnt) => *cnt,
+            None => 0,
+        };
+        self.user_counter.insert(user_id, user_counter - 1);
+
         let pool = match &self.pool {
             Some(pool) => pool,
             None => return None,

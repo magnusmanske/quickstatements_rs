@@ -9,6 +9,7 @@ use wikibase;
 #[derive(Debug, Clone)]
 pub struct QuickStatementsBot {
     batch_id: i64,
+    user_id: i64,
     config: Arc<Mutex<QuickStatements>>,
     mw_api: Option<mediawiki::api::Api>,
     entities: wikibase::entity_container::EntityContainer,
@@ -18,9 +19,10 @@ pub struct QuickStatementsBot {
 }
 
 impl QuickStatementsBot {
-    pub fn new(config: Arc<Mutex<QuickStatements>>, batch_id: i64) -> Self {
+    pub fn new(config: Arc<Mutex<QuickStatements>>, batch_id: i64, user_id: i64) -> Self {
         Self {
             batch_id: batch_id,
+            user_id: user_id,
             config: config.clone(),
             mw_api: None,
             entities: wikibase::entity_container::EntityContainer::new(),
@@ -46,7 +48,7 @@ impl QuickStatementsBot {
             None => return Err("No site/API info available".to_string()),
         }
 
-        config.set_batch_running(self.batch_id);
+        config.set_batch_running(self.batch_id, self.user_id);
         Ok(())
     }
 
@@ -63,7 +65,7 @@ impl QuickStatementsBot {
             None => {
                 let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
                 config
-                    .set_batch_finished(self.batch_id)
+                    .set_batch_finished(self.batch_id, self.user_id)
                     .ok_or("Can't set batch as finished".to_string())?;
                 Ok(false)
             }

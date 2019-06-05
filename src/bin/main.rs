@@ -11,17 +11,20 @@ use std::time::Duration;
 
 fn run_bot(config_arc: Arc<Mutex<QuickStatements>>) {
     //println!("BOT!");
-    let batch_id;
+    let batch_id: i64;
+    let user_id: i64;
     {
         let config = config_arc.lock().unwrap();
-        batch_id = match config.get_next_batch() {
-            Some(id) => id as i64,
+        let tuple = match config.get_next_batch() {
+            Some(n) => n,
             None => return, // Nothing to do
         };
+        batch_id = tuple.0;
+        user_id = tuple.1;
     }
     thread::spawn(move || {
-        println!("SPAWN: Starting batch {}", &batch_id);
-        let mut bot = QuickStatementsBot::new(config_arc.clone(), batch_id);
+        println!("SPAWN: Starting batch {} for user {}", &batch_id, &user_id);
+        let mut bot = QuickStatementsBot::new(config_arc.clone(), batch_id, user_id);
         match bot.start() {
             Ok(_) => while bot.run().unwrap_or(false) {},
             Err(error) => {
