@@ -552,6 +552,18 @@ impl QuickStatementsCommand {
 mod tests {
     use super::*;
 
+    fn empty_test_item() -> wikibase::Entity {
+        wikibase::Entity::new_item(
+            "Q12345".to_string(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            None,
+            false,
+        )
+    }
+
     #[test]
     fn test_rowvalue_as_i64() {
         assert_eq!(
@@ -607,17 +619,8 @@ mod tests {
     fn test_action_set_sitelink() {
         let c =
             QuickStatementsCommand::new_from_json(&json!({"site":"enwiki","value":"Jimbo_Wales"}));
-        let item = wikibase::Entity::new_item(
-            "Q12345".to_string(),
-            vec![],
-            vec![],
-            vec![],
-            vec![],
-            None,
-            false,
-        );
         assert_eq!(
-            c.action_set_sitelink(&item),
+            c.action_set_sitelink(&empty_test_item()),
             Ok(json!({
                 "action":"wbsetsitelink",
                 "id":"Q12345",
@@ -630,19 +633,8 @@ mod tests {
     #[test]
     fn test_action_remove_sitelink() {
         let mut c = QuickStatementsCommand::new_from_json(&json!({"site":"enwiki"}));
-        let item = wikibase::Entity::new_item(
-            "Q12345".to_string(),
-            vec![],
-            vec![],
-            vec![],
-            vec![],
-            Some(vec![wikibase::SiteLink::new(
-                "enwiki",
-                "Jimbo_Wales",
-                vec![],
-            )]),
-            false,
-        );
+        let mut item = empty_test_item();
+        item.set_sitelink(wikibase::SiteLink::new("enwiki", "Jimbo_Wales", vec![]));
         assert_eq!(
             c.action_remove_sitelink(&item),
             Ok(json!({
@@ -658,17 +650,8 @@ mod tests {
     fn test_action_set_label() {
         let c =
             QuickStatementsCommand::new_from_json(&json!({"language":"it","value":"Dummy text"}));
-        let item = wikibase::Entity::new_item(
-            "Q12345".to_string(),
-            vec![],
-            vec![],
-            vec![],
-            vec![],
-            None,
-            false,
-        );
         assert_eq!(
-            c.action_set_label(&item),
+            c.action_set_label(&empty_test_item()),
             Ok(json!({
                 "action":"wbsetlabel",
                 "id":"Q12345",
@@ -682,17 +665,8 @@ mod tests {
     fn test_action_set_description() {
         let c =
             QuickStatementsCommand::new_from_json(&json!({"language":"it","value":"Dummy text"}));
-        let item = wikibase::Entity::new_item(
-            "Q12345".to_string(),
-            vec![],
-            vec![],
-            vec![],
-            vec![],
-            None,
-            false,
-        );
         assert_eq!(
-            c.action_set_description(&item),
+            c.action_set_description(&empty_test_item()),
             Ok(json!({
                 "action":"wbsetdescription",
                 "id":"Q12345",
@@ -706,17 +680,8 @@ mod tests {
     fn test_action_add_alias() {
         let c =
             QuickStatementsCommand::new_from_json(&json!({"language":"it","value":"Dummy text"}));
-        let item = wikibase::Entity::new_item(
-            "Q12345".to_string(),
-            vec![],
-            vec![],
-            vec![],
-            vec![],
-            None,
-            false,
-        );
         assert_eq!(
-            c.action_add_alias(&item),
+            c.action_add_alias(&empty_test_item()),
             Ok(json!({
                 "action":"wbsetaliases",
                 "id":"Q12345",
