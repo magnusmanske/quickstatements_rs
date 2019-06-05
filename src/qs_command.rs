@@ -690,12 +690,16 @@ mod tests {
     }
 
     #[test]
-    fn action_create_entity() {
+    fn action_create_entity_without_data() {
         let c = QuickStatementsCommand::new_from_json(&json!({"type":"item"}));
         assert_eq!(
             c.action_create_entity(),
             Ok(json!({"action":"wbeditentity","new":"item","data":"{}"}))
         );
+    }
+
+    #[test]
+    fn action_create_entity_with_data() {
         let c = QuickStatementsCommand::new_from_json(&json!({"type":"item","data":{"k":"v"}}));
         assert_eq!(
             c.action_create_entity(),
@@ -717,6 +721,88 @@ mod tests {
         );
     }
 
+    #[test]
+    fn is_same_datavalue_coordinates() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        let globe = "dummy_globe".to_string();
+        assert!(c
+            .is_same_datavalue(
+                &wikibase::DataValue::new(
+                    wikibase::DataValueType::GlobeCoordinate,
+                    wikibase::Value::Coordinate(wikibase::Coordinate::new(
+                        None,
+                        globe.clone(),
+                        0.123,
+                        -0.456,
+                        None
+                    ))
+                ),
+                &json!({"type":"globecoordinate","value":{"globe":globe,"latitude":0.123,"longitude":-0.456}})
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn is_same_datavalue_monolingualtext() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert!(c
+            .is_same_datavalue(
+                &wikibase::DataValue::new(
+                    wikibase::DataValueType::MonoLingualText,
+                    wikibase::Value::MonoLingual(wikibase::MonoLingualText::new(
+                        "dummy text",
+                        "es"
+                    ))
+                ),
+                &json!({"type":"monolingualtext","value":{"language":"es","text":"dummy text"}})
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn is_same_datavalue_entity() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert!(c
+            .is_same_datavalue(
+                &wikibase::DataValue::new(
+                    wikibase::DataValueType::EntityId,
+                    wikibase::Value::Entity(wikibase::EntityValue::new(
+                        wikibase::EntityType::Item,
+                        "Q12345"
+                    ))
+                ),
+                &json!({"type":"wikibase-entityid","value":{"id":"Q12345"}})
+            )
+            .unwrap());
+    }
+
+    /*
+        fn is_same_datavalue(&self, dv1: &wikibase::DataValue, dv2: &Value) -> Option<bool> {
+            lazy_static! {
+                static ref RE_TIME: Regex = Regex::new("^(?P<a>[+-]{0,1})0*(?P<b>.+)$")
+                    .expect("QuickStatementsCommand::is_same_datavalue:RE_TIME does not compile");
+            }
+
+            if dv1.value_type().string_value() != dv2["type"].as_str()? {
+                return Some(false);
+            }
+
+            let v2 = &dv2["value"];
+            match dv1.value() {
+                wikibase::Value::Entity(v) => Some(v.id() == v2["id"].as_str()?),
+                wikibase::Value::Quantity(v) => {
+                    Some(*v.amount() == v2["amount"].as_str()?.parse::<f64>().ok()?)
+                }
+                wikibase::Value::StringValue(v) => Some(v.to_string() == v2.as_str()?),
+                wikibase::Value::Time(v) => {
+                    let t1 = RE_TIME.replace_all(v.time(), "$a$b");
+                    let t2 = RE_TIME.replace_all(v2["time"].as_str()?, "$a$b");
+                    Some(v.calendarmodel() == v2["calendarmodel"].as_str()? && t1 == t2)
+                }
+            }
+        }
+
+    */
     // TODO
     // action_add_statement
     // action_add_qualifier
