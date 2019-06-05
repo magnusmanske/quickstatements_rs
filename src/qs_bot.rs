@@ -76,134 +76,80 @@ impl QuickStatementsBot {
         config.get_next_command(self.batch_id)
     }
 
-    fn set_label(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
+    fn set_label(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<Value, String> {
         let item = command
             .get_main_item(&self.mw_api, &mut self.entities)?
             .to_owned();
-        match command.action_set_label(&item) {
-            Ok(action) => self.run_action(action, command),
-            Err(e) => Err(e),
-        }
+        command.action_set_label(&item)
     }
 
-    fn add_alias(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
+    fn add_alias(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<Value, String> {
         let item = command
             .get_main_item(&self.mw_api, &mut self.entities)?
             .to_owned();
-        match command.action_add_alias(&item) {
-            Ok(action) => self.run_action(action, command),
-            Err(e) => Err(e),
-        }
+        command.action_add_alias(&item)
     }
 
     fn set_description(
         self: &mut Self,
         command: &mut QuickStatementsCommand,
-    ) -> Result<(), String> {
+    ) -> Result<Value, String> {
         let item = command
             .get_main_item(&self.mw_api, &mut self.entities)?
             .to_owned();
-        match command.action_set_description(&item) {
-            Ok(action) => self.run_action(action, command),
-            Err(e) => Err(e),
-        }
+        command.action_set_description(&item)
     }
 
-    fn set_sitelink(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
-        let i = command
+    fn set_sitelink(
+        self: &mut Self,
+        command: &mut QuickStatementsCommand,
+    ) -> Result<Value, String> {
+        let item = command
             .get_main_item(&self.mw_api, &mut self.entities)?
             .to_owned();
-        match command.action_set_sitelink(&i) {
-            Ok(action) => self.run_action(action, command),
-            Err(e) => return Err(e),
-        }
+        command.action_set_sitelink(&item)
     }
 
-    fn add_statement(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
+    fn add_statement(
+        self: &mut Self,
+        command: &mut QuickStatementsCommand,
+    ) -> Result<Value, String> {
         let item = command.get_main_item(&self.mw_api, &mut self.entities)?;
-        let q = item.id().to_string();
+        command.action_add_statement(&item)
+    }
 
-        match command.get_statement_id(&item)? {
-            Some(_statement_id) => {
-                //println!("Such a statement already exists as {}", &statement_id);
-                return Ok(());
-            }
-            None => {}
+    fn add_qualifier(
+        self: &mut Self,
+        command: &mut QuickStatementsCommand,
+    ) -> Result<Value, String> {
+        let item = command.get_main_item(&self.mw_api, &mut self.entities)?;
+        command.action_add_qualifier(&item)
+    }
+
+    fn add_sources(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<Value, String> {
+        let item = command.get_main_item(&self.mw_api, &mut self.entities)?;
+        command.action_add_sources(&item)
+    }
+
+    fn add_to_entity(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
+        self.load_command_items(command);
+        if self.current_entity_id.is_none() {
+            return Err("No (last) item available".to_string());
         }
-        match command.action_add_statement(&q) {
+        let action = match command.json["what"].as_str() {
+            Some("label") => self.set_label(command),
+            Some("alias") => self.add_alias(command),
+            Some("description") => self.set_description(command),
+            Some("sitelink") => self.set_sitelink(command),
+            Some("statement") => self.add_statement(command),
+            Some("qualifier") => self.add_qualifier(command),
+            Some("sources") => self.add_sources(command),
+            other => return Err(format!("Bad 'what': '{:?}'", other)),
+        };
+        match action {
             Ok(action) => self.run_action(action, command),
             Err(e) => Err(e),
         }
-    }
-
-    fn add_qualifier(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
-        let item = command.get_main_item(&self.mw_api, &mut self.entities)?;
-        match command.action_add_qualifier(&item) {
-            Ok(action) => self.run_action(action, command),
-            Err(e) => Err(e),
-        }
-    }
-
-    fn add_sources(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
-        let item = command.get_main_item(&self.mw_api, &mut self.entities)?;
-        let statement_id = match command.get_statement_id(&item)? {
-            Some(id) => id,
-            None => {
-                return Err(format!(
-                    "add_sources: Could not get statement ID for {:?}",
-                    command
-                ))
-            }
-        };
-        //println!("SOURCES:{}", &command.json["sources"]);
-
-        let snaks = match &command.json["sources"].as_array() {
-            Some(sources) => {
-                let mut snaks = json!({});
-                for source in sources.iter() {
-                    //println!("SOURCE: {}", &source);
-                    let prop = match source["prop"].as_str() {
-                        Some(prop) => prop,
-                        None => return Err("No prop value in source".to_string()),
-                    };
-                    let prop = command.check_prop(prop)?;
-                    let snaktype = command.get_snak_type_for_datavalue(&source)?;
-                    let snaktype = snaktype.to_owned();
-                    let snak = match snaktype.as_str() {
-                        "value" => json!({
-                            "property":prop.to_owned(),
-                            "snaktype":"value",
-                            "datavalue":source["value"],
-                        }),
-                        other => json!({
-                            "property":prop.to_owned(),
-                            "snaktype":other,
-                        }),
-                    };
-                    if snaks[&prop].as_array().is_none() {
-                        snaks[&prop] = json!([]);
-                    }
-                    snaks[prop]
-                        .as_array_mut()
-                        .ok_or(
-                            "QuickStatementsBot::add_sources snaks[prop] does not as_array_mut()"
-                                .to_string(),
-                        )?
-                        .push(snak);
-                }
-                snaks
-            }
-            None => return Err("Incomplete command parameters: sources".to_string()),
-        };
-
-        self.run_action(
-            json!({
-                "action":"wbsetreference",
-                "statement":statement_id,
-                "snaks":serde_json::to_string(&snaks).map_err(|e|format!("{:?}",e))?,
-            }),
-            command,
-        ) // baserevid?
     }
 
     fn reset_entities(self: &mut Self, res: &Value, command: &QuickStatementsCommand) {
@@ -310,24 +256,6 @@ impl QuickStatementsBot {
                 }
                 Err("No success flag set in API result".to_string())
             }
-        }
-    }
-
-    fn add_to_entity(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
-        self.load_command_items(command);
-        if self.current_entity_id.is_none() {
-            return Err("No (last) item available".to_string());
-        }
-
-        match command.json["what"].as_str() {
-            Some("label") => self.set_label(command),
-            Some("alias") => self.add_alias(command),
-            Some("description") => self.set_description(command),
-            Some("sitelink") => self.set_sitelink(command),
-            Some("statement") => self.add_statement(command),
-            Some("qualifier") => self.add_qualifier(command),
-            Some("sources") => self.add_sources(command),
-            _other => Err("Bad 'what'".to_string()),
         }
     }
 

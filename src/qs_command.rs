@@ -103,7 +103,15 @@ impl QuickStatementsCommand {
         Ok(json!({"already_done":1}))
     }
 
-    pub fn action_add_statement(&self, q: &str) -> Result<Value, String> {
+    pub fn action_add_statement(&self, item: &wikibase::Entity) -> Result<Value, String> {
+        match self.get_statement_id(item)? {
+            Some(_statement_id) => {
+                //println!("Such a statement already exists as {}", &statement_id);
+                return self.already_done();
+            }
+            None => {}
+        }
+        let q = item.id().to_string();
         let property = match self.json["property"].as_str() {
             Some(p) => p.to_owned(),
             None => return Err("Property not found".to_string()),
@@ -113,7 +121,7 @@ impl QuickStatementsCommand {
 
         Ok(json!({
             "action":"wbcreateclaim",
-            "entity":self.get_prefixed_id(q),
+            "entity":self.get_prefixed_id(&q),
             "snaktype":self.get_snak_type_for_datavalue(&self.json["datavalue"])?,
             "property":property,
             "value":value
@@ -252,6 +260,63 @@ impl QuickStatementsCommand {
             "property":qual_prop,
             "value":serde_json::to_string(&qual_value).map_err(|e|format!("{:?}",e))?,
             "snaktype":self.get_snak_type_for_datavalue(&self.json["qualifier"])?,
+        }))
+    }
+
+    pub fn action_add_sources(&self, item: &wikibase::Entity) -> Result<Value, String> {
+        let statement_id = match self.get_statement_id(&item)? {
+            Some(id) => id,
+            None => {
+                return Err(format!(
+                    "add_sources: Could not get statement ID for {:?}",
+                    self
+                ))
+            }
+        };
+
+        let snaks = match &self.json["sources"].as_array() {
+            Some(sources) => {
+                let mut snaks = json!({});
+                for source in sources.iter() {
+                    //println!("SOURCE: {}", &source);
+                    let prop = match source["prop"].as_str() {
+                        Some(prop) => prop,
+                        None => return Err("No prop value in source".to_string()),
+                    };
+                    let prop = self.check_prop(prop)?;
+                    let snaktype = self.get_snak_type_for_datavalue(&source)?;
+                    let snaktype = snaktype.to_owned();
+                    let snak = match snaktype.as_str() {
+                        "value" => json!({
+                            "property":prop.to_owned(),
+                            "snaktype":"value",
+                            "datavalue":source["value"],
+                        }),
+                        other => json!({
+                            "property":prop.to_owned(),
+                            "snaktype":other,
+                        }),
+                    };
+                    if snaks[&prop].as_array().is_none() {
+                        snaks[&prop] = json!([]);
+                    }
+                    snaks[prop]
+                        .as_array_mut()
+                        .ok_or(
+                            "QuickStatementsBot::add_sources snaks[prop] does not as_array_mut()"
+                                .to_string(),
+                        )?
+                        .push(snak);
+                }
+                snaks
+            }
+            None => return Err("Incomplete command parameters: sources".to_string()),
+        };
+
+        Ok(json!({
+            "action":"wbsetreference",
+            "statement":statement_id,
+            "snaks":serde_json::to_string(&snaks).map_err(|e|format!("{:?}",e))?,
         }))
     }
 
