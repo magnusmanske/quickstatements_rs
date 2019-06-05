@@ -76,6 +76,24 @@ impl QuickStatementsBot {
         config.get_next_command(self.batch_id)
     }
 
+    fn load_main_command_item(
+        self: &mut Self,
+        command: &mut QuickStatementsCommand,
+    ) -> Result<Option<wikibase::Entity>, String> {
+        let command_action = command.get_action()?;
+        // Add/remove require the main item to be loaded
+        if command_action == "add" || command_action == "remove" {
+            self.load_command_items(command);
+            if self.current_entity_id.is_none() {
+                return Err("No (last) item available".to_string());
+            }
+            let ret = self.get_main_item(command)?;
+            Ok(Some(ret))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn execute_command(
         self: &mut Self,
         command: &mut QuickStatementsCommand,
@@ -84,34 +102,10 @@ impl QuickStatementsBot {
         self.current_property_id = None;
         self.current_entity_id = None;
 
-        // BEGIN MOVE TO COMMAND
-
         command.insert_last_item_into_sources_and_qualifiers(&self.last_entity_id)?;
+        let main_item = self.load_main_command_item(command)?;
 
-        let command_action = command.get_action()?;
-
-        let mut main_item: Option<wikibase::Entity> = None;
-        // Add/remove require the main item to be loaded
-        if command_action == "add" || command_action == "remove" {
-            self.load_command_items(command);
-            if self.current_entity_id.is_none() {
-                return Err("No (last) item available".to_string());
-            }
-            main_item = match command.get_main_item(&self.mw_api, &mut self.entities) {
-                Ok(item) => Some(item),
-                Err(e) => return Err(e),
-            };
-        }
-
-        let action = match command_action.as_str() {
-            "add" => command.add_to_entity(&main_item.unwrap()), // unwrap() OK, prior knowledge
-            "create" => command.action_create_entity(),
-            "merge" => command.action_merge_entities(),
-            "remove" => command.remove_from_entity(&main_item.unwrap()), // unwrap() OK, prior knowledge
-            other => Err(format!("Unknown action '{}'", &other)),
-        };
-
-        // END MOVE TO COMMAND
+        let action = command.action_to_execute(&main_item);
 
         match action {
             Ok(action) => match self.run_action(action, command) {
@@ -126,6 +120,34 @@ impl QuickStatementsBot {
                 Err(e)
             }
         }
+    }
+
+    pub fn get_main_item(
+        &mut self,
+        command: &mut QuickStatementsCommand,
+    ) -> Result<wikibase::Entity, String> {
+        let q = match command.json["item"].as_str() {
+            Some(q) => q.to_string(),
+            None => return Err("Item expected but not set".to_string()),
+        };
+        let mw_api = self.mw_api.to_owned().ok_or(format!(
+            "QuickStatementsBot::get_item_from_command batch #{} has no mw_api",
+            command.batch_id
+        ))?;
+        //println!("LOADING ENTITY {}", &q);
+        match self.entities.load_entities(&mw_api, &vec![q.to_owned()]) {
+            Ok(_) => {}
+            Err(_e) => {
+                //println!("ERROR: {:?}", &e);
+                return Err("Error while loading into entities".to_string());
+            }
+        }
+
+        let i = match self.entities.get_entity(q) {
+            Some(i) => i,
+            None => return Err("Failed to get item".to_string()),
+        };
+        Ok(i.clone())
     }
 
     fn reset_entities(self: &mut Self, res: &Value, command: &QuickStatementsCommand) {

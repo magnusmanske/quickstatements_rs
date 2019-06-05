@@ -358,29 +358,37 @@ impl QuickStatementsCommand {
         }))
     }
 
-    pub fn add_to_entity(self: &mut Self, item: &wikibase::Entity) -> Result<Value, String> {
+    pub fn add_to_entity(
+        self: &mut Self,
+        item: &Option<wikibase::Entity>,
+    ) -> Result<Value, String> {
+        let item = item.to_owned().unwrap();
         match self.json["what"].as_str() {
-            Some("label") => self.action_set_label(item),
-            Some("alias") => self.action_add_alias(item),
-            Some("description") => self.action_set_description(item),
-            Some("sitelink") => self.action_set_sitelink(item),
-            Some("statement") => self.action_add_statement(item),
-            Some("qualifier") => self.action_add_qualifier(item),
-            Some("sources") => self.action_add_sources(item),
+            Some("label") => self.action_set_label(&item),
+            Some("alias") => self.action_add_alias(&item),
+            Some("description") => self.action_set_description(&item),
+            Some("sitelink") => self.action_set_sitelink(&item),
+            Some("statement") => self.action_add_statement(&item),
+            Some("qualifier") => self.action_add_qualifier(&item),
+            Some("sources") => self.action_add_sources(&item),
             other => Err(format!("Bad 'what': '{:?}'", other)),
         }
     }
 
-    pub fn remove_from_entity(self: &mut Self, item: &wikibase::Entity) -> Result<Value, String> {
+    pub fn remove_from_entity(
+        self: &mut Self,
+        item: &Option<wikibase::Entity>,
+    ) -> Result<Value, String> {
+        let item = item.to_owned().unwrap();
         match self.json["what"].as_str() {
             Some("statement") => {
-                let statement_id = match self.get_statement_id(item)? {
+                let statement_id = match self.get_statement_id(&item)? {
                     Some(id) => id,
                     None => return Err("remove_statement: Statement not found".to_string()),
                 };
                 self.action_remove_statement(statement_id)
             }
-            Some("sitelink") => self.action_remove_sitelink(item),
+            Some("sitelink") => self.action_remove_sitelink(&item),
             other => return Err(format!("Bad 'what': '{:?}'", other)),
         }
     }
@@ -392,6 +400,21 @@ impl QuickStatementsCommand {
             Some("") => return Err(format!("Empty action in command")),
             Some(s) => Ok(s.to_string()),
         }
+    }
+
+    pub fn action_to_execute(
+        self: &mut Self,
+        main_item: &Option<wikibase::Entity>,
+    ) -> Result<Value, String> {
+        let command_action = self.get_action()?;
+        let action = match command_action.as_str() {
+            "add" => self.add_to_entity(main_item), // unwrap() OK, prior knowledge
+            "create" => self.action_create_entity(),
+            "merge" => self.action_merge_entities(),
+            "remove" => self.remove_from_entity(main_item), // unwrap() OK, prior knowledge
+            other => Err(format!("Unknown action '{}'", &other)),
+        };
+        action
     }
 
     pub fn is_same_datavalue(&self, dv1: &wikibase::DataValue, dv2: &Value) -> Option<bool> {
@@ -515,34 +538,5 @@ impl QuickStatementsCommand {
 
     pub fn fix_entity_id(id: String) -> String {
         id.trim().to_uppercase()
-    }
-
-    pub fn get_main_item(
-        &mut self,
-        mw_api: &Option<mediawiki::api::Api>,
-        entities: &mut wikibase::entity_container::EntityContainer,
-    ) -> Result<wikibase::Entity, String> {
-        let q = match self.json["item"].as_str() {
-            Some(q) => q.to_string(),
-            None => return Err("Item expected but not set".to_string()),
-        };
-        let mw_api = mw_api.to_owned().ok_or(format!(
-            "QuickStatementsBot::get_item_from_command batch #{} has no mw_api",
-            self.batch_id
-        ))?;
-        //println!("LOADING ENTITY {}", &q);
-        match entities.load_entities(&mw_api, &vec![q.to_owned()]) {
-            Ok(_) => {}
-            Err(_e) => {
-                //println!("ERROR: {:?}", &e);
-                return Err("Error while loading into entities".to_string());
-            }
-        }
-
-        let i = match entities.get_entity(q) {
-            Some(i) => i,
-            None => return Err("Failed to get item".to_string()),
-        };
-        Ok(i.clone())
     }
 }
