@@ -597,7 +597,6 @@ mod tests {
         );
     }
 
-    // TODO action_remove_sitelink
     #[test]
     fn test_action_set_sitelink() {
         let c =
@@ -618,6 +617,33 @@ mod tests {
                 "id":"Q12345",
                 "linksite":"enwiki",
                 "linktitle":"Jimbo_Wales",
+            }))
+        );
+    }
+
+    #[test]
+    fn test_action_remove_sitelink() {
+        let mut c = QuickStatementsCommand::new_from_json(&json!({"site":"enwiki"}));
+        let item = wikibase::Entity::new_item(
+            "Q12345".to_string(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            Some(vec![wikibase::SiteLink::new(
+                "enwiki",
+                "Jimbo_Wales",
+                vec![],
+            )]),
+            false,
+        );
+        assert_eq!(
+            c.action_remove_sitelink(&item),
+            Ok(json!({
+                "action":"wbsetsitelink",
+                "id":"Q12345",
+                "linksite":"enwiki",
+                "linktitle":"",
             }))
         );
     }
