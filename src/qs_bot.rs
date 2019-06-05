@@ -76,24 +76,56 @@ impl QuickStatementsBot {
         config.get_next_command(self.batch_id)
     }
 
-    fn add_to_entity(
+    fn execute_command(
         self: &mut Self,
         command: &mut QuickStatementsCommand,
-    ) -> Result<Value, String> {
-        self.load_command_items(command);
-        if self.current_entity_id.is_none() {
-            return Err("No (last) item available".to_string());
+    ) -> Result<(), String> {
+        self.set_command_status("RUN", None, command)?;
+        self.current_property_id = None;
+        self.current_entity_id = None;
+
+        command.insert_last_item_into_sources_and_qualifiers(&self.last_entity_id)?;
+
+        let cj = command.json["action"].clone();
+        let command_action = match cj.as_str() {
+            None => return Err(format!("No action in command")),
+            Some("") => return Err(format!("Empty action in command")),
+            Some(s) => s,
+        };
+
+        let mut main_item: Option<wikibase::Entity> = None;
+        // Add/remove require the main item to be loaded
+        if command_action == "add" || command_action == "remove" {
+            self.load_command_items(command);
+            if self.current_entity_id.is_none() {
+                return Err("No (last) item available".to_string());
+            }
+            main_item = match command.get_main_item(&self.mw_api, &mut self.entities) {
+                Ok(item) => Some(item),
+                Err(e) => return Err(e),
+            };
         }
-        let item = command.get_main_item(&self.mw_api, &mut self.entities)?;
-        match command.json["what"].as_str() {
-            Some("label") => command.action_set_label(&item),
-            Some("alias") => command.action_add_alias(&item),
-            Some("description") => command.action_set_description(&item),
-            Some("sitelink") => command.action_set_sitelink(&item),
-            Some("statement") => command.action_add_statement(&item),
-            Some("qualifier") => command.action_add_qualifier(&item),
-            Some("sources") => command.action_add_sources(&item),
-            other => Err(format!("Bad 'what': '{:?}'", other)),
+
+        let action = match command_action {
+            "add" => command.add_to_entity(&main_item.unwrap()), // unwrap() OK, prior knowledge
+            "create" => command.action_create_entity(),
+            "merge" => command.action_merge_entities(),
+            "remove" => command.remove_from_entity(&main_item.unwrap()), // unwrap() OK, prior knowledge
+            other => Err(format!("Unknown action '{}'", &other)),
+        };
+
+        match action {
+            Ok(action) => match self.run_action(action, command) {
+                Ok(_) => self.set_command_status("DONE", None, command),
+                Err(e) => {
+                    self.set_command_status("ERROR", Some(&e), command)?;
+                    Err(e)
+                }
+            },
+            Err(e) => {
+                self.set_command_status("ERROR", Some(&e), command)?;
+                Err(e)
+            }
         }
     }
 
@@ -204,29 +236,6 @@ impl QuickStatementsBot {
         }
     }
 
-    fn remove_from_entity(
-        self: &mut Self,
-        command: &mut QuickStatementsCommand,
-    ) -> Result<Value, String> {
-        self.load_command_items(command);
-        if self.current_entity_id.is_none() {
-            return Err("No (last) item available".to_string());
-        }
-
-        let item = command.get_main_item(&self.mw_api, &mut self.entities)?;
-        match command.json["what"].as_str() {
-            Some("statement") => {
-                let statement_id = match command.get_statement_id(&item)? {
-                    Some(id) => id,
-                    None => return Err("remove_statement: Statement not found".to_string()),
-                };
-                command.action_remove_statement(statement_id)
-            }
-            Some("sitelink") => command.action_remove_sitelink(&item),
-            other => return Err(format!("Bad 'what': '{:?}'", other)),
-        }
-    }
-
     fn load_command_items(self: &mut Self, command: &mut QuickStatementsCommand) {
         // Reset
         self.current_property_id = command.get_entity_id_option(&command.json["property"]);
@@ -260,39 +269,6 @@ impl QuickStatementsBot {
         }
 
         //println!("Q:{:?} / P:{:?}",&self.current_entity_id, &self.current_property_id);
-    }
-
-    fn execute_command(
-        self: &mut Self,
-        command: &mut QuickStatementsCommand,
-    ) -> Result<(), String> {
-        self.set_command_status("RUN", None, command)?;
-        self.current_property_id = None;
-        self.current_entity_id = None;
-
-        command.insert_last_item_into_sources_and_qualifiers(&self.last_entity_id)?;
-
-        let action = match command.json["action"].as_str().unwrap_or("") {
-            "add" => self.add_to_entity(command),
-            "create" => command.action_create_entity(),
-            "merge" => command.action_merge_entities(),
-            "remove" => self.remove_from_entity(command),
-            other => Err(format!("Unknown action '{}'", &other)),
-        };
-
-        match action {
-            Ok(action) => match self.run_action(action, command) {
-                Ok(_) => self.set_command_status("DONE", None, command),
-                Err(e) => {
-                    self.set_command_status("ERROR", Some(&e), command)?;
-                    Err(e)
-                }
-            },
-            Err(e) => {
-                self.set_command_status("ERROR", Some(&e), command)?;
-                Err(e)
-            }
-        }
     }
 
     fn set_command_status(

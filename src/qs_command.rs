@@ -358,6 +358,33 @@ impl QuickStatementsCommand {
         }))
     }
 
+    pub fn add_to_entity(self: &mut Self, item: &wikibase::Entity) -> Result<Value, String> {
+        match self.json["what"].as_str() {
+            Some("label") => self.action_set_label(item),
+            Some("alias") => self.action_add_alias(item),
+            Some("description") => self.action_set_description(item),
+            Some("sitelink") => self.action_set_sitelink(item),
+            Some("statement") => self.action_add_statement(item),
+            Some("qualifier") => self.action_add_qualifier(item),
+            Some("sources") => self.action_add_sources(item),
+            other => Err(format!("Bad 'what': '{:?}'", other)),
+        }
+    }
+
+    pub fn remove_from_entity(self: &mut Self, item: &wikibase::Entity) -> Result<Value, String> {
+        match self.json["what"].as_str() {
+            Some("statement") => {
+                let statement_id = match self.get_statement_id(item)? {
+                    Some(id) => id,
+                    None => return Err("remove_statement: Statement not found".to_string()),
+                };
+                self.action_remove_statement(statement_id)
+            }
+            Some("sitelink") => self.action_remove_sitelink(item),
+            other => return Err(format!("Bad 'what': '{:?}'", other)),
+        }
+    }
+
     pub fn is_same_datavalue(&self, dv1: &wikibase::DataValue, dv2: &Value) -> Option<bool> {
         lazy_static! {
             static ref RE_TIME: Regex = Regex::new("^(?P<a>[+-]{0,1})0*(?P<b>.+)$")
