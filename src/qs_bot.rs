@@ -76,19 +76,55 @@ impl QuickStatementsBot {
         config.get_next_command(self.batch_id)
     }
 
-    fn load_main_command_item(
+    fn prepare_to_execute(
         self: &mut Self,
-        command: &mut QuickStatementsCommand,
+        command: &QuickStatementsCommand,
     ) -> Result<Option<wikibase::Entity>, String> {
         let command_action = command.get_action()?;
         // Add/remove require the main item to be loaded
         if command_action == "add" || command_action == "remove" {
-            self.load_command_items(command);
-            if self.current_entity_id.is_none() {
-                return Err("No (last) item available".to_string());
+            // Reset
+            self.current_property_id = command.get_entity_id_option(&command.json["property"]);
+            self.current_entity_id = command.get_entity_id_option(&command.json["item"]);
+
+            // Special case
+            match command.json["what"].as_str() {
+                Some(what) => {
+                    if what == "statement"
+                        && command.json["item"].as_str().is_none()
+                        && command.json["id"].as_str().is_some()
+                    {
+                        match command.json["id"].as_str() {
+                            Some(q) => {
+                                let q = QuickStatementsCommand::fix_entity_id(q.to_string());
+                                self.current_entity_id = Some(q.clone());
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                None => {}
             }
-            let ret = self.get_main_item(command)?;
-            Ok(Some(ret))
+
+            if self.current_entity_id == Some("LAST".to_string()) {
+                self.current_entity_id = self.last_entity_id.clone();
+            }
+            let q = match &self.current_entity_id {
+                Some(q) => q,
+                None => return Err("No (last) item available".to_string()),
+            };
+
+            let mw_api = self.mw_api.to_owned().ok_or(format!(
+                "QuickStatementsBot::get_item_from_command batch #{} has no mw_api",
+                command.batch_id
+            ))?;
+
+            let i = match self.entities.load_entity(&mw_api, q.to_string()) {
+                Ok(item) => item,
+                Err(e) => return Err(format!("Error while loading into entities: '{:?}'", e)),
+            };
+
+            Ok(Some(i.clone()))
         } else {
             Ok(None)
         }
@@ -103,7 +139,7 @@ impl QuickStatementsBot {
         self.current_entity_id = None;
 
         command.insert_last_item_into_sources_and_qualifiers(&self.last_entity_id)?;
-        let main_item = self.load_main_command_item(command)?;
+        let main_item = self.prepare_to_execute(command)?;
         let action = command.action_to_execute(&main_item);
 
         match action {
@@ -119,34 +155,6 @@ impl QuickStatementsBot {
                 Err(e)
             }
         }
-    }
-
-    pub fn get_main_item(
-        &mut self,
-        command: &mut QuickStatementsCommand,
-    ) -> Result<wikibase::Entity, String> {
-        let q = match command.json["item"].as_str() {
-            Some(q) => q.to_string(),
-            None => return Err("Item expected but not set".to_string()),
-        };
-        let mw_api = self.mw_api.to_owned().ok_or(format!(
-            "QuickStatementsBot::get_item_from_command batch #{} has no mw_api",
-            command.batch_id
-        ))?;
-        //println!("LOADING ENTITY {}", &q);
-        match self.entities.load_entities(&mw_api, &vec![q.to_owned()]) {
-            Ok(_) => {}
-            Err(_e) => {
-                //println!("ERROR: {:?}", &e);
-                return Err("Error while loading into entities".to_string());
-            }
-        }
-
-        let i = match self.entities.get_entity(q) {
-            Some(i) => i,
-            None => return Err("Failed to get item".to_string()),
-        };
-        Ok(i.clone())
     }
 
     fn reset_entities(self: &mut Self, res: &Value, command: &QuickStatementsCommand) {
@@ -254,41 +262,6 @@ impl QuickStatementsBot {
                 Err("No success flag set in API result".to_string())
             }
         }
-    }
-
-    fn load_command_items(self: &mut Self, command: &mut QuickStatementsCommand) {
-        // Reset
-        self.current_property_id = command.get_entity_id_option(&command.json["property"]);
-        self.current_entity_id = command.get_entity_id_option(&command.json["item"]);
-
-        // Special case
-        match command.json["what"].as_str() {
-            Some(what) => {
-                if what == "statement"
-                    && command.json["item"].as_str().is_none()
-                    && command.json["id"].as_str().is_some()
-                {
-                    match command.json["id"].as_str() {
-                        Some(q) => {
-                            let q = QuickStatementsCommand::fix_entity_id(q.to_string());
-                            self.current_entity_id = Some(q.clone());
-                        }
-                        None => {}
-                    }
-                }
-            }
-            None => {}
-        }
-
-        if self.current_entity_id == Some("LAST".to_string()) {
-            self.current_entity_id = self.last_entity_id.clone();
-        }
-        match &self.current_entity_id {
-            Some(q) => command.json["item"] = Value::from(q.clone()),
-            None => {}
-        }
-
-        //println!("Q:{:?} / P:{:?}",&self.current_entity_id, &self.current_property_id);
     }
 
     fn set_command_status(

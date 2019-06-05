@@ -206,7 +206,12 @@ impl QuickStatementsCommand {
         if last_entity_id.is_none() {
             return Ok(());
         }
+        let q = last_entity_id.clone().unwrap();
         let mut json = self.json.clone();
+        match self.json["item"].as_str() {
+            Some("LAST") => json["item"] = json!(q),
+            _ => {}
+        }
         self.replace_last_item(&mut json["datavalue"], last_entity_id)?;
         self.replace_last_item(&mut json["qualifier"]["value"], &last_entity_id)?;
         match json["sources"].as_array_mut() {
