@@ -424,15 +424,13 @@ impl QuickStatementsCommand {
         self: &mut Self,
         main_item: &Option<wikibase::Entity>,
     ) -> Result<Value, String> {
-        let command_action = self.get_action()?;
-        let action = match command_action.as_str() {
+        match self.get_action()?.as_str() {
             "add" => self.add_to_entity(main_item),
             "create" => self.action_create_entity(),
             "merge" => self.action_merge_entities(),
             "remove" => self.remove_from_entity(main_item),
             other => Err(format!("Unknown action '{}'", &other)),
-        };
-        action
+        }
     }
 
     fn is_same_datavalue(&self, dv1: &wikibase::DataValue, dv2: &Value) -> Option<bool> {
@@ -565,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rowvalue_as_i64() {
+    fn rowvalue_as_i64() {
         assert_eq!(
             QuickStatementsCommand::rowvalue_as_i64(&my::Value::Int(12345)),
             12345
@@ -593,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fix_entity_id() {
+    fn fix_entity_id() {
         assert_eq!(
             QuickStatementsCommand::fix_entity_id(" q12345  ".to_string()),
             "Q12345".to_string()
@@ -601,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn test_action_remove_statement() {
+    fn action_remove_statement() {
         let c = QuickStatementsCommand::new_from_json(&json!({}));
         assert_eq!(
             c.action_remove_statement("dummy_statement_id".to_string()),
@@ -610,13 +608,13 @@ mod tests {
     }
 
     #[test]
-    fn test_already_done() {
+    fn already_done() {
         let c = QuickStatementsCommand::new_from_json(&json!({}));
         assert_eq!(c.already_done(), Ok(json!({"already_done":1})));
     }
 
     #[test]
-    fn test_action_set_sitelink() {
+    fn action_set_sitelink() {
         let c =
             QuickStatementsCommand::new_from_json(&json!({"site":"enwiki","value":"Jimbo_Wales"}));
         assert_eq!(
@@ -631,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn test_action_remove_sitelink() {
+    fn action_remove_sitelink() {
         let mut c = QuickStatementsCommand::new_from_json(&json!({"site":"enwiki"}));
         let mut item = empty_test_item();
         item.set_sitelink(wikibase::SiteLink::new("enwiki", "Jimbo_Wales", vec![]));
@@ -647,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn test_action_set_label() {
+    fn action_set_label() {
         let c =
             QuickStatementsCommand::new_from_json(&json!({"language":"it","value":"Dummy text"}));
         assert_eq!(
@@ -662,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn test_action_set_description() {
+    fn action_set_description() {
         let c =
             QuickStatementsCommand::new_from_json(&json!({"language":"it","value":"Dummy text"}));
         assert_eq!(
@@ -677,7 +675,7 @@ mod tests {
     }
 
     #[test]
-    fn test_action_add_alias() {
+    fn action_add_alias() {
         let c =
             QuickStatementsCommand::new_from_json(&json!({"language":"it","value":"Dummy text"}));
         assert_eq!(
@@ -692,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn test_action_create_entity() {
+    fn action_create_entity() {
         let c = QuickStatementsCommand::new_from_json(&json!({"type":"item"}));
         assert_eq!(
             c.action_create_entity(),
@@ -702,6 +700,20 @@ mod tests {
         assert_eq!(
             c.action_create_entity(),
             Ok(json!({"action":"wbeditentity","new":"item","data":"{\"k\":\"v\"}"}))
+        );
+    }
+
+    #[test]
+    fn action_merge_entities() {
+        let c = QuickStatementsCommand::new_from_json(&json!({"item1":"Q123","item2":"Q456"}));
+        assert_eq!(
+            c.action_merge_entities(),
+            Ok(json!({
+                "action":"wbmergeitems",
+                "fromid":"Q123",
+                "toid":"Q456",
+                "ignoreconflicts":"description"
+            }))
         );
     }
 
