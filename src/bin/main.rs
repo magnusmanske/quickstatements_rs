@@ -23,7 +23,7 @@ fn run_bot(config_arc: Arc<Mutex<QuickStatements>>) {
         println!("SPAWN: Starting batch {}", &batch_id);
         let mut bot = QuickStatementsBot::new(config_arc.clone(), batch_id);
         match bot.start() {
-            Ok(_) => while bot.run() {},
+            Ok(_) => while bot.run().unwrap_or(false) {},
             Err(error) => {
                 println!(
                     "Error when starting bot for batch #{}: '{}'",

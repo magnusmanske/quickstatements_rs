@@ -456,7 +456,8 @@ impl QuickStatementsBot {
 
     fn is_same_datavalue(&self, dv1: &wikibase::DataValue, dv2: &Value) -> Option<bool> {
         lazy_static! {
-            static ref RE_TIME: Regex = Regex::new("^(?P<a>[+-]{0,1})0*(?P<b>.+)$").unwrap();
+            static ref RE_TIME: Regex = Regex::new("^(?P<a>[+-]{0,1})0*(?P<b>.+)$")
+                .expect("QuickStatementsBot::is_same_datavalue:RE_TIME does not compile");
         }
 
         if dv1.value_type().string_value() != dv2["type"].as_str()? {
@@ -719,7 +720,7 @@ impl QuickStatementsBot {
         self: &mut Self,
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
-        self.set_command_status("RUN", None, command);
+        self.set_command_status("RUN", None, command)?;
         self.current_property_id = None;
         self.current_entity_id = None;
 
@@ -735,7 +736,6 @@ impl QuickStatementsBot {
             Err(message) => self.set_command_status("ERROR", Some(message), command),
             _ => self.set_command_status("DONE", None, command),
         }
-        result
     }
 
     fn set_command_status(
@@ -743,18 +743,26 @@ impl QuickStatementsBot {
         status: &str,
         message: Option<&str>,
         command: &mut QuickStatementsCommand,
-    ) {
+    ) -> Result<(), String> {
         if status == "DONE" {
             self.last_entity_id = self.current_entity_id.clone();
         }
 
-        let mut config = self.config.lock().unwrap();
+        let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
         config
             .set_command_status(command, status, message.map(|s| s.to_string()))
-            .unwrap();
+            .ok_or(format!(
+                "Can't config.set_command_status for batch #{}",
+                self.batch_id
+            ))?;
         config
             .set_last_item_for_batch(self.batch_id, &self.last_entity_id)
-            .unwrap();
+            .ok_or(format!(
+                "Can't config.set_command_status for batch #{}",
+                self.batch_id
+            ))?;
+
+        Ok(())
     }
 }
 
