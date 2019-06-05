@@ -182,7 +182,7 @@ impl QuickStatements {
         }
 
         sql += " ORDER BY `ts_last_change`";
-        //let sql = r#"SELECT * FROM batch WHERE `status` IN ('TEST') AND NOT EXISTS (SELECT * FROM command WHERE batch_id=batch.id AND json rlike '"item":"L\\d') ORDER BY `ts_last_change`"# ; // 'INIT','RUN'
+
         for row in pool.prep_exec(sql, ()).ok()? {
             let row = row.ok()?;
             let id = match &row["id"] {

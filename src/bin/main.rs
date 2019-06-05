@@ -15,7 +15,7 @@ fn run_bot(config_arc: Arc<Mutex<QuickStatements>>) {
     let user_id: i64;
     {
         let config = config_arc.lock().unwrap();
-        let tuple = match config.get_next_batch() {
+        let tuple = match dbg!(config.get_next_batch()) {
             Some(n) => n,
             None => return, // Nothing to do
         };
