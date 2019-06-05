@@ -104,7 +104,6 @@ impl QuickStatementsBot {
 
         command.insert_last_item_into_sources_and_qualifiers(&self.last_entity_id)?;
         let main_item = self.load_main_command_item(command)?;
-
         let action = command.action_to_execute(&main_item);
 
         match action {
