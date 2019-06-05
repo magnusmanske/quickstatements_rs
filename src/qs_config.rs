@@ -2,13 +2,9 @@ use crate::qs_command::QuickStatementsCommand;
 use chrono::prelude::*;
 use config::*;
 use mysql as my;
-//use regex::Regex;
 use serde_json::Value;
-//use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::File;
-//use std::sync::{Arc, Mutex};
-//use wikibase;
 
 #[derive(Debug, Clone)]
 pub struct QuickStatements {
@@ -18,18 +14,18 @@ pub struct QuickStatements {
 }
 
 impl QuickStatements {
-    pub fn new_from_config_json(filename: &str) -> Self {
-        let file = File::open(filename).unwrap();
-        let params: Value = serde_json::from_reader(file).unwrap();
+    pub fn new_from_config_json(filename: &str) -> Option<Self> {
+        let file = File::open(filename).ok()?;
+        let params: Value = serde_json::from_reader(file).ok()?;
         let mut params = params.clone();
 
         // Load the PHP/JS config into params as ["config"], or create empty object
         params["config"] = match params["config_file"].as_str() {
             Some(filename) => {
-                let file = File::open(filename).unwrap();
-                serde_json::from_reader(file).unwrap()
+                let file = File::open(filename).ok()?;
+                serde_json::from_reader(file).ok()?
             }
-            None => serde_json::from_str("{}").unwrap(),
+            None => json!({}),
         };
 
         let mut ret = Self {
@@ -38,7 +34,7 @@ impl QuickStatements {
             running_batch_ids: HashSet::new(),
         };
         ret.create_mysql_pool();
-        ret
+        Some(ret)
     }
 
     pub fn get_site_from_batch(&self, batch_id: i64) -> Option<String> {
@@ -51,9 +47,9 @@ impl QuickStatements {
                 r#"SELECT site FROM batch WHERE id=?"#,
                 (my::Value::Int(batch_id),),
             )
-            .unwrap()
+            .ok()?
         {
-            let row = row.unwrap();
+            let row = row.ok()?;
             let site: String = match &row["site"] {
                 my::Value::Bytes(x) => String::from_utf8_lossy(&x).to_string(),
                 _ => continue,
@@ -73,27 +69,30 @@ impl QuickStatements {
         now.format("%Y%m%d%H%M%S").to_string()
     }
 
-    pub fn restart_batch(&self, batch_id: i64) {
+    pub fn restart_batch(&self, batch_id: i64) -> Option<()> {
         let pool = match &self.pool {
             Some(pool) => pool,
-            None => return,
+            None => return None,
         };
         pool.prep_exec(
             r#"UPDATE `batch` SET `status`="RUN",`message`="",`ts_last_change`=? WHERE id=? AND `status`!="TEST""#,
             (my::Value::from(self.timestamp()), my::Value::Int(batch_id)),
-        )
-        .unwrap();
+        ).ok()?;
         pool.prep_exec(
             r#"UPDATE `command` SET `status`="INIT",`message`="",`ts_change`=? WHERE `status`="RUN" AND `batch_id`=?"#,
             (my::Value::from(self.timestamp()),my::Value::Int(batch_id),),
         )
-        .unwrap();
+        .ok()?;
+        Some(())
     }
 
     pub fn get_api_url(&self, batch_id: i64) -> Option<&str> {
         let site: String = match self.get_site_from_batch(batch_id) {
             Some(site) => site,
-            None => self.params["config"]["site"].as_str().unwrap().to_string(),
+            None => match self.params["config"]["site"].as_str() {
+                Some(s) => s.to_string(),
+                None => return None,
+            },
         };
         self.params["config"]["sites"][site]["api"].as_str()
     }
@@ -134,9 +133,9 @@ impl QuickStatements {
                 r#"SELECT last_item FROM batch WHERE `id`=?"#,
                 (my::Value::from(batch_id),),
             )
-            .unwrap()
+            .ok()?
         {
-            let row = row.unwrap();
+            let row = row.ok()?;
             return match &row["last_item"] {
                 my::Value::Bytes(x) => Some(String::from_utf8_lossy(x).to_string()),
                 _ => None,
@@ -160,8 +159,8 @@ impl QuickStatements {
         sql += r#" AND NOT EXISTS (SELECT * FROM command WHERE batch_id=batch.id AND json rlike '"item":"L\\d')"# ; // TESTING: Available batches that do NOT use lexemes
         sql += " ORDER BY `ts_last_change`";
         //let sql = r#"SELECT * FROM batch WHERE `status` IN ('TEST') AND NOT EXISTS (SELECT * FROM command WHERE batch_id=batch.id AND json rlike '"item":"L\\d') ORDER BY `ts_last_change`"# ; // 'INIT','RUN'
-        for row in pool.prep_exec(sql, ()).unwrap() {
-            let row = row.unwrap();
+        for row in pool.prep_exec(sql, ()).ok()? {
+            let row = row.ok()?;
             let id = match &row["id"] {
                 my::Value::Int(x) => *x as i64,
                 _ => continue,
@@ -180,19 +179,20 @@ impl QuickStatements {
         println!("Currently {} bots running", self.number_of_bots_running());
     }
 
-    pub fn set_batch_finished(&mut self, batch_id: i64) {
+    pub fn set_batch_finished(&mut self, batch_id: i64) -> Option<()> {
         println!("set_batch_finished: Batch #{}", batch_id);
         let pool = match &self.pool {
             Some(pool) => pool,
-            None => return,
+            None => return None,
         };
         pool.prep_exec(
             r#"UPDATE `batch` SET `status`="DONE",`message`="",`ts_last_change`=? WHERE id=?"#,
             (my::Value::from(self.timestamp()), my::Value::Int(batch_id)),
         )
-        .unwrap();
+        .ok()?;
         self.running_batch_ids.remove(&batch_id);
         println!("Currently {} bots running", self.number_of_bots_running());
+        Some(())
     }
 
     pub fn get_next_command(&mut self, batch_id: i64) -> Option<QuickStatementsCommand> {
@@ -202,8 +202,8 @@ impl QuickStatements {
         };
         let sql =
             r#"SELECT * FROM command WHERE batch_id=? AND status IN ('INIT') ORDER BY num LIMIT 1"#;
-        for row in pool.prep_exec(sql, (my::Value::Int(batch_id),)).unwrap() {
-            let row = row.unwrap();
+        for row in pool.prep_exec(sql, (my::Value::Int(batch_id),)).ok()? {
+            let row = row.ok()?;
             return Some(QuickStatementsCommand::new_from_row(row));
         }
         None
@@ -214,10 +214,10 @@ impl QuickStatements {
         command: &mut QuickStatementsCommand,
         new_status: &str,
         new_message: Option<String>,
-    ) {
+    ) -> Option<()> {
         let pool = match &self.pool {
             Some(pool) => pool,
-            None => panic!("set_command_status: MySQL pool not available"),
+            None => return None,
         };
 
         command.json["meta"]["status"] = json!(new_status.to_string().trim().to_uppercase());
@@ -228,7 +228,10 @@ impl QuickStatements {
         };
         command.json["meta"]["message"] = json!(message);
 
-        let json = serde_json::to_string(&command.json).unwrap();
+        let json = match serde_json::to_string(&command.json) {
+            Ok(s) => s,
+            _ => "{}".to_string(),
+        };
 
         pool.prep_exec(
             r#"UPDATE `command` SET `ts_change`=?,`json`=?,`status`=?,`message`=? WHERE `id`=?"#,
@@ -240,13 +243,18 @@ impl QuickStatements {
                 my::Value::from(&command.id),
             ),
         )
-        .unwrap();
+        .ok()?;
+        Some(())
     }
 
-    pub fn set_last_item_for_batch(self: &mut Self, batch_id: i64, last_item: &Option<String>) {
+    pub fn set_last_item_for_batch(
+        self: &mut Self,
+        batch_id: i64,
+        last_item: &Option<String>,
+    ) -> Option<()> {
         let pool = match &self.pool {
             Some(pool) => pool,
-            None => panic!("set_command_status: MySQL pool not available"),
+            None => return None,
         };
         let last_item = match last_item {
             Some(q) => q.to_string(),
@@ -262,7 +270,8 @@ impl QuickStatements {
                 my::Value::from(batch_id),
             ),
         )
-        .unwrap();
+        .ok()?;
+        Some(())
     }
 
     fn get_oauth_for_batch(self: &mut Self, batch_id: i64) -> Option<mediawiki::api::OAuthParams> {
@@ -272,8 +281,8 @@ impl QuickStatements {
         };
         let auth_db = "s53220__quickstatements_auth";
         let sql = format!(r#"SELECT * FROM {}.batch_oauth WHERE batch_id=?"#, auth_db);
-        for row in pool.prep_exec(sql, (my::Value::from(batch_id),)).unwrap() {
-            let row = row.unwrap();
+        for row in pool.prep_exec(sql, (my::Value::from(batch_id),)).ok()? {
+            let row = row.ok()?;
             let serialized_json = match &row["serialized_json"] {
                 my::Value::Bytes(x) => String::from_utf8_lossy(x),
                 _ => return None,

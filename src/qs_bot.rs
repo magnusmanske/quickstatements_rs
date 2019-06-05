@@ -32,7 +32,7 @@ impl QuickStatementsBot {
 
     pub fn start(self: &mut Self) {
         let mut config = self.config.lock().unwrap();
-        config.restart_batch(self.batch_id);
+        config.restart_batch(self.batch_id).unwrap();
         self.last_entity_id = config.get_last_item_from_batch(self.batch_id);
         match config.get_api_url(self.batch_id) {
             Some(url) => {
@@ -61,7 +61,7 @@ impl QuickStatementsBot {
             }
             None => {
                 let mut config = self.config.lock().unwrap();
-                config.set_batch_finished(self.batch_id);
+                config.set_batch_finished(self.batch_id).unwrap();
                 false
             }
         }
@@ -729,8 +729,12 @@ impl QuickStatementsBot {
         }
 
         let mut config = self.config.lock().unwrap();
-        config.set_command_status(command, status, message.map(|s| s.to_string()));
-        config.set_last_item_for_batch(self.batch_id, &self.last_entity_id);
+        config
+            .set_command_status(command, status, message.map(|s| s.to_string()))
+            .unwrap();
+        config
+            .set_last_item_for_batch(self.batch_id, &self.last_entity_id)
+            .unwrap();
     }
 }
 

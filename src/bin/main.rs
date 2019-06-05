@@ -28,9 +28,10 @@ fn run_bot(config_arc: Arc<Mutex<QuickStatements>>) {
 }
 
 fn main() {
-    let config = Arc::new(Mutex::new(QuickStatements::new_from_config_json(
-        "config_rs.json",
-    )));
+    let config = match QuickStatements::new_from_config_json("config_rs.json") {
+        Some(qs) => Arc::new(Mutex::new(qs)),
+        None => panic!("Could not create QuickStatements bot from config file"),
+    };
 
     loop {
         run_bot(config.clone());

@@ -19,7 +19,10 @@ impl QuickStatementsCommand {
             batch_id: QuickStatementsCommand::rowvalue_as_i64(&row["batch_id"]),
             num: QuickStatementsCommand::rowvalue_as_i64(&row["num"]),
             json: match &row["json"] {
-                my::Value::Bytes(x) => serde_json::from_str(&String::from_utf8_lossy(x)).unwrap(),
+                my::Value::Bytes(x) => match serde_json::from_str(&String::from_utf8_lossy(x)) {
+                    Ok(y) => y,
+                    _ => json!({}),
+                },
                 _ => Value::Null,
             },
             status: QuickStatementsCommand::rowvalue_as_string(&row["status"]),
