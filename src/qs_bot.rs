@@ -84,14 +84,11 @@ impl QuickStatementsBot {
         self.current_property_id = None;
         self.current_entity_id = None;
 
+        // BEGIN MOVE TO COMMAND
+
         command.insert_last_item_into_sources_and_qualifiers(&self.last_entity_id)?;
 
-        let cj = command.json["action"].clone();
-        let command_action = match cj.as_str() {
-            None => return Err(format!("No action in command")),
-            Some("") => return Err(format!("Empty action in command")),
-            Some(s) => s,
-        };
+        let command_action = command.get_action()?;
 
         let mut main_item: Option<wikibase::Entity> = None;
         // Add/remove require the main item to be loaded
@@ -106,13 +103,15 @@ impl QuickStatementsBot {
             };
         }
 
-        let action = match command_action {
+        let action = match command_action.as_str() {
             "add" => command.add_to_entity(&main_item.unwrap()), // unwrap() OK, prior knowledge
             "create" => command.action_create_entity(),
             "merge" => command.action_merge_entities(),
             "remove" => command.remove_from_entity(&main_item.unwrap()), // unwrap() OK, prior knowledge
             other => Err(format!("Unknown action '{}'", &other)),
         };
+
+        // END MOVE TO COMMAND
 
         match action {
             Ok(action) => match self.run_action(action, command) {

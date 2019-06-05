@@ -385,6 +385,15 @@ impl QuickStatementsCommand {
         }
     }
 
+    pub fn get_action(&self) -> Result<String, String> {
+        let cj = self.json["action"].clone();
+        match cj.as_str() {
+            None => return Err(format!("No action in command")),
+            Some("") => return Err(format!("Empty action in command")),
+            Some(s) => Ok(s.to_string()),
+        }
+    }
+
     pub fn is_same_datavalue(&self, dv1: &wikibase::DataValue, dv2: &Value) -> Option<bool> {
         lazy_static! {
             static ref RE_TIME: Regex = Regex::new("^(?P<a>[+-]{0,1})0*(?P<b>.+)$")
