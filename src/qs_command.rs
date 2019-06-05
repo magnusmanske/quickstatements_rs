@@ -32,6 +32,18 @@ impl QuickStatementsCommand {
         }
     }
 
+    pub fn new_from_json(json: &Value) -> Self {
+        Self {
+            id: -1,
+            batch_id: -1,
+            num: -1,
+            json: json.clone(),
+            status: "".to_string(),
+            message: "".to_string(),
+            ts_change: "".to_string(),
+        }
+    }
+
     fn rowvalue_as_i64(v: &my::Value) -> i64 {
         match v {
             my::Value::Int(x) => *x,
@@ -540,5 +552,38 @@ impl QuickStatementsCommand {
 
     pub fn fix_entity_id(id: String) -> String {
         id.trim().to_uppercase()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rowvalue_as_i64() {
+        assert_eq!(
+            QuickStatementsCommand::rowvalue_as_i64(&my::Value::Int(12345)),
+            12345
+        );
+    }
+
+    #[test]
+    fn text_check_prop() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert_eq!(c.check_prop("P12345"), Ok("P12345".to_string()));
+        assert_eq!(
+            c.check_prop("xP12345"),
+            Err("'xP12345' is not a property".to_string())
+        );
+    }
+
+    #[test]
+    fn text_get_entity_id_option() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert_eq!(
+            c.get_entity_id_option(&json!(" Q12345 ")),
+            Some("Q12345".to_string())
+        );
+        assert_eq!(c.get_entity_id_option(&json!({})), None);
     }
 }
