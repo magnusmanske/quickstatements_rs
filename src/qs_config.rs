@@ -117,7 +117,7 @@ impl QuickStatements {
         }
 
         // Min 2, max 7 connections
-        self.pool = match my::Pool::new_manual(7, 9, builder) {
+        self.pool = match my::Pool::new_manual(2, 7, builder) {
             Ok(pool) => Some(pool),
             _ => None,
         }
