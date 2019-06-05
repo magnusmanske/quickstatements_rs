@@ -71,7 +71,7 @@ impl QuickStatementsBot {
     }
 
     fn get_next_command(&self) -> Option<QuickStatementsCommand> {
-        let mut config = self.config.lock().unwrap();
+        let mut config = self.config.lock().ok()?;
         config.get_next_command(self.batch_id)
     }
 
@@ -80,7 +80,10 @@ impl QuickStatementsBot {
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
         let data = match &command.json["data"].as_object() {
-            Some(_) => serde_json::to_string(&command.json["data"]).unwrap(),
+            Some(_) => match serde_json::to_string(&command.json["data"]) {
+                Ok(s) => s,
+                _ => "{}".to_string(),
+            },
             None => "{}".to_string(),
         };
         let new_type = match command.json["type"].as_str() {
@@ -119,8 +122,12 @@ impl QuickStatementsBot {
 
     fn set_label(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         let i = self.get_item_from_command(command)?.to_owned();
-        let language = command.json["language"].as_str().unwrap();
-        let text = command.json["value"].as_str().unwrap();
+        let language = command.json["language"]
+            .as_str()
+            .ok_or("Can't find language".to_string())?;
+        let text = command.json["value"]
+            .as_str()
+            .ok_or("Can't find text (=value)".to_string())?;
         match i.label_in_locale(language) {
             Some(s) => {
                 if s == text {
@@ -134,8 +141,12 @@ impl QuickStatementsBot {
 
     fn add_alias(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         let i = self.get_item_from_command(command)?.to_owned();
-        let language = command.json["language"].as_str().unwrap();
-        let text = command.json["value"].as_str().unwrap();
+        let language = command.json["language"]
+            .as_str()
+            .ok_or("Can't find language".to_string())?;
+        let text = command.json["value"]
+            .as_str()
+            .ok_or("Can't find text (=value)".to_string())?;
         self.run_action(json!({"action":"wbsetaliases","id":self.get_prefixed_id(i.id()),"language":language,"add":text}),command) // baserevid?
     }
 
@@ -144,8 +155,12 @@ impl QuickStatementsBot {
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
         let i = self.get_item_from_command(command)?.to_owned();
-        let language = command.json["language"].as_str().unwrap();
-        let text = command.json["value"].as_str().unwrap();
+        let language = command.json["language"]
+            .as_str()
+            .ok_or("Can't find language".to_string())?;
+        let text = command.json["value"]
+            .as_str()
+            .ok_or("Can't find text (=value)".to_string())?;
         match i.description_in_locale(language) {
             Some(s) => {
                 if s == text {
@@ -201,10 +216,8 @@ impl QuickStatementsBot {
             Some(p) => p.to_owned(),
             None => return Err("Property not found".to_string()),
         };
-        let value = match serde_json::to_string(&command.json["datavalue"]["value"]) {
-            Ok(v) => v,
-            Err(_) => return Err("Bad datavalue.value".to_string()),
-        };
+        let value = serde_json::to_string(&command.json["datavalue"]["value"])
+            .map_err(|e| format!("{:?}", e))?;
 
         match self.get_statement_id(command)? {
             Some(_statement_id) => {
@@ -241,7 +254,8 @@ impl QuickStatementsBot {
 
     fn check_prop(&self, s: &str) -> Result<String, String> {
         lazy_static! {
-            static ref RE_PROP: Regex = Regex::new(r#"^P\d+$"#).unwrap();
+            static ref RE_PROP: Regex = Regex::new(r#"^P\d+$"#)
+                .expect("QuickStatementsBot::check_prop:RE_PROP does not compile");
         }
         match RE_PROP.is_match(s) {
             true => Ok(s.to_string()),
@@ -276,7 +290,7 @@ impl QuickStatementsBot {
                 "action":"wbsetqualifier",
                 "claim":statement_id,
                 "property":qual_prop,
-                "value":serde_json::to_string(&qual_value).unwrap(),
+                "value":serde_json::to_string(&qual_value).map_err(|e|format!("{:?}",e))?,
                 "snaktype":self.get_snak_type_for_datavalue(&command.json["qualifier"])?,
             }),
             command,
@@ -322,7 +336,13 @@ impl QuickStatementsBot {
                     if snaks[&prop].as_array().is_none() {
                         snaks[&prop] = json!([]);
                     }
-                    snaks[prop].as_array_mut().unwrap().push(snak);
+                    snaks[prop]
+                        .as_array_mut()
+                        .ok_or(
+                            "QuickStatementsBot::add_sources snaks[prop] does not as_array_mut()"
+                                .to_string(),
+                        )?
+                        .push(snak);
                 }
                 snaks
             }
@@ -333,7 +353,7 @@ impl QuickStatementsBot {
             json!({
                 "action":"wbsetreference",
                 "statement":statement_id,
-                "snaks":serde_json::to_string(&snaks).unwrap(),
+                "snaks":serde_json::to_string(&snaks).map_err(|e|format!("{:?}",e))?,
             }),
             command,
         ) // baserevid?
@@ -389,29 +409,23 @@ impl QuickStatementsBot {
     ) -> Result<(), String> {
         //println!("Running action {}", &j);
         let mut params: HashMap<String, String> = HashMap::new();
-        for (k, v) in j.as_object().unwrap() {
+        for (k, v) in j
+            .as_object()
+            .ok_or("QUickStatementsBot::run_action: j is not an object".to_string())?
+        {
             params.insert(k.to_string(), v.as_str().unwrap().to_string());
         }
         self.add_summary(&mut params, command);
         // TODO baserev?
-        let mut mw_api = self.mw_api.to_owned().unwrap();
+        let mut mw_api = self.mw_api.to_owned().ok_or(format!(
+            "QuickStatementsBot::run_action batch #{} has no mw_api",
+            self.batch_id
+        ))?;
         params.insert("token".to_string(), mw_api.get_edit_token().unwrap());
 
-        /*
-        if params.get("action").unwrap().as_str() == "wbsetreference" {
-            println!("ACTION: {:?}", &params);
-        }
-        */
-
         let res = match mw_api.post_query_api_json_mut(&params) {
-            Ok(x) => {
-                //println!("WIKIDATA OK: {:?}", &x);
-                x
-            }
-            Err(_e) => {
-                //println!("WIKIDATA ERROR: {:?}", &e);
-                return Err("Wikidata editing fail".to_string());
-            }
+            Ok(x) => x,
+            Err(_e) => return Err("Wikidata editing fail".to_string()),
         };
 
         match res["success"].as_i64() {
@@ -491,7 +505,10 @@ impl QuickStatementsBot {
             Some(q) => q.to_string(),
             None => return Err("Item expected but not set".to_string()),
         };
-        let mw_api = self.mw_api.to_owned().unwrap();
+        let mw_api = self.mw_api.to_owned().ok_or(format!(
+            "QuickStatementsBot::get_item_from_command batch #{} has no mw_api",
+            self.batch_id
+        ))?;
         //println!("LOADING ENTITY {}", &q);
         match self.entities.load_entities(&mw_api, &vec![q.to_owned()]) {
             Ok(_) => {}
