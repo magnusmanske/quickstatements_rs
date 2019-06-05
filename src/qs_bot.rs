@@ -81,45 +81,17 @@ impl QuickStatementsBot {
         self: &mut Self,
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
-        let data = match &command.json["data"].as_object() {
-            Some(_) => match serde_json::to_string(&command.json["data"]) {
-                Ok(s) => s,
-                _ => "{}".to_string(),
-            },
-            None => "{}".to_string(),
-        };
-        let new_type = match command.json["type"].as_str() {
-            Some(t) => t,
-            None => return Err("No type set".to_string()),
-        };
-        self.run_action(
-            json!({
-                "action":"wbeditentity",
-                "new":new_type,
-                "data":data,
-            }),
-            command,
-        ) // baserevid?
+        match command.action_create_entity() {
+            Ok(action) => self.run_action(action, command),
+            Err(e) => return Err(e),
+        }
     }
 
     fn merge_entities(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
-        let item1 = match command.json["item1"].as_str() {
-            Some(t) => t,
-            None => return Err("item1 not set".to_string()),
-        };
-        let item2 = match command.json["item2"].as_str() {
-            Some(t) => t,
-            None => return Err("item2 not set".to_string()),
-        };
-        self.run_action(
-            json!({
-                "action":"wbmergeitems",
-                "fromid":item1,
-                "toid":item2,
-                "ignoreconflicts":"description"
-            }),
-            command,
-        ) // baserevid?
+        match command.action_merge_entities() {
+            Ok(action) => self.run_action(action, command),
+            Err(e) => return Err(e),
+        }
     }
 
     fn set_label(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
@@ -138,7 +110,7 @@ impl QuickStatementsBot {
             }
             None => {}
         }
-        self.run_action(json!({"action":"wbsetlabel","id":self.get_prefixed_id(i.id()),"language":language,"value":text}),command) // baserevid?
+        self.run_action(json!({"action":"wbsetlabel","id":command.get_prefixed_id(i.id()),"language":language,"value":text}),command) // baserevid?
     }
 
     fn add_alias(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
@@ -149,7 +121,7 @@ impl QuickStatementsBot {
         let text = command.json["value"]
             .as_str()
             .ok_or("Can't find text (=value)".to_string())?;
-        self.run_action(json!({"action":"wbsetaliases","id":self.get_prefixed_id(i.id()),"language":language,"add":text}),command) // baserevid?
+        self.run_action(json!({"action":"wbsetaliases","id":command.get_prefixed_id(i.id()),"language":language,"add":text}),command) // baserevid?
     }
 
     fn set_description(
@@ -171,43 +143,16 @@ impl QuickStatementsBot {
             }
             None => {}
         }
-        self.run_action(json!({"action":"wbsetdescription","id":self.get_prefixed_id(i.id()),"language":language,"value":text}),command) // baserevid?
+        self.run_action(json!({"action":"wbsetdescription","id":command.get_prefixed_id(i.id()),"language":language,"value":text}),command) // baserevid?
     }
 
     fn set_sitelink(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         self.insert_last_item_into_sources_and_qualifiers(command)?;
         let i = self.get_item_from_command(command)?.to_owned();
-        let site = match &command.json["site"].as_str() {
-            Some(s) => s.to_owned(),
-            None => return Err("site not set".to_string()),
-        };
-        let title = match &command.json["value"].as_str() {
-            Some(s) => s.to_owned(),
-            None => return Err("value (title) not set".to_string()),
-        };
-
-        // Check if this same sitelink is already set
-        match i.sitelinks() {
-            Some(sitelinks) => {
-                let title_underscores = title.replace(" ", "_");
-                for sl in sitelinks {
-                    if sl.site() == site && sl.title().replace(" ", "_") == title_underscores {
-                        return Ok(());
-                    }
-                }
-            }
-            None => {}
+        match command.action_set_sitelink(&i) {
+            Ok(action) => self.run_action(action, command),
+            Err(e) => return Err(e),
         }
-
-        self.run_action(
-            json!({
-                "action":"wbsetsitelink",
-                "id":self.get_prefixed_id(i.id()),
-                "linksite":site,
-                "linktitle":title,
-            }),
-            command,
-        ) // baserevid?
     }
 
     fn add_statement(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
@@ -232,7 +177,7 @@ impl QuickStatementsBot {
         self.run_action(
             json!({
                 "action":"wbcreateclaim",
-                "entity":self.get_prefixed_id(i.id()),
+                "entity":command.get_prefixed_id(i.id()),
                 "snaktype":self.get_snak_type_for_datavalue(&command.json["datavalue"])?,
                 "property":property,
                 "value":value
@@ -409,6 +354,9 @@ impl QuickStatementsBot {
         j: Value,
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
+        if !j["already_done"].is_null() {
+            return Ok(());
+        }
         //println!("Running action {}", &j);
         let mut params: HashMap<String, String> = HashMap::new();
         for (k, v) in j
@@ -465,54 +413,6 @@ impl QuickStatementsBot {
         }
     }
 
-    fn get_prefixed_id(&self, s: &str) -> String {
-        s.to_string() // TODO necessary?
-    }
-
-    fn is_same_datavalue(&self, dv1: &wikibase::DataValue, dv2: &Value) -> Option<bool> {
-        lazy_static! {
-            static ref RE_TIME: Regex = Regex::new("^(?P<a>[+-]{0,1})0*(?P<b>.+)$")
-                .expect("QuickStatementsBot::is_same_datavalue:RE_TIME does not compile");
-        }
-
-        if dv1.value_type().string_value() != dv2["type"].as_str()? {
-            return Some(false);
-        }
-
-        let v2 = &dv2["value"];
-        match dv1.value() {
-            wikibase::Value::Coordinate(v) => Some(
-                v.globe() == v2["globe"].as_str()?
-                    && *v.latitude() == v2["latitude"].as_f64()?
-                    && *v.longitude() == v2["longitude"].as_f64()?,
-            ),
-            wikibase::Value::MonoLingual(v) => Some(
-                v.language() == v2["language"].as_str()?
-                    && self.normalize_string(&v.text().to_string())
-                        == self.normalize_string(&v2["text"].as_str()?.to_string()),
-            ),
-            wikibase::Value::Entity(v) => Some(v.id() == v2["id"].as_str()?),
-            wikibase::Value::Quantity(v) => {
-                Some(*v.amount() == v2["amount"].as_str()?.parse::<f64>().ok()?)
-            }
-            wikibase::Value::StringValue(v) => Some(
-                self.normalize_string(&v.to_string())
-                    == self.normalize_string(&v2.as_str()?.to_string()),
-            ),
-            wikibase::Value::Time(v) => {
-                let t1 = RE_TIME.replace_all(v.time(), "$a$b");
-                let t2 = RE_TIME.replace_all(v2["time"].as_str()?, "$a$b");
-                Some(v.calendarmodel() == v2["calendarmodel"].as_str()? && t1 == t2)
-            }
-        }
-    }
-
-    fn normalize_string(&self, s: &String) -> String {
-        // TODO necessary?
-        // In PHP: normalizer_normalize (using Form D)
-        s.to_string()
-    }
-
     fn get_item_from_command(
         &mut self,
         command: &mut QuickStatementsCommand,
@@ -567,7 +467,7 @@ impl QuickStatementsBot {
                 None => continue,
             };
             //println!("!!{:?} : {:?}", &dv, &datavalue);
-            match self.is_same_datavalue(&dv, &command.json["datavalue"]) {
+            match command.is_same_datavalue(&dv, &command.json["datavalue"]) {
                 Some(b) => {
                     if b {
                         let id = claim
@@ -660,24 +560,21 @@ impl QuickStatementsBot {
     fn remove_statement(
         self: &mut Self,
         command: &mut QuickStatementsCommand,
-    ) -> Result<(), String> {
+    ) -> Result<Value, String> {
         let statement_id = match self.get_statement_id(command)? {
             Some(id) => id,
             None => return Err("remove_statement: Statement not found".to_string()),
         };
-        //println!("remove_statement: Using statement ID {}", &statement_id);
-        self.run_action(
-            json!({"action":"wbremoveclaims","claim":statement_id}),
-            command,
-        ) // baserevid?
+        command.action_remove_statement(statement_id)
     }
 
     fn remove_sitelink(
         self: &mut Self,
         command: &mut QuickStatementsCommand,
-    ) -> Result<(), String> {
-        command.json["value"] = json!("");
-        self.set_sitelink(command)
+    ) -> Result<Value, String> {
+        self.insert_last_item_into_sources_and_qualifiers(command)?;
+        let i = self.get_item_from_command(command)?.to_owned();
+        command.action_remove_sitelink(&i)
     }
 
     fn remove_from_entity(
@@ -690,10 +587,14 @@ impl QuickStatementsBot {
             return Err("No (last) item available".to_string());
         }
 
-        match command.json["what"].as_str() {
+        let action = match command.json["what"].as_str() {
             Some("statement") => self.remove_statement(command),
             Some("sitelink") => self.remove_sitelink(command),
-            _other => Err("Bad 'what'".to_string()),
+            other => return Err(format!("Bad 'what': '{:?}'", other)),
+        };
+        match action {
+            Ok(action) => self.run_action(action, command),
+            Err(e) => Err(e),
         }
     }
 

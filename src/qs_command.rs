@@ -1,4 +1,5 @@
 use mysql as my;
+use regex::Regex;
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -43,5 +44,144 @@ impl QuickStatementsCommand {
             my::Value::Bytes(x) => String::from_utf8_lossy(x).to_string(),
             _ => String::from(""),
         }
+    }
+
+    fn is_valid_command(&self) -> Result<(), String> {
+        if !self.json.is_object() {
+            return Err(format!("Not a valid command: {:?}", &self));
+        }
+        Ok(())
+    }
+
+    pub fn action_remove_statement(&self, statement_id: String) -> Result<Value, String> {
+        Ok(json!({"action":"wbremoveclaims","claim":statement_id}))
+    }
+
+    pub fn action_remove_sitelink(
+        self: &mut Self,
+        item: &wikibase::Entity,
+    ) -> Result<Value, String> {
+        let tmp = self.json["value"].clone();
+        self.json["value"] = json!("");
+        let ret = self.action_set_sitelink(item);
+        self.json["value"] = tmp;
+        ret
+    }
+
+    pub fn action_set_sitelink(self: &mut Self, item: &wikibase::Entity) -> Result<Value, String> {
+        let site = match &self.json["site"].as_str() {
+            Some(s) => s.to_owned(),
+            None => return Err("site not set".to_string()),
+        };
+        let title = match &self.json["value"].as_str() {
+            Some(s) => s.to_owned(),
+            None => return Err("value (title) not set".to_string()),
+        };
+
+        // Check if this same sitelink is already set
+        match item.sitelinks() {
+            Some(sitelinks) => {
+                let title_underscores = title.replace(" ", "_");
+                for sl in sitelinks {
+                    if sl.site() == site && sl.title().replace(" ", "_") == title_underscores {
+                        return Ok(json!({"already_done":1}));
+                    }
+                }
+            }
+            None => {}
+        }
+
+        Ok(json!({
+            "action":"wbsetsitelink",
+            "id":self.get_prefixed_id(item.id()),
+            "linksite":site,
+            "linktitle":title,
+        }))
+    }
+
+    pub fn action_create_entity(&self) -> Result<Value, String> {
+        let data = match &self.json["data"].as_object() {
+            Some(_) => match serde_json::to_string(&self.json["data"]) {
+                Ok(s) => s,
+                _ => "{}".to_string(),
+            },
+            None => "{}".to_string(),
+        };
+        let new_type = match self.json["type"].as_str() {
+            Some(t) => t,
+            None => return Err("No type set".to_string()),
+        };
+        Ok(json!({
+            "action":"wbeditentity",
+            "new":new_type,
+            "data":data,
+        }))
+    }
+
+    pub fn action_merge_entities(&self) -> Result<Value, String> {
+        self.is_valid_command()?;
+        let item1 = match self.json["item1"].as_str() {
+            Some(t) => t,
+            None => return Err("item1 not set".to_string()),
+        };
+        let item2 = match self.json["item2"].as_str() {
+            Some(t) => t,
+            None => return Err("item2 not set".to_string()),
+        };
+
+        Ok(json!({
+            "action":"wbmergeitems",
+            "fromid":item1,
+            "toid":item2,
+            "ignoreconflicts":"description"
+        }))
+    }
+
+    pub fn is_same_datavalue(&self, dv1: &wikibase::DataValue, dv2: &Value) -> Option<bool> {
+        lazy_static! {
+            static ref RE_TIME: Regex = Regex::new("^(?P<a>[+-]{0,1})0*(?P<b>.+)$")
+                .expect("QuickStatementsCommand::is_same_datavalue:RE_TIME does not compile");
+        }
+
+        if dv1.value_type().string_value() != dv2["type"].as_str()? {
+            return Some(false);
+        }
+
+        let v2 = &dv2["value"];
+        match dv1.value() {
+            wikibase::Value::Coordinate(v) => Some(
+                v.globe() == v2["globe"].as_str()?
+                    && *v.latitude() == v2["latitude"].as_f64()?
+                    && *v.longitude() == v2["longitude"].as_f64()?,
+            ),
+            wikibase::Value::MonoLingual(v) => Some(
+                v.language() == v2["language"].as_str()?
+                    && self.normalize_string(&v.text().to_string())
+                        == self.normalize_string(&v2["text"].as_str()?.to_string()),
+            ),
+            wikibase::Value::Entity(v) => Some(v.id() == v2["id"].as_str()?),
+            wikibase::Value::Quantity(v) => {
+                Some(*v.amount() == v2["amount"].as_str()?.parse::<f64>().ok()?)
+            }
+            wikibase::Value::StringValue(v) => Some(
+                self.normalize_string(&v.to_string())
+                    == self.normalize_string(&v2.as_str()?.to_string()),
+            ),
+            wikibase::Value::Time(v) => {
+                let t1 = RE_TIME.replace_all(v.time(), "$a$b");
+                let t2 = RE_TIME.replace_all(v2["time"].as_str()?, "$a$b");
+                Some(v.calendarmodel() == v2["calendarmodel"].as_str()? && t1 == t2)
+            }
+        }
+    }
+
+    fn normalize_string(&self, s: &String) -> String {
+        // TODO necessary?
+        // In PHP: normalizer_normalize (using Form D)
+        s.to_string()
+    }
+
+    pub fn get_prefixed_id(&self, s: &str) -> String {
+        s.to_string() // TODO necessary?
     }
 }
