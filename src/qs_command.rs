@@ -598,6 +598,12 @@ mod tests {
     }
 
     #[test]
+    fn test_already_done() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert_eq!(c.already_done(), Ok(json!({"already_done":1})));
+    }
+
+    #[test]
     fn test_action_set_sitelink() {
         let c =
             QuickStatementsCommand::new_from_json(&json!({"site":"enwiki","value":"Jimbo_Wales"}));
@@ -647,4 +653,78 @@ mod tests {
             }))
         );
     }
+
+    #[test]
+    fn test_action_set_label() {
+        let c =
+            QuickStatementsCommand::new_from_json(&json!({"language":"it","value":"Dummy text"}));
+        let item = wikibase::Entity::new_item(
+            "Q12345".to_string(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            None,
+            false,
+        );
+        assert_eq!(
+            c.action_set_label(&item),
+            Ok(json!({
+                "action":"wbsetlabel",
+                "id":"Q12345",
+                "language":"it",
+                "value":"Dummy text",
+            }))
+        );
+    }
+
+    #[test]
+    fn test_action_set_description() {
+        let c =
+            QuickStatementsCommand::new_from_json(&json!({"language":"it","value":"Dummy text"}));
+        let item = wikibase::Entity::new_item(
+            "Q12345".to_string(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            None,
+            false,
+        );
+        assert_eq!(
+            c.action_set_description(&item),
+            Ok(json!({
+                "action":"wbsetdescription",
+                "id":"Q12345",
+                "language":"it",
+                "value":"Dummy text",
+            }))
+        );
+    }
+
+    #[test]
+    fn test_action_add_alias() {
+        let c =
+            QuickStatementsCommand::new_from_json(&json!({"language":"it","value":"Dummy text"}));
+        let item = wikibase::Entity::new_item(
+            "Q12345".to_string(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            None,
+            false,
+        );
+        assert_eq!(
+            c.action_add_alias(&item),
+            Ok(json!({
+                "action":"wbsetaliases",
+                "id":"Q12345",
+                "language":"it",
+                "add":"Dummy text",
+            }))
+        );
+    }
+
+    // TODO action_add_statement
 }
