@@ -76,23 +76,6 @@ impl QuickStatementsBot {
         config.get_next_command(self.batch_id)
     }
 
-    fn create_new_entity(
-        self: &mut Self,
-        command: &mut QuickStatementsCommand,
-    ) -> Result<(), String> {
-        match command.action_create_entity() {
-            Ok(action) => self.run_action(action, command),
-            Err(e) => return Err(e),
-        }
-    }
-
-    fn merge_entities(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
-        match command.action_merge_entities() {
-            Ok(action) => self.run_action(action, command),
-            Err(e) => return Err(e),
-        }
-    }
-
     fn set_label(self: &mut Self, command: &mut QuickStatementsCommand) -> Result<(), String> {
         let i = self.get_item_from_command(command)?.to_owned();
         let language = command.json["language"]
@@ -495,21 +478,17 @@ impl QuickStatementsBot {
     fn remove_from_entity(
         self: &mut Self,
         command: &mut QuickStatementsCommand,
-    ) -> Result<(), String> {
+    ) -> Result<Value, String> {
         self.load_command_items(command);
         self.insert_last_item_into_sources_and_qualifiers(command)?;
         if self.current_entity_id.is_none() {
             return Err("No (last) item available".to_string());
         }
 
-        let action = match command.json["what"].as_str() {
+        match command.json["what"].as_str() {
             Some("statement") => self.remove_statement(command),
             Some("sitelink") => self.remove_sitelink(command),
             other => return Err(format!("Bad 'what': '{:?}'", other)),
-        };
-        match action {
-            Ok(action) => self.run_action(action, command),
-            Err(e) => Err(e),
         }
     }
 
@@ -567,17 +546,39 @@ impl QuickStatementsBot {
         self.current_property_id = None;
         self.current_entity_id = None;
 
-        let result = match command.json["action"].as_str().unwrap_or("") {
-            "create" => self.create_new_entity(command),
-            "merge" => self.merge_entities(command),
-            "add" => self.add_to_entity(command),
+        let action = command.json["action"].as_str().unwrap_or("");
+
+        match action {
+            "add" => {
+                let result = self.add_to_entity(command);
+                let ret = match &result {
+                    Err(message) => self.set_command_status("ERROR", Some(message), command),
+                    _ => self.set_command_status("DONE", None, command),
+                };
+                return ret;
+            }
+            _ => {}
+        }
+
+        let action_to_perform = match action {
+            "create" => command.action_create_entity(),
+            "merge" => command.action_merge_entities(),
             "remove" => self.remove_from_entity(command),
             other => Err(format!("Unknown action '{}'", &other)),
         };
 
-        match &result {
-            Err(message) => self.set_command_status("ERROR", Some(message), command),
-            _ => self.set_command_status("DONE", None, command),
+        match action_to_perform {
+            Ok(action) => match self.run_action(action, command) {
+                Ok(_) => self.set_command_status("DONE", None, command),
+                Err(e) => {
+                    self.set_command_status("ERROR", Some(&e), command)?;
+                    Err(e)
+                }
+            },
+            Err(e) => {
+                self.set_command_status("ERROR", Some(&e), command)?;
+                Err(e)
+            }
         }
     }
 
