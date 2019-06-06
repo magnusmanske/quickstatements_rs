@@ -776,6 +776,20 @@ mod tests {
             .unwrap());
     }
 
+    #[test]
+    fn is_same_datavalue_string() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert!(c
+            .is_same_datavalue(
+                &wikibase::DataValue::new(
+                    wikibase::DataValueType::StringType,
+                    wikibase::Value::StringValue("dummy string")
+                ),
+                &json!({"type":"string","value":"dummy string"})
+            )
+            .unwrap());
+    }
+
     /*
         fn is_same_datavalue(&self, dv1: &wikibase::DataValue, dv2: &Value) -> Option<bool> {
             lazy_static! {

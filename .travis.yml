@@ -1,7 +1,7 @@
 language: rust
 
 rust:
-    - stable
+  - stable
 
 sudo: false
 
@@ -11,6 +11,6 @@ os:
   - linux
 
 script:
-  - cargo build
-  - cargo test
+  - cargo build --verbose --all
+  - cargo test --verbose --all
 
