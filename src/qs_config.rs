@@ -41,6 +41,13 @@ impl QuickStatements {
         Some(ret)
     }
 
+    pub fn edit_delay_ms(&self) -> Option<u64> {
+        match self.params["edit_delay_ms"].as_u64() {
+            Some(x) => Some(x),
+            None => Some(1000), // default: 1000ms=1sec
+        }
+    }
+
     pub fn get_site_from_batch(&self, batch_id: i64) -> Option<String> {
         let pool = match &self.pool {
             Some(pool) => pool,

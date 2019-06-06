@@ -41,7 +41,7 @@ impl QuickStatementsBot {
         match config.get_api_url(self.batch_id) {
             Some(url) => {
                 let mut mw_api = mediawiki::api::Api::new(url).map_err(|e| format!("{:?}", e))?;
-                mw_api.set_edit_delay(Some(1000)); // 1000ms=1sec
+                mw_api.set_edit_delay(config.edit_delay_ms());
                 config.set_bot_api_auth(&mut mw_api, self.batch_id);
                 self.mw_api = Some(mw_api);
             }
