@@ -823,30 +823,35 @@ mod tests {
             .unwrap());
     }
 
-    /*
-        fn is_same_datavalue(&self, dv1: &wikibase::DataValue, dv2: &Value) -> Option<bool> {
-            lazy_static! {
-                static ref RE_TIME: Regex = Regex::new("^(?P<a>[+-]{0,1})0*(?P<b>.+)$")
-                    .expect("QuickStatementsCommand::is_same_datavalue:RE_TIME does not compile");
-            }
+    #[test]
+    fn get_snak_type_for_datavalue() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert_eq!(
+            c.get_snak_type_for_datavalue(&json!({"value":{}})),
+            Ok("value".to_string())
+        );
+        assert_eq!(
+            c.get_snak_type_for_datavalue(&json!({"value":"novalue"})),
+            Ok("novalue".to_string())
+        );
+        assert_eq!(
+            c.get_snak_type_for_datavalue(&json!({"value":"somevalue"})),
+            Ok("somevalue".to_string())
+        );
+        assert_eq!(
+            c.get_snak_type_for_datavalue(&json!({"value":"foobar"})),
+            Ok("value".to_string())
+        );
+        let dv = json!({"foo":"bar"});
+        assert_eq!(
+            c.get_snak_type_for_datavalue(&dv),
+            Err(format!("Cannot determine snak type: {}", &dv))
+        );
+    }
 
-            if dv1.value_type().string_value() != dv2["type"].as_str()? {
-                return Some(false);
-            }
-
-            let v2 = &dv2["value"];
-            match dv1.value() {
-                wikibase::Value::Time(v) => {
-                    let t1 = RE_TIME.replace_all(v.time(), "$a$b");
-                    let t2 = RE_TIME.replace_all(v2["time"].as_str()?, "$a$b");
-                    Some(v.calendarmodel() == v2["calendarmodel"].as_str()? && t1 == t2)
-                }
-            }
-        }
-
-    */
     // TODO
     // action_add_statement
     // action_add_qualifier
     // action_add_sources
+    // get_statement_id
 }
