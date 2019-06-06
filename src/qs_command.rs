@@ -790,6 +790,39 @@ mod tests {
             .unwrap());
     }
 
+    #[test]
+    fn is_same_datavalue_quantity() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert!(c
+            .is_same_datavalue(
+                &wikibase::DataValue::new(
+                    wikibase::DataValueType::Quantity,
+                    wikibase::Value::Quantity(wikibase::QuantityValue::new(
+                        -123.45, None, "1", None
+                    ))
+                ),
+                &json!({"type":"quantity","value":{"amount":"-123.45"}})
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn is_same_datavalue_time() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        let calendarmodel = "http://www.wikidata.org/entity/Q1985727";
+        assert!(c
+            .is_same_datavalue(
+                &wikibase::DataValue::new(
+                    wikibase::DataValueType::Time,
+                    wikibase::Value::Time(wikibase::TimeValue::new(
+                        0,0,calendarmodel,11,"+2019-06-06T00:00:00Z",0
+                    ))
+                ),
+                &json!({"type":"time","value":{"time":"+0002019-06-06T00:00:00Z","calendarmodel":calendarmodel}})
+            )
+            .unwrap());
+    }
+
     /*
         fn is_same_datavalue(&self, dv1: &wikibase::DataValue, dv2: &Value) -> Option<bool> {
             lazy_static! {
@@ -803,11 +836,6 @@ mod tests {
 
             let v2 = &dv2["value"];
             match dv1.value() {
-                wikibase::Value::Entity(v) => Some(v.id() == v2["id"].as_str()?),
-                wikibase::Value::Quantity(v) => {
-                    Some(*v.amount() == v2["amount"].as_str()?.parse::<f64>().ok()?)
-                }
-                wikibase::Value::StringValue(v) => Some(v.to_string() == v2.as_str()?),
                 wikibase::Value::Time(v) => {
                     let t1 = RE_TIME.replace_all(v.time(), "$a$b");
                     let t2 = RE_TIME.replace_all(v2["time"].as_str()?, "$a$b");
