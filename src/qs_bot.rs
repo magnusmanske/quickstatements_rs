@@ -53,8 +53,19 @@ impl QuickStatementsBot {
     }
 
     pub fn run(self: &mut Self) -> Result<bool, String> {
-        //println!("Batch #{}: doing stuff", self.batch_id);
-        match self.get_next_command() {
+        //Check if batch is still valid (STOP etc)
+        let command = match self.get_next_command() {
+            Ok(c) => c,
+            Err(_) => {
+                let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
+                config
+                    .deactivate_batch_run(self.batch_id, self.user_id)
+                    .ok_or("Can't set batch as stopped".to_string())?;
+                return Ok(false);
+            }
+        };
+
+        match command {
             Some(mut command) => {
                 match self.execute_command(&mut command) {
                     Ok(_) => {}
@@ -72,9 +83,9 @@ impl QuickStatementsBot {
         }
     }
 
-    fn get_next_command(&self) -> Option<QuickStatementsCommand> {
-        let mut config = self.config.lock().ok()?;
-        config.get_next_command(self.batch_id)
+    fn get_next_command(&self) -> Result<Option<QuickStatementsCommand>, String> {
+        let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
+        Ok(config.get_next_command(self.batch_id))
     }
 
     fn prepare_to_execute(

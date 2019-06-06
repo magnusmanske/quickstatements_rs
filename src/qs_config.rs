@@ -226,9 +226,7 @@ impl QuickStatements {
         println!("Currently {} bots running", self.number_of_bots_running());
     }
 
-    pub fn set_batch_finished(&mut self, batch_id: i64, user_id: i64) -> Option<()> {
-        println!("set_batch_finished: Batch #{}", batch_id);
-
+    pub fn deactivate_batch_run(self: &mut Self, batch_id: i64, user_id: i64) -> Option<()> {
         // Decrease user batch counter
         self.running_batch_ids.insert(batch_id);
         let user_counter = match self.user_counter.get(&user_id) {
@@ -236,19 +234,64 @@ impl QuickStatements {
             None => 0,
         };
         self.user_counter.insert(user_id, user_counter - 1);
+        self.running_batch_ids.remove(&batch_id);
+        println!("Currently {} bots running", self.number_of_bots_running());
+        Some(())
+    }
 
+    pub fn set_batch_finished(&mut self, batch_id: i64, user_id: i64) -> Option<()> {
+        println!("set_batch_finished: Batch #{}", batch_id);
+        self.set_batch_status("DONE", "", batch_id, user_id)
+    }
+
+    pub fn check_batch_not_stopped(self: &mut Self, batch_id: i64) -> Result<(), String> {
+        let pool = match &self.pool {
+            Some(pool) => pool,
+            None => {
+                return Err(format!(
+                    "QuickStatementsConfig::check_batch_not_stopped: Can't get DB handle"
+                ))
+            }
+        };
+        let sql: String = format!(
+            "SELECT * FROM batch WHERE id={} AND `status` NOT IN ('RUN','INIT')",
+            batch_id
+        );
+        let result = match pool.prep_exec(sql, ()) {
+            Ok(r) => r,
+            Err(e) => return Err(format!("Error: {}", e)),
+        };
+        for _row in result {
+            return Err(format!(
+                "QuickStatementsConfig::check_batch_not_stopped: batch #{} is not RUN or INIT",
+                batch_id
+            ));
+        }
+        Ok(())
+    }
+
+    fn set_batch_status(
+        &mut self,
+        status: &str,
+        message: &str,
+        batch_id: i64,
+        user_id: i64,
+    ) -> Option<()> {
         let pool = match &self.pool {
             Some(pool) => pool,
             None => return None,
         };
         pool.prep_exec(
-            r#"UPDATE `batch` SET `status`="DONE",`message`="",`ts_last_change`=? WHERE id=?"#,
-            (my::Value::from(self.timestamp()), my::Value::Int(batch_id)),
+            r#"UPDATE `batch` SET `status`=?,`message`=?,`ts_last_change`=? WHERE id=?"#,
+            (
+                my::Value::from(status),
+                my::Value::from(message),
+                my::Value::from(self.timestamp()),
+                my::Value::Int(batch_id),
+            ),
         )
         .ok()?;
-        self.running_batch_ids.remove(&batch_id);
-        println!("Currently {} bots running", self.number_of_bots_running());
-        Some(())
+        self.deactivate_batch_run(batch_id, user_id)
     }
 
     pub fn get_next_command(&mut self, batch_id: i64) -> Option<QuickStatementsCommand> {
