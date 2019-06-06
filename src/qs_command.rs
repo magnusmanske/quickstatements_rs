@@ -783,7 +783,7 @@ mod tests {
             .is_same_datavalue(
                 &wikibase::DataValue::new(
                     wikibase::DataValueType::StringType,
-                    wikibase::Value::StringValue("dummy string")
+                    wikibase::Value::StringValue("dummy string".to_string())
                 ),
                 &json!({"type":"string","value":"dummy string"})
             )
