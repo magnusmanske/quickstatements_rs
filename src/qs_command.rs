@@ -571,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn text_check_prop() {
+    fn check_prop() {
         let c = QuickStatementsCommand::new_from_json(&json!({}));
         assert_eq!(c.check_prop("P12345"), Ok("P12345".to_string()));
         assert_eq!(
@@ -581,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn text_get_entity_id_option() {
+    fn get_entity_id_option() {
         let c = QuickStatementsCommand::new_from_json(&json!({}));
         assert_eq!(
             c.get_entity_id_option(&json!(" Q12345 ")),
