@@ -1,5 +1,6 @@
 use crate::qs_command::QuickStatementsCommand;
 use crate::qs_config::QuickStatements;
+use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -242,6 +243,12 @@ impl QuickStatementsBot {
             Err(_e) => return Err("Wikidata editing fail".to_string()),
         };
 
+        lazy_static! {
+            static ref RE_QUAL_OK: Regex =
+                Regex::new("^The statement has already a qualifier with hash")
+                    .expect("QuickStatementsBot::run_action:RE_QUAL_OK does not compile");
+        }
+
         match res["success"].as_i64() {
             Some(num) => {
                 if num == 1 {
@@ -252,13 +259,17 @@ impl QuickStatementsBot {
                 }
             }
             None => {
-                println!("\nCOMMAND ERROR #{}:\n{:?}\n{}", &command.id, &params, &res);
                 match res["error"]["info"].as_str() {
                     Some(s) => {
                         command.json["meta"]["message"] = json!(s);
+                        // That qualifier already exists, return OK
+                        if RE_QUAL_OK.is_match(s) {
+                            return Ok(());
+                        }
                     }
                     None => {}
                 }
+                println!("\nCOMMAND ERROR #{}:\n{:?}\n{}", &command.id, &params, &res);
                 Err("No success flag set in API result".to_string())
             }
         }
