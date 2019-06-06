@@ -157,7 +157,8 @@ impl QuickStatements {
         sql += "'INIT','RUN'";
         //sql += "'TEST'" ;
         sql += ")";
-        //sql += " AND id=13445"; // TESTING: Specific batch only
+        sql += " AND id=13324"; // TESTING: Specific batch only
+
         //sql += " AND user=4420"; // TESTING: [[User:Magnus Manske]] only
         sql += r#" AND NOT EXISTS (SELECT * FROM command WHERE batch_id=batch.id AND json rlike '"item":"L\\d')"# ; // TESTING: Available batches that do NOT use lexemes
 

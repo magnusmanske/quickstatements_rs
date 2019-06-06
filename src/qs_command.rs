@@ -484,6 +484,13 @@ impl QuickStatementsCommand {
     }
 
     fn get_statement_id(&self, item: &wikibase::Entity) -> Result<Option<String>, String> {
+        // Try directly by statement ID
+        match self.json["id"].as_str() {
+            Some(id) => return Ok(Some(id.to_string())),
+            None => {}
+        }
+
+        // No ID given, find the property
         let property = match self.json["property"].as_str() {
             Some(p) => p,
             None => {
@@ -494,6 +501,7 @@ impl QuickStatementsCommand {
             }
         };
 
+        // Find the correct value for the property
         for claim in item.claims() {
             if claim.main_snak().property() != property {
                 continue;
@@ -542,7 +550,11 @@ impl QuickStatementsCommand {
     }
 
     pub fn fix_entity_id(id: String) -> String {
-        id.trim().to_uppercase()
+        lazy_static! {
+            static ref RE_STATEMENT_ID: Regex = Regex::new(r#"\$.*$"#)
+                .expect("QuickStatementsBot::fix_entity_id:RE_STATEMENT_ID does not compile");
+        }
+        RE_STATEMENT_ID.replace_all(&id, "").trim().to_uppercase()
     }
 }
 
@@ -594,6 +606,10 @@ mod tests {
     fn fix_entity_id() {
         assert_eq!(
             QuickStatementsCommand::fix_entity_id(" q12345  ".to_string()),
+            "Q12345".to_string()
+        );
+        assert_eq!(
+            QuickStatementsCommand::fix_entity_id(" q12345$foobar  ".to_string()),
             "Q12345".to_string()
         );
     }
