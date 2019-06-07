@@ -156,7 +156,7 @@ impl QuickStatementsParser {
         }
         self.property = Some(ev);
         self.value = Some(match parts.get(2) {
-            Some(value) => match self.parse_value(value.to_string()) {
+            Some(value) => match Self::parse_value(value.to_string()) {
                 Some(value) => value,
                 None => return Err(format!("Cannot parse value")),
             },
@@ -230,20 +230,35 @@ impl QuickStatementsParser {
         )))
     }
 
-    fn parse_value(&self, value: String) -> Option<Value> {
+    fn parse_value(value: String) -> Option<Value> {
         lazy_static! {
             static ref RE_STRING: Regex = Regex::new(r#"^"(.*)"$"#).unwrap();
             static ref RE_MONOLINGUAL_STRING: Regex = Regex::new(r#"^([a-z-]+):"(.*)"$"#).unwrap();
+            static ref RE_COORDINATE: Regex =
+                Regex::new(r#"^@([+-]{0,1}[0-9.-]+)/([+-]{0,1}[0-9.-]+)$"#).unwrap();
         }
 
         /*
         Entity(EntityID),
         MonoLingualText(MonoLingualText),
         String(String),
-        *Time(TimeValue),
-        *GlobeCoordinate(Coordinate),
+        Time(TimeValue),
+        GlobeCoordinate(Coordinate),
         *Quantity(QuantityValue),
         */
+
+        match RE_COORDINATE.captures(&value) {
+            Some(caps) => {
+                return Some(Value::GlobeCoordinate(Coordinate::new(
+                    None,
+                    "http://www.wikidata.org/entity/Q2".to_string(),
+                    caps.get(1).unwrap().as_str().parse::<f64>().ok()?,
+                    caps.get(2).unwrap().as_str().parse::<f64>().ok()?,
+                    None,
+                )))
+            }
+            None => {}
+        }
 
         match Self::parse_time(&value) {
             Some(t) => return Some(t),
@@ -348,6 +363,16 @@ mod tests {
             precision,
             &time.to_string(),
             0,
+        )))
+    }
+
+    fn make_coordinate(lat: f64, lon: f64) -> Option<Value> {
+        Some(Value::GlobeCoordinate(Coordinate::new(
+            None,
+            "http://www.wikidata.org/entity/Q2".to_string(),
+            lat,
+            lon,
+            None,
         )))
     }
 
@@ -496,6 +521,14 @@ mod tests {
         assert_eq!(
             QuickStatementsParser::parse_time("+2019"),
             make_time("+2019-01-01T00:00:00Z", 9)
+        )
+    }
+
+    #[test]
+    fn parse_coordinate() {
+        assert_eq!(
+            QuickStatementsParser::parse_value("@-123.45/67.89".to_string()),
+            make_coordinate(-123.45, 67.89)
         )
     }
 
