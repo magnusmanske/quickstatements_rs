@@ -1,6 +1,9 @@
 use regex::Regex;
 //use serde_json::Value;
-use wikibase::{Coordinate, EntityType, EntityValue, MonoLingualText, QuantityValue, TimeValue};
+use wikibase::{
+    Coordinate, EntityType, EntityValue, LocaleString, MonoLingualText, QuantityValue, SiteLink,
+    TimeValue,
+};
 
 /*
 TODO:
@@ -26,10 +29,26 @@ pub enum Value {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct PropertyValue {
+    property: EntityID,
+    value: Value,
+}
+
+impl PropertyValue {
+    pub fn new(property: EntityID, value: Value) -> Self {
+        Self { property, value }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum CommandType {
     Create,
     Merge,
     EditStatement,
+    AddLabel,
+    AddDescription,
+    AddAlias,
+    AddSitelink,
     Unknown,
 }
 
@@ -42,10 +61,14 @@ pub enum CommandModifier {
 pub struct QuickStatementsParser {
     command: CommandType,
     item: Option<EntityID>,
-    item2: Option<EntityID>, // For MERGE
+    target_item: Option<EntityID>, // For MERGE
     property: Option<EntityValue>,
     value: Option<Value>,
     modifier: Option<CommandModifier>,
+    recerences: Vec<PropertyValue>,
+    qualifiers: Vec<PropertyValue>,
+    sitelink: Option<SiteLink>,
+    locale_string: Option<LocaleString>,
     comment: Option<String>,
 }
 
@@ -74,10 +97,14 @@ impl QuickStatementsParser {
         Self {
             command: CommandType::Unknown,
             item: None,
-            item2: None,
+            target_item: None,
             property: None,
             value: None,
             modifier: None,
+            recerences: vec![],
+            qualifiers: vec![],
+            sitelink: None,
+            locale_string: None,
             comment: None,
         }
     }
@@ -102,11 +129,11 @@ impl QuickStatementsParser {
         let mut ret = Self::new_blank_with_comment(comment);
         ret.command = CommandType::Merge;
         ret.item = Some(Self::parse_item_id(&i1)?);
-        ret.item2 = Some(Self::parse_item_id(&i2)?);
-        if ret.item.is_none() || ret.item2.is_none() {
+        ret.target_item = Some(Self::parse_item_id(&i2)?);
+        if ret.item.is_none() || ret.target_item.is_none() {
             return Err(format!("MERGE requires two parameters"));
         }
-        if ret.item == Some(EntityID::Last) || ret.item2 == Some(EntityID::Last) {
+        if ret.item == Some(EntityID::Last) || ret.target_item == Some(EntityID::Last) {
             return Err(format!("MERGE does not allow LAST"));
         }
         return Ok(ret);
@@ -137,7 +164,8 @@ impl QuickStatementsParser {
             return Ok(ret);
         }
 
-        //ret.property = Some(Self::parse_item_id(property)?);
+        // TODO label/desc/alias/sitelink
+
         Err(format!("Cannot parse commands: {:?}", &parts))
     }
 
@@ -230,6 +258,71 @@ impl QuickStatementsParser {
         )))
     }
 
+    fn parse_quantity(value: &str) -> Option<Value> {
+        lazy_static! {
+            static ref RE_QUANTITY_UNIT: Regex = Regex::new(r#"^(.+)U(\d+)$"#).unwrap();
+            static ref RE_QUANTITY_PLAIN: Regex =
+                Regex::new(r#"^([-+]{0,1}\d+\.{0,1}\d*)$"#).unwrap();
+            static ref RE_QUANTITY_TOLERANCE: Regex =
+                Regex::new(r#"^([-+]{0,1}\d+\.{0,1}\d*)~(\d+\.{0,1}\d*)$"#).unwrap();
+            static ref RE_QUANTITY_RANGE: Regex =
+                Regex::new(r#"^([-+]{0,1}\d+\.{0,1}\d*)\[([-+]{0,1}\d+\.{0,1}\d*),([-+]{0,1}\d+\.{0,1}\d*)\]$"#).unwrap();
+        }
+
+        let value = value.to_string();
+        let (value, unit) = match RE_QUANTITY_UNIT.captures(&value) {
+            Some(caps) => {
+                let value = caps.get(1)?.as_str().to_string();
+                let unit = "http://www.wikidata.org/entity/Q".to_string() + &caps.get(2)?.as_str();
+                (value, unit)
+            }
+            None => (value, "1".to_string()),
+        };
+
+        match RE_QUANTITY_PLAIN.captures(&value) {
+            Some(caps) => {
+                return Some(Value::Quantity(wikibase::QuantityValue::new(
+                    caps.get(1)?.as_str().parse::<f64>().ok()?,
+                    None,
+                    unit,
+                    None,
+                )))
+            }
+            None => {}
+        }
+
+        match RE_QUANTITY_TOLERANCE.captures(&value) {
+            Some(caps) => {
+                let amount = caps.get(1)?.as_str().parse::<f64>().ok()?;
+                let tolerance = caps.get(2)?.as_str().parse::<f64>().ok()?;
+                return Some(Value::Quantity(wikibase::QuantityValue::new(
+                    amount,
+                    Some(amount - tolerance),
+                    unit,
+                    Some(amount + tolerance),
+                )));
+            }
+            None => {}
+        }
+
+        match RE_QUANTITY_RANGE.captures(&value) {
+            Some(caps) => {
+                let amount = caps.get(1)?.as_str().parse::<f64>().ok()?;
+                let lower = caps.get(2)?.as_str().parse::<f64>().ok()?;
+                let upper = caps.get(3)?.as_str().parse::<f64>().ok()?;
+                return Some(Value::Quantity(wikibase::QuantityValue::new(
+                    amount,
+                    Some(lower),
+                    unit,
+                    Some(upper),
+                )));
+            }
+            None => {}
+        }
+
+        None
+    }
+
     fn parse_value(value: String) -> Option<Value> {
         lazy_static! {
             static ref RE_STRING: Regex = Regex::new(r#"^"(.*)"$"#).unwrap();
@@ -238,25 +331,21 @@ impl QuickStatementsParser {
                 Regex::new(r#"^@([+-]{0,1}[0-9.-]+)/([+-]{0,1}[0-9.-]+)$"#).unwrap();
         }
 
-        /*
-        Entity(EntityID),
-        MonoLingualText(MonoLingualText),
-        String(String),
-        Time(TimeValue),
-        GlobeCoordinate(Coordinate),
-        *Quantity(QuantityValue),
-        */
-
         match RE_COORDINATE.captures(&value) {
             Some(caps) => {
                 return Some(Value::GlobeCoordinate(Coordinate::new(
                     None,
                     "http://www.wikidata.org/entity/Q2".to_string(),
-                    caps.get(1).unwrap().as_str().parse::<f64>().ok()?,
-                    caps.get(2).unwrap().as_str().parse::<f64>().ok()?,
+                    caps.get(1)?.as_str().parse::<f64>().ok()?,
+                    caps.get(2)?.as_str().parse::<f64>().ok()?,
                     None,
                 )))
             }
+            None => {}
+        }
+
+        match Self::parse_quantity(&value) {
+            Some(t) => return Some(t),
             None => {}
         }
 
@@ -268,15 +357,15 @@ impl QuickStatementsParser {
         match RE_MONOLINGUAL_STRING.captures(&value) {
             Some(caps) => {
                 return Some(Value::MonoLingualText(MonoLingualText::new(
-                    caps.get(1).unwrap().as_str(),
-                    caps.get(2).unwrap().as_str(),
+                    caps.get(1)?.as_str(),
+                    caps.get(2)?.as_str(),
                 )))
             }
             None => {}
         }
 
         match RE_STRING.captures(&value) {
-            Some(caps) => return Some(Value::String(caps.get(1).unwrap().as_str().to_string())),
+            Some(caps) => return Some(Value::String(caps.get(1)?.as_str().to_string())),
             None => {}
         }
 
@@ -351,7 +440,7 @@ mod tests {
         EntityID::Id(EntityValue::new(EntityType::Item, "Q123"))
     }
 
-    fn item2() -> EntityID {
+    fn target_item() -> EntityID {
         EntityID::Id(EntityValue::new(EntityType::Item, "Q456"))
     }
 
@@ -393,7 +482,7 @@ mod tests {
         let mut expected = QuickStatementsParser::new_blank();
         expected.command = CommandType::Merge;
         expected.item = Some(item1());
-        expected.item2 = Some(item2());
+        expected.target_item = Some(target_item());
         assert_eq!(
             QuickStatementsParser::new_from_line(&command.to_string()).unwrap(),
             expected
@@ -529,6 +618,81 @@ mod tests {
         assert_eq!(
             QuickStatementsParser::parse_value("@-123.45/67.89".to_string()),
             make_coordinate(-123.45, 67.89)
+        )
+    }
+
+    #[test]
+    fn parse_quantity_plain() {
+        assert_eq!(
+            QuickStatementsParser::parse_value("-0.123".to_string()),
+            Some(Value::Quantity(wikibase::QuantityValue::new(
+                -0.123, None, "1", None
+            )))
+        )
+    }
+
+    #[test]
+    fn parse_quantity_unit() {
+        assert_eq!(
+            QuickStatementsParser::parse_value("-0.123U11573".to_string()),
+            Some(Value::Quantity(wikibase::QuantityValue::new(
+                -0.123,
+                None,
+                "http://www.wikidata.org/entity/Q11573",
+                None
+            )))
+        )
+    }
+
+    #[test]
+    fn parse_quantity_tolerance() {
+        assert_eq!(
+            QuickStatementsParser::parse_value("-0.321~0.045".to_string()),
+            Some(Value::Quantity(wikibase::QuantityValue::new(
+                -0.321,
+                Some(-0.366),
+                "1",
+                Some(-0.276)
+            )))
+        )
+    }
+
+    #[test]
+    fn parse_quantity_tolerance_unit() {
+        assert_eq!(
+            QuickStatementsParser::parse_value("-0.321~0.045U123".to_string()),
+            Some(Value::Quantity(wikibase::QuantityValue::new(
+                -0.321,
+                Some(-0.366),
+                "http://www.wikidata.org/entity/Q123",
+                Some(-0.276)
+            )))
+        )
+    }
+
+    #[test]
+    fn parse_quantity_range() {
+        assert_eq!(
+            QuickStatementsParser::parse_value("4.56[-1.23,7.89]".to_string()),
+            Some(Value::Quantity(wikibase::QuantityValue::new(
+                4.56,
+                Some(-1.23),
+                "1",
+                Some(7.89)
+            )))
+        )
+    }
+
+    #[test]
+    fn parse_quantity_range_unit() {
+        assert_eq!(
+            QuickStatementsParser::parse_value("4.56[-1.23,7.89]U456".to_string()),
+            Some(Value::Quantity(wikibase::QuantityValue::new(
+                4.56,
+                Some(-1.23),
+                "http://www.wikidata.org/entity/Q456",
+                Some(7.89)
+            )))
         )
     }
 
