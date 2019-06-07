@@ -64,7 +64,7 @@ impl QuickStatementsParser {
         }
 
         if parts.len() >= 3 {
-            return Self::new_edit(parts, comment);
+            return Self::new_edit_statement(parts, comment);
         }
 
         Err("COMMAND NOT VALID".to_string())
@@ -112,10 +112,10 @@ impl QuickStatementsParser {
         return Ok(ret);
     }
 
-    fn new_edit(parts: Vec<String>, comment: Option<String>) -> Result<Self, String> {
+    fn new_edit_statement(parts: Vec<String>, comment: Option<String>) -> Result<Self, String> {
         lazy_static! {
             static ref RE_PROPERTY: Regex = Regex::new(r#"^[Pp]\d+$"#)
-                .expect("QuickStatementsParser::new_edit:RE_PROPERTY does not compile");
+                .expect("QuickStatementsParser::new_edit_statement:RE_PROPERTY does not compile");
         }
 
         let mut ret = Self::new_blank_with_comment(comment);
@@ -133,7 +133,7 @@ impl QuickStatementsParser {
         };
 
         if RE_PROPERTY.is_match(&second) {
-            ret.parse_edit_property(parts, second.to_uppercase())?;
+            ret.parse_edit_statement_property(parts, second.to_uppercase())?;
             return Ok(ret);
         }
 
@@ -141,7 +141,7 @@ impl QuickStatementsParser {
         Err(format!("Cannot parse commands: {:?}", &parts))
     }
 
-    fn parse_edit_property(
+    fn parse_edit_statement_property(
         self: &mut Self,
         parts: Vec<String>,
         second: String,
@@ -160,7 +160,7 @@ impl QuickStatementsParser {
                 Some(value) => value,
                 None => return Err(format!("Cannot parse value")),
             },
-            None => return Err(format!("No value")),
+            None => return Err(format!("No value given")),
         });
 
         // TODO ref/qual
@@ -188,53 +188,24 @@ impl QuickStatementsParser {
             v = v[1..].to_string();
         }
 
-        let (v, precision_opt) = match RE_PRECISION.captures(&v) {
+        let (v, precision) = match RE_PRECISION.captures(&v) {
             Some(caps) => {
                 let new_v = caps.get(1).unwrap().as_str().to_string();
                 let p = caps.get(2).unwrap().as_str().parse::<u64>().ok()?;
-                (new_v, Some(p))
+                (new_v, p)
             }
 
-            None => (v, None),
+            None => (v, 9),
         };
 
         let v = v.replace("T", "-").replace("Z", "").replace(":", "-");
         let mut parts = v.split('-');
-        let year = match parts.next() {
-            Some(x) => x.parse::<u64>().ok()?,
-            None => return None, // No year
-        };
-        let month = match parts.next() {
-            Some(x) => x.parse::<u64>().ok()?,
-            None => {
-                1 // Default
-            }
-        };
-        let day = match parts.next() {
-            Some(x) => x.parse::<u64>().ok()?,
-            None => {
-                1 // Default
-            }
-        };
-        let hour = match parts.next() {
-            Some(x) => x.parse::<u64>().ok()?,
-            None => {
-                0 // Default
-            }
-        };
-        let min = match parts.next() {
-            Some(x) => x.parse::<u64>().ok()?,
-            None => 0, // Default
-        };
-        let sec = match parts.next() {
-            Some(x) => x.parse::<u64>().ok()?,
-            None => 0, // Default
-        };
-
-        let precision = match precision_opt {
-            Some(p) => p,
-            None => 9,
-        };
+        let year = parts.next()?.parse::<u64>().ok()?;
+        let month = parts.next().or(Some("1"))?.parse::<u64>().ok()?;
+        let day = parts.next().or(Some("1"))?.parse::<u64>().ok()?;
+        let hour = parts.next().or(Some("0"))?.parse::<u64>().ok()?;
+        let min = parts.next().or(Some("0"))?.parse::<u64>().ok()?;
+        let sec = parts.next().or(Some("0"))?.parse::<u64>().ok()?;
 
         let time = if false {
             // Preserve h/m/s
