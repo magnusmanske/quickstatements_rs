@@ -174,11 +174,9 @@ impl QuickStatementsParser {
             static ref RE_PRECISION: Regex = Regex::new(r#"^(.+)/(\d+)$"#).unwrap();
         }
 
-        println!("COMPARING TIME '{}'", &value);
         if !RE_TIME.is_match(&value) {
             return None;
         }
-        println!("It's time!");
 
         let mut lead = '+';
 
@@ -190,21 +188,17 @@ impl QuickStatementsParser {
             v = v[1..].to_string();
         }
 
-        println!("Lead is {}", &lead);
-
-        let (v, precision) = match RE_PRECISION.captures(&v) {
+        let (v, precision_opt) = match RE_PRECISION.captures(&v) {
             Some(caps) => {
                 let new_v = caps.get(1).unwrap().as_str().to_string();
                 let p = caps.get(2).unwrap().as_str().parse::<u64>().ok()?;
-                (new_v, p)
+                (new_v, Some(p))
             }
 
-            None => (v, 9),
+            None => (v, None),
         };
 
-        println!("Now: {} / {}", &v, &precision);
-
-        let v = v.replace("T", "").replace("Z", "").replace(":", "-");
+        let v = v.replace("T", "-").replace("Z", "").replace(":", "-");
         let mut parts = v.split('-');
         let year = match parts.next() {
             Some(x) => x.parse::<u64>().ok()?,
@@ -212,29 +206,48 @@ impl QuickStatementsParser {
         };
         let month = match parts.next() {
             Some(x) => x.parse::<u64>().ok()?,
-            None => 1, // Default
+            None => {
+                1 // Default
+            }
         };
         let day = match parts.next() {
             Some(x) => x.parse::<u64>().ok()?,
-            None => 1, // Default
+            None => {
+                1 // Default
+            }
         };
         let hour = match parts.next() {
             Some(x) => x.parse::<u64>().ok()?,
-            None => 1, // Default
+            None => {
+                0 // Default
+            }
         };
         let min = match parts.next() {
             Some(x) => x.parse::<u64>().ok()?,
-            None => 1, // Default
+            None => 0, // Default
         };
         let sec = match parts.next() {
             Some(x) => x.parse::<u64>().ok()?,
-            None => 1, // Default
+            None => 0, // Default
         };
 
-        let time = format!(
-            "{}{}-{:02}-{:02}T{:02}-{:02}-{:02}Z",
-            lead, year, month, day, hour, min, sec
-        );
+        let precision = match precision_opt {
+            Some(p) => p,
+            None => 9,
+        };
+
+        let time = if false {
+            // Preserve h/m/s
+            format!(
+                "{}{}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+                lead, year, month, day, hour, min, sec
+            )
+        } else {
+            format!(
+                "{}{}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+                lead, year, month, day, 0, 0, 0
+            )
+        };
 
         Some(Value::Time(TimeValue::new(
             0,
@@ -356,6 +369,17 @@ mod tests {
         EntityID::Id(EntityValue::new(EntityType::Item, "Q456"))
     }
 
+    fn make_time(time: &str, precision: u64) -> Option<Value> {
+        Some(Value::Time(TimeValue::new(
+            0,
+            0,
+            "http://www.wikidata.org/entity/Q1985727",
+            precision,
+            &time.to_string(),
+            0,
+        )))
+    }
+
     #[test]
     fn create() {
         let command = "CREATE";
@@ -463,4 +487,45 @@ mod tests {
             ("\tfoo\tbar\t".to_string(), Some("1234".to_string()))
         );
     }
+
+    #[test]
+    fn parse_time_full() {
+        assert_eq!(
+            QuickStatementsParser::parse_time("+2019-06-07T12:13:14Z/8"),
+            make_time("+2019-06-07T00:00:00Z", 8)
+        )
+    }
+
+    #[test]
+    fn parse_time_bce() {
+        assert_eq!(
+            QuickStatementsParser::parse_time("-2019-06-07T12:13:14Z/8"),
+            make_time("-2019-06-07T00:00:00Z", 8)
+        )
+    }
+
+    #[test]
+    fn parse_time_default_precision() {
+        assert_eq!(
+            QuickStatementsParser::parse_time("+2019-06-07T12:13:14Z"),
+            make_time("+2019-06-07T00:00:00Z", 9)
+        )
+    }
+
+    #[test]
+    fn parse_time_day() {
+        assert_eq!(
+            QuickStatementsParser::parse_time("+2019-06-07/11"),
+            make_time("+2019-06-07T00:00:00Z", 11)
+        )
+    }
+
+    #[test]
+    fn parse_time_year() {
+        assert_eq!(
+            QuickStatementsParser::parse_time("+2019"),
+            make_time("+2019-01-01T00:00:00Z", 9)
+        )
+    }
+
 }
