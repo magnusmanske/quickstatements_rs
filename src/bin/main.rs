@@ -64,8 +64,15 @@ fn command_parse() {
         if line.is_empty() {
             continue;
         }
+        println!("\n{}", &line);
         match QuickStatementsParser::new_from_line(&line) {
-            Ok(c) => println!("{}\n{:?}\n", &line, &c),
+            Ok(c) => {
+                match c.generate_qs_line() {
+                    Some(line) => println!("{} <REGENERATED>", line),
+                    None => println!("Can't regenerate QS command line"),
+                }
+                println!("{:?}", &c);
+            }
             Err(e) => println!("{}\nCOULD NOT BE PARSED: {}\n", &line, &e),
         }
     }

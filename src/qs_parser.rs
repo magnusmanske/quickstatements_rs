@@ -18,6 +18,15 @@ pub enum EntityID {
     Last,
 }
 
+impl EntityID {
+    pub fn to_string(&self) -> String {
+        match self {
+            EntityID::Id(e) => e.id().to_string(),
+            EntityID::Last => "LAST".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Entity(EntityID),
@@ -102,6 +111,7 @@ impl QuickStatementsParser {
                     _ => return Err(format!("Bad value: '{}'", &parts[2])),
                 };
                 let mut ret = Self::new_blank_with_comment(comment.clone());
+                ret.item = Some(Self::parse_item_id(&Some(&parts[0]))?);
                 match caps.get(1).unwrap().as_str() {
                     "L" => {
                         ret.command = CommandType::SetLabel;
@@ -465,6 +475,47 @@ impl QuickStatementsParser {
             None => (line.to_string(), None),
         }
     }
+
+    fn quote(s: &String) -> String {
+        "\"".to_string() + s + "\""
+    }
+
+    pub fn generate_qs_line(&self) -> Option<String> {
+        let ret = match self.command {
+            CommandType::Create => vec!["CREATE".to_string()],
+            CommandType::Merge => vec![
+                "MERGE".to_string(),
+                self.item.clone()?.to_string(),
+                self.target_item.clone()?.to_string(),
+            ],
+            CommandType::EditStatement => vec![], // TODO
+            CommandType::SetLabel => vec![
+                self.item.clone()?.to_string(),
+                "L".to_string() + self.locale_string.clone()?.language(),
+                Self::quote(&self.locale_string.clone()?.value().to_string()),
+            ],
+            CommandType::SetDescription => vec![
+                self.item.clone()?.to_string(),
+                "D".to_string() + self.locale_string.clone()?.language(),
+                Self::quote(&self.locale_string.clone()?.value().to_string()),
+            ],
+            CommandType::SetAlias => vec![
+                self.item.clone()?.to_string(),
+                "A".to_string() + self.locale_string.clone()?.language(),
+                Self::quote(&self.locale_string.clone()?.value().to_string()),
+            ],
+            CommandType::SetSitelink => vec![
+                self.item.clone()?.to_string(),
+                "S".to_string() + self.sitelink.clone()?.site(),
+                Self::quote(self.sitelink.clone()?.title()),
+            ],
+            CommandType::Unknown => vec![],
+        };
+        if ret.is_empty() {
+            return None;
+        }
+        Some(ret.join("\t"))
+    }
 }
 
 #[cfg(test)]
@@ -730,5 +781,9 @@ mod tests {
             )))
         )
     }
+
+    // TODO add label/alias/desc/sitelink
+    // TODO sources
+    // TODO qualifiers
 
 }
