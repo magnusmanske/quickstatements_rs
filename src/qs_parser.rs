@@ -45,10 +45,10 @@ pub enum CommandType {
     Create,
     Merge,
     EditStatement,
-    AddLabel,
-    AddDescription,
-    AddAlias,
-    AddSitelink,
+    SetLabel,
+    SetDescription,
+    SetAlias,
+    SetSitelink,
     Unknown,
 }
 
@@ -74,6 +74,10 @@ pub struct QuickStatementsParser {
 
 impl QuickStatementsParser {
     pub fn new_from_line(line: &String) -> Result<Self, String> {
+        lazy_static! {
+            static ref RE_META: Regex = Regex::new(r#"^ *([LDAS]) *([a-z_-]+) *$"#).unwrap();
+        }
+
         let (line, comment) = Self::parse_comment(line);
         let parts: Vec<String> = line.split("\t").map(|s| s.to_string()).collect();
         if parts.len() == 0 {
@@ -86,11 +90,43 @@ impl QuickStatementsParser {
             _ => {}
         }
 
-        if parts.len() >= 3 {
-            return Self::new_edit_statement(parts, comment);
+        if parts.len() < 3 {
+            return Err("No valid command".to_string());
         }
 
-        Err("COMMAND NOT VALID".to_string())
+        match RE_META.captures(&parts[1]) {
+            Some(caps) => {
+                let key = caps.get(2).unwrap().as_str();
+                let value = match Self::parse_value(parts[2].clone()) {
+                    Some(Value::String(s)) => s,
+                    _ => return Err(format!("Bad value: '{}'", &parts[2])),
+                };
+                let mut ret = Self::new_blank_with_comment(comment.clone());
+                match caps.get(1).unwrap().as_str() {
+                    "L" => {
+                        ret.command = CommandType::SetLabel;
+                        ret.locale_string = Some(LocaleString::new(key, &value));
+                    }
+                    "D" => {
+                        ret.command = CommandType::SetDescription;
+                        ret.locale_string = Some(LocaleString::new(key, &value));
+                    }
+                    "A" => {
+                        ret.command = CommandType::SetAlias;
+                        ret.locale_string = Some(LocaleString::new(key, &value));
+                    }
+                    "S" => {
+                        ret.command = CommandType::SetSitelink;
+                        ret.sitelink = Some(SiteLink::new(key, &value, vec![]));
+                    }
+                    _ => return Err(format!("Bad command: '{}'", &parts[1])),
+                }
+                return Ok(ret);
+            }
+            None => {}
+        }
+
+        Self::new_edit_statement(parts, comment)
     }
 
     pub fn new_blank() -> Self {
@@ -141,8 +177,7 @@ impl QuickStatementsParser {
 
     fn new_edit_statement(parts: Vec<String>, comment: Option<String>) -> Result<Self, String> {
         lazy_static! {
-            static ref RE_PROPERTY: Regex = Regex::new(r#"^[Pp]\d+$"#)
-                .expect("QuickStatementsParser::new_edit_statement:RE_PROPERTY does not compile");
+            static ref RE_PROPERTY: Regex = Regex::new(r#"^[Pp]\d+$"#).unwrap();
         }
 
         let mut ret = Self::new_blank_with_comment(comment);
@@ -163,8 +198,6 @@ impl QuickStatementsParser {
             ret.parse_edit_statement_property(parts, second.to_uppercase())?;
             return Ok(ret);
         }
-
-        // TODO label/desc/alias/sitelink
 
         Err(format!("Cannot parse commands: {:?}", &parts))
     }
@@ -218,8 +251,8 @@ impl QuickStatementsParser {
 
         let (v, precision) = match RE_PRECISION.captures(&v) {
             Some(caps) => {
-                let new_v = caps.get(1).unwrap().as_str().to_string();
-                let p = caps.get(2).unwrap().as_str().parse::<u64>().ok()?;
+                let new_v = caps.get(1)?.as_str().to_string();
+                let p = caps.get(2)?.as_str().parse::<u64>().ok()?;
                 (new_v, p)
             }
 
@@ -331,6 +364,8 @@ impl QuickStatementsParser {
                 Regex::new(r#"^@([+-]{0,1}[0-9.-]+)/([+-]{0,1}[0-9.-]+)$"#).unwrap();
         }
 
+        let value = value.trim();
+
         match RE_COORDINATE.captures(&value) {
             Some(caps) => {
                 return Some(Value::GlobeCoordinate(Coordinate::new(
@@ -369,7 +404,7 @@ impl QuickStatementsParser {
             None => {}
         }
 
-        match Self::parse_item_id(&Some(&value)) {
+        match Self::parse_item_id(&Some(&value.to_string())) {
             Ok(id) => return Some(Value::Entity(id)),
             Err(_) => {}
         }
