@@ -51,6 +51,31 @@ impl Value {
                 .join("")
                 .to_string(),
             ),
+            Value::MonoLingualText(v) => Some(
+                vec![v.language(), ":\"", v.text(), "\""]
+                    .join("")
+                    .to_string(),
+            ),
+            Value::Quantity(v) => {
+                let mut ret = vec![v.amount().to_string()];
+                match (v.lower_bound(), v.upper_bound()) {
+                    (Some(lower), Some(upper)) => ret.push(
+                        "[".to_string()
+                            + &lower.to_string()
+                            + &",".to_string()
+                            + &upper.to_string()
+                            + &"]".to_string(),
+                    ),
+                    _ => {}
+                }
+                if v.unit() != "1" {
+                    let unit = v.unit().to_string();
+                    // TODO
+                    ret.push(unit);
+                }
+                Some(ret.join("").to_string())
+            }
+            Value::String(v) => Some("\"".to_string() + &v + &"\"".to_string()),
             // TODO
             _ => None,
         }
@@ -576,7 +601,7 @@ impl QuickStatementsParser {
                 }
                 for reference in &self.references {
                     let mut res = reference.to_string_tuple()?;
-                    res.0.replace_range(0..0, "S");
+                    res.0.replace_range(0..1, "S");
                     ret.push(res.0);
                     ret.push(res.1);
                 }
