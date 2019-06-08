@@ -39,12 +39,12 @@ pub enum Value {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PropertyValue {
-    property: EntityID,
+    property: EntityValue,
     value: Value,
 }
 
 impl PropertyValue {
-    pub fn new(property: EntityID, value: Value) -> Self {
+    pub fn new(property: EntityValue, value: Value) -> Self {
         Self { property, value }
     }
 }
@@ -74,7 +74,7 @@ pub struct QuickStatementsParser {
     property: Option<EntityValue>,
     value: Option<Value>,
     modifier: Option<CommandModifier>,
-    recerences: Vec<PropertyValue>,
+    references: Vec<PropertyValue>,
     qualifiers: Vec<PropertyValue>,
     sitelink: Option<SiteLink>,
     locale_string: Option<LocaleString>,
@@ -147,7 +147,7 @@ impl QuickStatementsParser {
             property: None,
             value: None,
             modifier: None,
-            recerences: vec![],
+            references: vec![],
             qualifiers: vec![],
             sitelink: None,
             locale_string: None,
@@ -226,7 +226,44 @@ impl QuickStatementsParser {
             None => return Err(format!("No value given")),
         });
 
-        // TODO ref/qual
+        // References and qualifiers
+
+        lazy_static! {
+            static ref RE_REF_QUAL: Regex = Regex::new(r#"^([PS])(\d+)$"#).unwrap();
+        }
+        let mut i = parts.iter();
+        i.next();
+        i.next();
+        i.next();
+        loop {
+            let (subtype, property) = match i.next() {
+                Some(p) => match RE_REF_QUAL.captures(p) {
+                    Some(caps) => {
+                        let subtype = caps.get(1).unwrap().as_str().to_string();
+                        let prop_string =
+                            "P".to_string() + &caps.get(2).unwrap().as_str().to_string();
+                        let property = self.parse_property_id(&prop_string)?;
+                        (subtype, property)
+                    }
+                    None => return Err(format!("Bad reference/qualifier key: '{}'", &p)),
+                },
+                None => break,
+            };
+            let value = match i.next() {
+                Some(v) => Self::parse_value(v.to_string()).unwrap(),
+                None => {
+                    return Err(format!(
+                        "Qualifier/Reference key without value: '{:?}'",
+                        &property
+                    ))
+                }
+            };
+            match subtype.as_str() {
+                "S" => self.references.push(PropertyValue::new(property, value)),
+                "P" => self.qualifiers.push(PropertyValue::new(property, value)),
+                _ => return Err(format!("Bad ref/qual subtype '{}'", &subtype)),
+            }
+        }
 
         Ok(())
     }
