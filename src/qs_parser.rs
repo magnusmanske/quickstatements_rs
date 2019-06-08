@@ -37,6 +37,26 @@ pub enum Value {
     Time(TimeValue),
 }
 
+impl Value {
+    pub fn to_string(&self) -> Option<String> {
+        match self {
+            Value::Entity(v) => Some(v.to_string()),
+            Value::GlobeCoordinate(v) => Some(
+                vec![
+                    "@".to_string(),
+                    v.latitude().to_string(),
+                    "/".to_string(),
+                    v.longitude().to_string(),
+                ]
+                .join("")
+                .to_string(),
+            ),
+            // TODO
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PropertyValue {
     property: EntityValue,
@@ -46,6 +66,10 @@ pub struct PropertyValue {
 impl PropertyValue {
     pub fn new(property: EntityValue, value: Value) -> Self {
         Self { property, value }
+    }
+
+    pub fn to_string_tuple(&self) -> Option<(String, String)> {
+        Some((self.property.id().to_string(), self.value.to_string()?))
     }
 }
 
@@ -539,7 +563,25 @@ impl QuickStatementsParser {
                 self.item.clone()?.to_string(),
                 self.target_item.clone()?.to_string(),
             ],
-            CommandType::EditStatement => vec![], // TODO
+            CommandType::EditStatement => {
+                let mut ret = vec![
+                    self.item.clone()?.to_string(),
+                    self.property.clone()?.id().to_string(),
+                    self.value.clone()?.to_string()?,
+                ];
+                for qualifier in &self.qualifiers {
+                    let res = qualifier.to_string_tuple()?;
+                    ret.push(res.0);
+                    ret.push(res.1);
+                }
+                for reference in &self.references {
+                    let mut res = reference.to_string_tuple()?;
+                    res.0.replace_range(0..0, "S");
+                    ret.push(res.0);
+                    ret.push(res.1);
+                }
+                ret
+            }
             CommandType::SetLabel => vec![
                 self.item.clone()?.to_string(),
                 "L".to_string() + self.locale_string.clone()?.language(),
