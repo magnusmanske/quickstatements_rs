@@ -88,7 +88,7 @@ impl QuickStatementsParser {
         }
 
         let (line, comment) = Self::parse_comment(line);
-        let parts: Vec<String> = line.split("\t").map(|s| s.to_string()).collect();
+        let parts: Vec<String> = line.trim().split("\t").map(|s| s.to_string()).collect();
         if parts.len() == 0 {
             return Err("Empty string".to_string());
         }
@@ -300,7 +300,7 @@ impl QuickStatementsParser {
             v = v[1..].to_string();
         }
 
-        let (v, precision) = match RE_PRECISION.captures(&v) {
+        let (v, mut precision) = match RE_PRECISION.captures(&v) {
             Some(caps) => {
                 let new_v = caps.get(1)?.as_str().to_string();
                 let p = caps.get(2)?.as_str().parse::<u64>().ok()?;
@@ -318,6 +318,16 @@ impl QuickStatementsParser {
         let hour = parts.next().or(Some("0"))?.parse::<u64>().ok()?;
         let min = parts.next().or(Some("0"))?.parse::<u64>().ok()?;
         let sec = parts.next().or(Some("0"))?.parse::<u64>().ok()?;
+
+        if precision >= 12 {
+            precision = 11;
+        }
+        if day == 0 && precision >= 11 {
+            precision = 10;
+        }
+        if month == 0 && precision >= 10 {
+            precision = 9;
+        }
 
         let time = if false {
             // Preserve h/m/s
