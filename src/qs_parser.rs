@@ -217,15 +217,7 @@ impl QuickStatementsParser {
         parts: Vec<String>,
         second: String,
     ) -> Result<(), String> {
-        let id = Self::parse_item_id(&Some(&second))?;
-        let ev = match id {
-            EntityID::Id(ev) => ev,
-            EntityID::Last => return Err(format!("LAST is not a valid property")),
-        };
-        if *ev.entity_type() != EntityType::Property {
-            return Err(format!("{} is not a property", &second));
-        }
-        self.property = Some(ev);
+        self.property = Some(self.parse_property_id(&second)?);
         self.value = Some(match parts.get(2) {
             Some(value) => match Self::parse_value(value.to_string()) {
                 Some(value) => value,
@@ -237,6 +229,18 @@ impl QuickStatementsParser {
         // TODO ref/qual
 
         Ok(())
+    }
+
+    fn parse_property_id(&self, prop: &String) -> Result<EntityValue, String> {
+        let id = Self::parse_item_id(&Some(&prop))?;
+        let ev = match id {
+            EntityID::Id(ev) => ev,
+            EntityID::Last => return Err(format!("LAST is not a valid property")),
+        };
+        if *ev.entity_type() != EntityType::Property {
+            return Err(format!("{} is not a property", &prop));
+        }
+        Ok(ev)
     }
 
     fn parse_time(value: &str) -> Option<Value> {
