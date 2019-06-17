@@ -4,6 +4,7 @@ use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::{thread, time};
 use wikibase;
 
 #[derive(Debug, Clone)]
@@ -16,6 +17,7 @@ pub struct QuickStatementsBot {
     last_entity_id: Option<String>,
     current_entity_id: Option<String>,
     current_property_id: Option<String>,
+    throttled_delay_ms: u64,
 }
 
 impl QuickStatementsBot {
@@ -29,6 +31,7 @@ impl QuickStatementsBot {
             last_entity_id: None,
             current_entity_id: None,
             current_property_id: None,
+            throttled_delay_ms: 5000,
         }
     }
 
@@ -251,7 +254,7 @@ impl QuickStatementsBot {
 
         let res = match mw_api.post_query_api_json_mut(&params) {
             Ok(x) => x,
-            Err(_e) => return Err("Wikidata editing fail".to_string()),
+            Err(e) => return Err(format!("Wikidata editing failed: {:?}", e)),
         };
 
         lazy_static! {
@@ -270,6 +273,25 @@ impl QuickStatementsBot {
                 }
             }
             None => {
+                match res["error"]["messages"].as_array() {
+                    Some(arr) => {
+                        for a in arr {
+                            match a["name"].as_str() {
+                                Some(s) => {
+                                    if s == "actionthrottledtext" {
+                                        // Throttled, try again
+                                        thread::sleep(time::Duration::from_millis(
+                                            self.throttled_delay_ms,
+                                        ));
+                                        return self.run_action(j, command);
+                                    }
+                                }
+                                None => {}
+                            }
+                        }
+                    }
+                    None => {}
+                }
                 match res["error"]["info"].as_str() {
                     Some(s) => {
                         command.json["meta"]["message"] = json!(s);
