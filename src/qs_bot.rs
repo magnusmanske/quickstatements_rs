@@ -261,6 +261,9 @@ impl QuickStatementsBot {
             static ref RE_QUAL_OK: Regex =
                 Regex::new("^The statement has already a qualifier with hash")
                     .expect("QuickStatementsBot::run_action:RE_QUAL_OK does not compile");
+            static ref RE_REF_OK: Regex =
+                Regex::new("^The statement has already a reference with hash")
+                    .expect("QuickStatementsBot::run_action:RE_REF_OK does not compile");
         }
 
         match res["success"].as_i64() {
@@ -297,6 +300,10 @@ impl QuickStatementsBot {
                         command.json["meta"]["message"] = json!(s);
                         // That qualifier already exists, return OK
                         if RE_QUAL_OK.is_match(s) {
+                            return Ok(());
+                        }
+                        // That reference already exists, return OK
+                        if RE_REF_OK.is_match(s) {
                             return Ok(());
                         }
                     }
