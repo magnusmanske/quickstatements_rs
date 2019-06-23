@@ -39,6 +39,10 @@ pub enum Value {
 
 impl Value {
     pub fn to_string(&self) -> Option<String> {
+        lazy_static! {
+            static ref RE_UNIT: Regex = Regex::new(r#"/Q(\d+)$"#).unwrap();
+        }
+
         match self {
             Value::Entity(v) => Some(v.to_string()),
             Value::GlobeCoordinate(v) => Some(
@@ -70,14 +74,15 @@ impl Value {
                 }
                 if v.unit() != "1" {
                     let unit = v.unit().to_string();
-                    // TODO
+                    // TODO captures
                     ret.push(unit);
                 }
                 Some(ret.join("").to_string())
             }
             Value::String(v) => Some("\"".to_string() + &v + &"\"".to_string()),
-            // TODO
-            _ => None,
+            Value::Time(v) => {
+                Some(v.time().to_string() + &"/".to_string() + &v.precision().to_string())
+            }
         }
     }
 }
