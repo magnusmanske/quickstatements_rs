@@ -209,11 +209,25 @@ impl QuickStatements {
         None
     }
 
+    pub fn reinitialize_open_batches(&mut self) -> Option<()> {
+        let pool = match &self.pool {
+            Some(pool) => pool,
+            None => return None,
+        };
+        let sql = "UPDATE batch SET status='INIT' WHERE status='DONE' AND id IN (SELECT DISTINCT batch_id FROM command WHERE status='INIT' and batch_id>12000)" ;
+        pool.prep_exec(sql, ()).ok()?;
+        Some(())
+    }
+
     pub fn set_batch_running(&mut self, batch_id: i64, user_id: i64) {
         println!(
             "set_batch_running: Starting batch #{} for user {}",
             batch_id, user_id
         );
+
+        match self.reinitialize_open_batches() {
+            _ => {}
+        }
 
         // Increase user batch counter
         self.running_batch_ids.insert(batch_id);
