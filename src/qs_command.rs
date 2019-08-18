@@ -1,6 +1,7 @@
 use mysql as my;
 use regex::Regex;
 use serde_json::Value;
+use wikibase::*;
 
 #[derive(Debug, Clone)]
 pub struct QuickStatementsCommand {
