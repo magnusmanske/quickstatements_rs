@@ -485,8 +485,14 @@ impl QuickStatementsCommand {
     }
 
     fn get_statement_id(&self, item: &wikibase::Entity) -> Result<Option<String>, String> {
-        // Try directly by statement ID
+        // Try directly by statement ID, as string
         match self.json["id"].as_str() {
+            Some(id) => return Ok(Some(id.to_string())),
+            None => {}
+        }
+
+        // Try directly by statement ID, as num
+        match self.json["id"].as_i64() {
             Some(id) => return Ok(Some(id.to_string())),
             None => {}
         }
