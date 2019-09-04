@@ -134,7 +134,7 @@ impl QuickStatementsBot {
                 command.batch_id
             ))?;
 
-            //self.entities.remove_entity(q.to_string()); // Invalidate cache
+            self.entities.remove_entity(q.to_string()); // Invalidate cache
             let i = match self.entities.load_entity(&mw_api, q.to_string()) {
                 Ok(item) => item,
                 Err(e) => return Err(format!("Error while loading into entities: '{:?}'", e)),
