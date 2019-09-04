@@ -491,12 +491,6 @@ impl QuickStatementsCommand {
             None => {}
         }
 
-        // Try directly by statement ID, as num
-        match self.json["id"].as_i64() {
-            Some(id) => return Ok(Some(id.to_string())),
-            None => {}
-        }
-
         // No ID given, find the property
         let property = match self.json["property"].as_str() {
             Some(p) => p,
@@ -871,6 +865,19 @@ mod tests {
             Err(format!("Cannot determine snak type: {}", &dv))
         );
     }
+
+    /*
+    #[test]
+    fn qualifier() {
+        let j = json!({"action": "add","datavalue":{"type": "wikibase-entityid","value":{"entity-type": "item","id": "Q12345"}}, "item": "Q4115189","meta":{"id": 1,}, "property": "P279","qualifier":{"prop": "P31","value":{"type": "wikibase-entityid","value":{"entity-type": "item","id": "Q42"}}}, "sources": null, "what": "qualifier"});
+        let api = mediawiki::api::Api::new("https://www.wikidata.org/w/api.php").unwrap();
+        let mut ec = wikibase::entity_container::EntityContainer::new();
+        let item = ec.load_entity(&api, "Q4115189").unwrap();
+        let command = QuickStatementsCommand::new_from_json(&j);
+        let id = command.get_statement_id(&item);
+        println!("{:?}", id);
+    }
+    */
 
     // TODO
     // action_add_statement

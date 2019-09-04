@@ -72,7 +72,7 @@ impl QuickStatementsBot {
             Some(mut command) => {
                 match self.execute_command(&mut command) {
                     Ok(_) => {}
-                    Err(_message) => {}//self.set_command_status("ERROR", Some(&message), &mut command),
+                    Err(_message) => {} //self.set_command_status("ERROR", Some(&message), &mut command),
                 }
                 Ok(true)
             }
@@ -134,6 +134,7 @@ impl QuickStatementsBot {
                 command.batch_id
             ))?;
 
+            self.entities.remove_entity(q.to_string()); // Invalidate cache
             let i = match self.entities.load_entity(&mw_api, q.to_string()) {
                 Ok(item) => item,
                 Err(e) => return Err(format!("Error while loading into entities: '{:?}'", e)),
@@ -342,13 +343,3 @@ impl QuickStatementsBot {
         Ok(())
     }
 }
-
-/*
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
-}
-*/
