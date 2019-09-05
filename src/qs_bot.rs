@@ -201,22 +201,9 @@ impl QuickStatementsBot {
         }
     }
 
-    fn reset_entities(self: &mut Self, _res: &Value, command: &QuickStatementsCommand) {
+    fn reset_entities(self: &mut Self, res: &Value, command: &QuickStatementsCommand) {
         /*
-        match &res["entity"] {
-            serde_json::Value::Null => {}
-            entity_json => match wikibase::entity_diff::EntityDiff::get_entity_id(&entity_json) {
-                Some(q) => {
-                    self.last_entity_id = Some(q);
-                    self.entities
-                        .set_entity_from_json(&entity_json)
-                        .expect("Setting entity from JSON failed");
-                    return;
-                }
-                None => {}
-            },
-        };
-
+        // TODO untested
         match &res["claim"] {
             serde_json::Value::Null => {}
             claim_json => match &self.last_entity_id {
@@ -246,6 +233,20 @@ impl QuickStatementsBot {
             }
             None => {}
         }
+
+        match &res["entity"] {
+            serde_json::Value::Null => {}
+            entity_json => match wikibase::entity_diff::EntityDiff::get_entity_id(&entity_json) {
+                Some(q) => {
+                    self.last_entity_id = Some(q);
+                    self.entities
+                        .set_entity_from_json(&entity_json)
+                        .expect("Setting entity from JSON failed");
+                    return;
+                }
+                None => {}
+            },
+        };
     }
 
     fn add_summary(
