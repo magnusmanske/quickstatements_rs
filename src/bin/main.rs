@@ -4,6 +4,7 @@ extern crate mysql;
 extern crate wikibase;
 
 use quickstatements::qs_bot::QuickStatementsBot;
+use quickstatements::qs_command::QuickStatementsCommand;
 use quickstatements::qs_config::QuickStatements;
 use quickstatements::qs_parser::QuickStatementsParser;
 use std::env;
@@ -28,7 +29,7 @@ fn run_bot(config_arc: Arc<Mutex<QuickStatements>>) {
     }
     thread::spawn(move || {
         println!("SPAWN: Starting batch {} for user {}", &batch_id, &user_id);
-        let mut bot = QuickStatementsBot::new(config_arc.clone(), batch_id, user_id);
+        let mut bot = QuickStatementsBot::new(config_arc.clone(), Some(batch_id), user_id);
         match bot.start() {
             Ok(_) => while bot.run().unwrap_or(false) {},
             Err(error) => {
@@ -78,8 +79,42 @@ fn command_parse() {
     }
 }
 
+fn command_run(command_string: &String) {
+    // Initialize config
+    let config = match QuickStatements::new_from_config_json("config_rs.json") {
+        Some(qs) => Arc::new(Mutex::new(qs)),
+        None => panic!("Could not create QuickStatements bot from config file"),
+    };
+
+    // Parse command
+    let json_commands = match QuickStatementsParser::new_from_line(command_string) {
+        Ok(c) => c.to_json().unwrap(),
+        Err(e) => {
+            println!("{}\nCOULD NOT BE PARSED: {}\n", &command_string, &e);
+            return;
+        }
+    };
+
+    /*
+    json_commands.iter().for_each(|c| {
+        println!("{}", ::serde_json::to_string_pretty(c).unwrap());
+    });
+    */
+
+    for json_command in json_commands {
+        // Generate command
+        let mut command = QuickStatementsCommand::new_from_json(&json_command);
+
+        // Run command
+        let mut bot = QuickStatementsBot::new(config.clone(), None, 0);
+        bot.set_mw_api(mediawiki::api::Api::new("https://www.wikidata.org/w/api.php").unwrap());
+        //bot.set_mw_api(mediawiki::api::Api::new("https://test.wikidata.org/w/api.php").unwrap());
+        bot.execute_command(&mut command).unwrap();
+    }
+}
+
 fn usage(command_name: &String) {
-    println!("USAGE: {} [bot|parse]", command_name);
+    println!("USAGE: {} [bot|parse|run]", command_name);
 }
 
 fn main() {
@@ -91,6 +126,7 @@ fn main() {
     match args[1].as_str() {
         "bot" => command_bot(),
         "parse" => command_parse(),
+        "run" => command_run(&args[2].to_string()),
         _ => usage(&args[0]),
     }
 }

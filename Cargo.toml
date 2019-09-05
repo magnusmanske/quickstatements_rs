@@ -9,9 +9,9 @@ mediawiki = "0.1.16"
 #mediawiki = { path = "../mediawiki" }
 #mediawiki = { git="https://github.com/magnusmanske/mediawiki_rust"}
 
-wikibase = "0.5.0"
+#wikibase = "0.5.0"
 #wikibase = { path = "../wikibase_rs" }
-#wikibase = { git="https://gitlab.com/tobias47n9e/wikibase_rs"}
+wikibase = { git="https://gitlab.com/tobias47n9e/wikibase_rs"}
 
 mysql = { version="16.0.2" , features = ["ssl"] }
 serde_json = "1"

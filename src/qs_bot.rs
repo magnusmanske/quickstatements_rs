@@ -9,11 +9,11 @@ use wikibase;
 
 #[derive(Debug, Clone)]
 pub struct QuickStatementsBot {
-    batch_id: i64,
+    batch_id: Option<i64>,
     user_id: i64,
     config: Arc<Mutex<QuickStatements>>,
     mw_api: Option<mediawiki::api::Api>,
-    entities: wikibase::entity_container::EntityContainer,
+    pub entities: wikibase::entity_container::EntityContainer,
     last_entity_id: Option<String>,
     current_entity_id: Option<String>,
     current_property_id: Option<String>,
@@ -21,7 +21,7 @@ pub struct QuickStatementsBot {
 }
 
 impl QuickStatementsBot {
-    pub fn new(config: Arc<Mutex<QuickStatements>>, batch_id: i64, user_id: i64) -> Self {
+    pub fn new(config: Arc<Mutex<QuickStatements>>, batch_id: Option<i64>, user_id: i64) -> Self {
         Self {
             batch_id: batch_id,
             user_id: user_id,
@@ -35,35 +35,53 @@ impl QuickStatementsBot {
         }
     }
 
-    pub fn start(self: &mut Self) -> Result<(), String> {
+    pub fn start(&mut self) -> Result<(), String> {
         let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
-        config
-            .restart_batch(self.batch_id)
-            .ok_or("Can't (re)start batch".to_string())?;
-        self.last_entity_id = config.get_last_item_from_batch(self.batch_id);
-        match config.get_api_url(self.batch_id) {
-            Some(url) => {
-                let mut mw_api = mediawiki::api::Api::new(url).map_err(|e| format!("{:?}", e))?;
-                mw_api.set_edit_delay(config.edit_delay_ms());
-                config.set_bot_api_auth(&mut mw_api, self.batch_id);
-                self.mw_api = Some(mw_api);
+        match self.batch_id {
+            Some(batch_id) => {
+                config
+                    .restart_batch(batch_id)
+                    .ok_or("Can't (re)start batch".to_string())?;
+                self.last_entity_id = config.get_last_item_from_batch(batch_id);
+                match config.get_api_url(batch_id) {
+                    Some(url) => {
+                        let mut mw_api =
+                            mediawiki::api::Api::new(url).map_err(|e| format!("{:?}", e))?;
+                        mw_api.set_edit_delay(config.edit_delay_ms());
+                        config.set_bot_api_auth(&mut mw_api, batch_id);
+                        self.mw_api = Some(mw_api);
+                    }
+                    None => return Err("No site/API info available".to_string()),
+                }
+
+                config.set_batch_running(batch_id, self.user_id);
             }
-            None => return Err("No site/API info available".to_string()),
+            None => {
+                return Err(format!("No batch ID set"));
+            }
         }
 
-        config.set_batch_running(self.batch_id, self.user_id);
         Ok(())
     }
 
-    pub fn run(self: &mut Self) -> Result<bool, String> {
+    pub fn set_mw_api(&mut self, mw_api: mediawiki::api::Api) {
+        self.mw_api = Some(mw_api);
+    }
+
+    pub fn run(&mut self) -> Result<bool, String> {
         //Check if batch is still valid (STOP etc)
         let command = match self.get_next_command() {
             Ok(c) => c,
             Err(_) => {
-                let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
-                config
-                    .deactivate_batch_run(self.batch_id, self.user_id)
-                    .ok_or("Can't set batch as stopped".to_string())?;
+                match self.batch_id {
+                    Some(batch_id) => {
+                        let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
+                        config
+                            .deactivate_batch_run(batch_id, self.user_id)
+                            .ok_or("Can't set batch as stopped".to_string())?;
+                    }
+                    None => {}
+                }
                 return Ok(false);
             }
         };
@@ -77,18 +95,28 @@ impl QuickStatementsBot {
                 Ok(true)
             }
             None => {
-                let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
-                config
-                    .set_batch_finished(self.batch_id, self.user_id)
-                    .ok_or("Can't set batch as finished".to_string())?;
+                match self.batch_id {
+                    Some(batch_id) => {
+                        let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
+                        config
+                            .set_batch_finished(batch_id, self.user_id)
+                            .ok_or("Can't set batch as finished".to_string())?;
+                    }
+                    None => {}
+                }
                 Ok(false)
             }
         }
     }
 
     fn get_next_command(&self) -> Result<Option<QuickStatementsCommand>, String> {
-        let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
-        Ok(config.get_next_command(self.batch_id))
+        match self.batch_id {
+            Some(batch_id) => {
+                let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
+                Ok(config.get_next_command(batch_id))
+            }
+            None => Err(format!("No match ID set")),
+        }
     }
 
     fn prepare_to_execute(
@@ -146,7 +174,7 @@ impl QuickStatementsBot {
         }
     }
 
-    fn execute_command(
+    pub fn execute_command(
         self: &mut Self,
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
@@ -173,18 +201,8 @@ impl QuickStatementsBot {
         }
     }
 
-    fn reset_entities(self: &mut Self, res: &Value, command: &QuickStatementsCommand) {
-        match command.json["item"].as_str() {
-            Some(q) => {
-                if q.to_uppercase() != "LAST" {
-                    self.last_entity_id = Some(q.to_string());
-                    self.entities.remove_entity(q);
-                    return;
-                }
-            }
-            None => {}
-        }
-
+    fn reset_entities(self: &mut Self, _res: &Value, command: &QuickStatementsCommand) {
+        /*
         match &res["entity"] {
             serde_json::Value::Null => {}
             entity_json => match wikibase::entity_diff::EntityDiff::get_entity_id(&entity_json) {
@@ -198,6 +216,36 @@ impl QuickStatementsBot {
                 None => {}
             },
         };
+
+        match &res["claim"] {
+            serde_json::Value::Null => {}
+            claim_json => match &self.last_entity_id {
+                Some(q) => {
+                    println!("Loading entity {} from {}", q, &command.json);
+                    self.entities
+                        .load_entity(&self.mw_api.as_ref().unwrap().clone(), q)
+                        .unwrap(); // Paranoia
+                    self.entities
+                        .add_claim_to_entity(q, &claim_json)
+                        .expect("Adding claim from JSON failed");
+                    return;
+                }
+                None => {}
+            },
+        };
+        */
+
+        match command.json["item"].as_str() {
+            Some(q) => {
+                if q.to_uppercase() != "LAST" {
+                    self.last_entity_id = Some(q.to_string());
+                    self.entities.remove_entity(q);
+                    //.reload_entities(&self.mw_api.as_ref().unwrap(), &vec![q.to_string()]).unwrap();
+                    return;
+                }
+            }
+            None => {}
+        }
     }
 
     fn add_summary(
@@ -224,6 +272,7 @@ impl QuickStatementsBot {
         if !j["already_done"].is_null() {
             return Ok(());
         }
+
         //println!("Running action {}", &j);
         let mut params: HashMap<String, String> = HashMap::new();
         for (k, v) in j
@@ -244,7 +293,7 @@ impl QuickStatementsBot {
         // TODO baserev?
         let mut mw_api = self.mw_api.to_owned().ok_or(format!(
             "QuickStatementsBot::run_action batch #{} has no mw_api",
-            self.batch_id
+            self.batch_id.unwrap_or(0)
         ))?;
         params.insert(
             "token".to_string(),
@@ -257,6 +306,7 @@ impl QuickStatementsBot {
             Ok(x) => x,
             Err(e) => return Err(format!("Wikidata editing failed: {:?}", e)),
         };
+        //println!("{}", ::serde_json::to_string_pretty(&res).unwrap());
 
         lazy_static! {
             static ref RE_QUAL_OK: Regex =
@@ -325,19 +375,22 @@ impl QuickStatementsBot {
         if status == "DONE" {
             self.last_entity_id = self.current_entity_id.clone();
         }
+        if self.batch_id.is_none() {
+            return Ok(());
+        }
 
         let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
         config
             .set_command_status(command, status, message.map(|s| s.to_string()))
             .ok_or(format!(
                 "Can't config.set_command_status for batch #{}",
-                self.batch_id
+                self.batch_id.unwrap() //Safe
             ))?;
         config
-            .set_last_item_for_batch(self.batch_id, &self.last_entity_id)
+            .set_last_item_for_batch(self.batch_id.unwrap(), &self.last_entity_id) // unwrap safe
             .ok_or(format!(
                 "Can't config.set_command_status for batch #{}",
-                self.batch_id
+                self.batch_id.unwrap() //Safe
             ))?;
 
         Ok(())

@@ -44,8 +44,8 @@ impl Value {
         }
 
         match self {
-            Value::Entity(v) => Some(v.to_string()),
-            Value::GlobeCoordinate(v) => Some(
+            Self::Entity(v) => Some(v.to_string()),
+            Self::GlobeCoordinate(v) => Some(
                 vec![
                     "@".to_string(),
                     v.latitude().to_string(),
@@ -55,12 +55,12 @@ impl Value {
                 .join("")
                 .to_string(),
             ),
-            Value::MonoLingualText(v) => Some(
+            Self::MonoLingualText(v) => Some(
                 vec![v.language(), ":\"", v.text(), "\""]
                     .join("")
                     .to_string(),
             ),
-            Value::Quantity(v) => {
+            Self::Quantity(v) => {
                 let mut ret = vec![v.amount().to_string()];
                 match (v.lower_bound(), v.upper_bound()) {
                     (Some(lower), Some(upper)) => ret.push(
@@ -79,11 +79,24 @@ impl Value {
                 }
                 Some(ret.join("").to_string())
             }
-            Value::String(v) => Some("\"".to_string() + &v + &"\"".to_string()),
-            Value::Time(v) => {
+            Self::String(v) => Some("\"".to_string() + &v + &"\"".to_string()),
+            Self::Time(v) => {
                 Some(v.time().to_string() + &"/".to_string() + &v.precision().to_string())
             }
         }
+    }
+
+    /// INCOMPLETE TODO
+    /// Returns the datavalue
+    pub fn to_json(&self) -> Result<serde_json::Value, String> {
+        Ok(match self {
+            Self::Entity(id) => json!({
+                "type" : "wikibase-entityid",
+                "value" : { "entity-type": "item", "id":id.to_string() }
+            }),
+            Self::String(v) => json!({"type":"string","value":v.to_string()}),
+            other => return Err(format!("{:?} is not supported yet", &other)),
+        })
     }
 }
 
@@ -142,7 +155,12 @@ impl QuickStatementsParser {
         }
 
         let (line, comment) = Self::parse_comment(line);
-        let parts: Vec<String> = line.trim().split("\t").map(|s| s.to_string()).collect();
+        let parts: Vec<String> = line
+            .trim()
+            .replace("||", "\t")
+            .split("\t")
+            .map(|s| s.to_string())
+            .collect();
         if parts.len() == 0 {
             return Err("Empty string".to_string());
         }
@@ -638,6 +656,75 @@ impl QuickStatementsParser {
             return None;
         }
         Some(ret.join("\t"))
+    }
+
+    /// INCOMPLETE TODO
+    pub fn to_json(&self) -> Result<Vec<serde_json::Value>, String> {
+        let mut ret = vec![];
+        match &self.command {
+            CommandType::EditStatement => {
+                let mut base = json!({"action":"add","what":"statement"});
+                match &self.item {
+                    Some(id) => base["item"] = json!(id.to_string()),
+                    None => return Err(format!("No item set")),
+                }
+                match &self.property {
+                    Some(ev) => base["property"] = json!(ev.id().to_string()), // Assuming property
+                    None => return Err(format!("No property set")),
+                }
+                match &self.value {
+                    Some(value) => base["datavalue"] = value.to_json()?,
+                    None => return Err(format!("No value set")),
+                }
+
+                // Short-circuit statement removal
+                // TODO reference/qualifier removal?
+                match &self.modifier {
+                    Some(CommandModifier::Remove) => {
+                        base["action"] = json!("remove");
+                        ret.push(base.clone());
+                        return Ok(ret);
+                    }
+                    _ => {}
+                }
+
+                // Adding only from here on
+                ret.push(base.clone());
+
+                // Qualifiers
+                if !self.qualifiers.is_empty() {
+                    self.qualifiers.iter().for_each(|qual| {
+                        let mut command = base.clone();
+                        command["what"] = json!("qualifier");
+                        command["qualifier"] = json!({
+                            "prop":qual.property.id(), // Assuming property
+                            "value":qual.value.to_json().unwrap(),
+                        });
+                        ret.push(command.clone());
+                    })
+                }
+
+                // References
+                if !self.references.is_empty() {
+                    let mut command = base.clone();
+                    command["what"] = json!("sources");
+                    let sources: Vec<serde_json::Value> = self
+                        .references
+                        .iter()
+                        .map(|reference| {
+                            json!({
+                                "prop":reference.property.id(), // Assuming property
+                                "value":reference.value.to_json().unwrap(),
+                            })
+                        })
+                        .collect();
+                    command["sources"] = json!(sources);
+                    ret.push(command.clone());
+                }
+            }
+            other => return Err(format!("{:?} is not supported yet", &other)),
+        }
+        Ok(ret)
     }
 }
 
