@@ -101,12 +101,12 @@ fn command_run(command_string: &String) {
     });
     */
 
+    let mut bot = QuickStatementsBot::new(config.clone(), None, 0);
     for json_command in json_commands {
         // Generate command
         let mut command = QuickStatementsCommand::new_from_json(&json_command);
 
         // Run command
-        let mut bot = QuickStatementsBot::new(config.clone(), None, 0);
         bot.set_mw_api(mediawiki::api::Api::new("https://www.wikidata.org/w/api.php").unwrap());
         //bot.set_mw_api(mediawiki::api::Api::new("https://test.wikidata.org/w/api.php").unwrap());
         bot.execute_command(&mut command).unwrap();

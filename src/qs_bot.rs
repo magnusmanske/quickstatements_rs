@@ -215,43 +215,19 @@ impl QuickStatementsBot {
     }
 
     fn reset_entities(self: &mut Self, res: &Value, command: &QuickStatementsCommand) {
-        /*
-        // TODO untested
-        match &res["claim"] {
-            serde_json::Value::Null => {}
-            claim_json => match &self.last_entity_id {
-                Some(q) => {
-                    println!("Loading entity {} from {}", q, &command.json);
-                    self.entities
-                        .load_entity(&self.mw_api.as_ref().unwrap().clone(), q)
-                        .unwrap(); // Paranoia
-                    self.entities
-                        .add_claim_to_entity(q, &claim_json)
-                        .expect("Adding claim from JSON failed");
-                    return;
-                }
-                None => {}
-            },
-        };
-        */
-
         match command.json["item"].as_str() {
             Some(q) => {
                 if q.to_uppercase() != "LAST" {
                     self.last_entity_id = Some(q.to_string());
                     self.entities.remove_entity(q);
-
                     match res["pageinfo"]["lastrevid"].as_u64() {
                         Some(revision_id) => {
-                            //println!("{}: Revision ID {}", q, revision_id);
                             self.entity_revision.retain(|er| er.0 != q);
                             self.entity_revision
                                 .push_front((q.to_string(), revision_id as usize));
                             self.entity_revision.truncate(5); // Keep only the last 5 around to save RAM
                         }
-                        None => {
-                            //println!("No revision ID for {}", q);
-                        }
+                        None => {}
                     }
                     return;
                 }
