@@ -2,7 +2,7 @@ use crate::qs_command::QuickStatementsCommand;
 use crate::qs_config::QuickStatements;
 use regex::Regex;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::{thread, time};
 use wikibase;
@@ -18,6 +18,7 @@ pub struct QuickStatementsBot {
     current_entity_id: Option<String>,
     current_property_id: Option<String>,
     throttled_delay_ms: u64,
+    entity_revision: VecDeque<(String, usize)>,
 }
 
 impl QuickStatementsBot {
@@ -32,6 +33,7 @@ impl QuickStatementsBot {
             current_entity_id: None,
             current_property_id: None,
             throttled_delay_ms: 5000,
+            entity_revision: VecDeque::new(),
         }
     }
 
@@ -153,24 +155,35 @@ impl QuickStatementsBot {
                 self.current_entity_id = self.last_entity_id.clone();
             }
             let q = match &self.current_entity_id {
-                Some(q) => q,
+                Some(q) => q.to_string(),
                 None => return Err("No (last) item available".to_string()),
             };
 
-            let mw_api = self.mw_api.to_owned().ok_or(format!(
-                "QuickStatementsBot::get_item_from_command batch #{} has no mw_api",
-                command.batch_id
-            ))?;
-
-            //self.entities.remove_entity(q.to_string()); // Invalidate cache
-            let i = match self.entities.load_entity(&mw_api, q.to_string()) {
-                Ok(item) => item,
-                Err(e) => return Err(format!("Error while loading into entities: '{:?}'", e)),
-            };
-
-            Ok(Some(i.clone()))
+            let item = self.load_entity(q)?;
+            Ok(Some(item.clone()))
         } else {
             Ok(None)
+        }
+    }
+
+    fn load_entity(&mut self, entity_id: String) -> Result<&wikibase::Entity, String> {
+        let mw_api = self.mw_api.to_owned().ok_or(format!(
+            "QuickStatementsBot::get_item_from_command  has no mw_api"
+        ))?;
+
+        let revision = self
+            .entity_revision
+            .iter()
+            .filter(|er| er.0 == entity_id)
+            .map(|er| er.1)
+            .nth(0);
+
+        match self
+            .entities
+            .load_entity_revision(&mw_api, entity_id.to_string(), revision)
+        {
+            Ok(item) => Ok(item),
+            Err(e) => return Err(format!("Error while loading into entities: '{:?}'", e)),
         }
     }
 
@@ -227,7 +240,19 @@ impl QuickStatementsBot {
                 if q.to_uppercase() != "LAST" {
                     self.last_entity_id = Some(q.to_string());
                     self.entities.remove_entity(q);
-                    //.reload_entities(&self.mw_api.as_ref().unwrap(), &vec![q.to_string()]).unwrap();
+
+                    match res["pageinfo"]["lastrevid"].as_u64() {
+                        Some(revision_id) => {
+                            //println!("{}: Revision ID {}", q, revision_id);
+                            self.entity_revision.retain(|er| er.0 != q);
+                            self.entity_revision
+                                .push_front((q.to_string(), revision_id as usize));
+                            self.entity_revision.truncate(5); // Keep only the last 5 around to save RAM
+                        }
+                        None => {
+                            //println!("No revision ID for {}", q);
+                        }
+                    }
                     return;
                 }
             }
@@ -238,10 +263,11 @@ impl QuickStatementsBot {
             serde_json::Value::Null => {}
             entity_json => match wikibase::entity_diff::EntityDiff::get_entity_id(&entity_json) {
                 Some(q) => {
-                    self.last_entity_id = Some(q);
+                    self.last_entity_id = Some(q.to_owned());
                     self.entities
                         .set_entity_from_json(&entity_json)
                         .expect("Setting entity from JSON failed");
+                    self.entity_revision.retain(|er| er.0 != q);
                     return;
                 }
                 None => {}
