@@ -115,6 +115,7 @@ impl QuickStatementsBot {
         match self.batch_id {
             Some(batch_id) => {
                 let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
+                config.check_batch_not_stopped(batch_id)?;
                 Ok(config.get_next_command(batch_id))
             }
             None => Err(format!("No match ID set")),
