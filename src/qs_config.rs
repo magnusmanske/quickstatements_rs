@@ -387,7 +387,10 @@ impl QuickStatements {
         Some(())
     }
 
-    fn get_oauth_for_batch(self: &mut Self, batch_id: i64) -> Option<mediawiki::api::OAuthParams> {
+    fn get_oauth_for_batch(
+        self: &mut Self,
+        batch_id: i64,
+    ) -> Option<wikibase::mediawiki::api::OAuthParams> {
         let pool = match &self.pool {
             Some(pool) => pool,
             None => return None,
@@ -402,14 +405,18 @@ impl QuickStatements {
             };
 
             match serde_json::from_str(&serialized_json) {
-                Ok(j) => return Some(mediawiki::api::OAuthParams::new_from_json(&j)),
+                Ok(j) => return Some(wikibase::mediawiki::api::OAuthParams::new_from_json(&j)),
                 _ => return None,
             }
         }
         None
     }
 
-    pub fn set_bot_api_auth(self: &mut Self, mw_api: &mut mediawiki::api::Api, batch_id: i64) {
+    pub fn set_bot_api_auth(
+        self: &mut Self,
+        mw_api: &mut wikibase::mediawiki::api::Api,
+        batch_id: i64,
+    ) {
         match self.get_oauth_for_batch(batch_id) {
             Some(oauth_params) => {
                 // Using OAuth

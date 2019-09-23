@@ -870,7 +870,7 @@ mod tests {
     #[test]
     fn qualifier() {
         let j = json!({"action": "add","datavalue":{"type": "wikibase-entityid","value":{"entity-type": "item","id": "Q12345"}}, "item": "Q4115189","meta":{"id": 1,}, "property": "P279","qualifier":{"prop": "P31","value":{"type": "wikibase-entityid","value":{"entity-type": "item","id": "Q42"}}}, "sources": null, "what": "qualifier"});
-        let api = mediawiki::api::Api::new("https://www.wikidata.org/w/api.php").unwrap();
+        let api = wikibase::mediawiki::api::Api::new("https://www.wikidata.org/w/api.php").unwrap();
         let mut ec = wikibase::entity_container::EntityContainer::new();
         let item = ec.load_entity(&api, "Q4115189").unwrap();
         let command = QuickStatementsCommand::new_from_json(&j);

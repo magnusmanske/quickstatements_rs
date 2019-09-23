@@ -12,7 +12,7 @@ pub struct QuickStatementsBot {
     batch_id: Option<i64>,
     user_id: i64,
     config: Arc<Mutex<QuickStatements>>,
-    mw_api: Option<mediawiki::api::Api>,
+    mw_api: Option<wikibase::mediawiki::api::Api>,
     pub entities: wikibase::entity_container::EntityContainer,
     last_entity_id: Option<String>,
     current_entity_id: Option<String>,
@@ -47,8 +47,8 @@ impl QuickStatementsBot {
                 self.last_entity_id = config.get_last_item_from_batch(batch_id);
                 match config.get_api_url(batch_id) {
                     Some(url) => {
-                        let mut mw_api =
-                            mediawiki::api::Api::new(url).map_err(|e| format!("{:?}", e))?;
+                        let mut mw_api = wikibase::mediawiki::api::Api::new(url)
+                            .map_err(|e| format!("{:?}", e))?;
                         mw_api.set_edit_delay(config.edit_delay_ms());
                         config.set_bot_api_auth(&mut mw_api, batch_id);
                         self.mw_api = Some(mw_api);
@@ -66,7 +66,7 @@ impl QuickStatementsBot {
         Ok(())
     }
 
-    pub fn set_mw_api(&mut self, mw_api: mediawiki::api::Api) {
+    pub fn set_mw_api(&mut self, mw_api: wikibase::mediawiki::api::Api) {
         self.mw_api = Some(mw_api);
     }
 
@@ -167,7 +167,7 @@ impl QuickStatementsBot {
         }
     }
 
-    fn load_entity(&mut self, entity_id: String) -> Result<&wikibase::Entity, String> {
+    fn load_entity(&mut self, entity_id: String) -> Result<wikibase::Entity, String> {
         let mw_api = self.mw_api.to_owned().ok_or(format!(
             "QuickStatementsBot::get_item_from_command  has no mw_api"
         ))?;
@@ -183,7 +183,7 @@ impl QuickStatementsBot {
             .entities
             .load_entity_revision(&mw_api, entity_id.to_string(), revision)
         {
-            Ok(item) => Ok(item),
+            Ok(item) => Ok(item.to_owned()),
             Err(e) => return Err(format!("Error while loading into entities: '{:?}'", e)),
         }
     }

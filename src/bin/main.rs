@@ -1,5 +1,4 @@
 extern crate config;
-extern crate mediawiki;
 extern crate mysql;
 extern crate wikibase;
 
@@ -57,6 +56,9 @@ fn command_bot() {
 
 fn command_parse() {
     let stdin = io::stdin();
+    let api =
+        wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php").unwrap();
+    let qsp = QuickStatementsParser::new_blank();
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(l) => l.trim().to_string(),
@@ -66,7 +68,7 @@ fn command_parse() {
             continue;
         }
         println!("\n{}", &line);
-        match QuickStatementsParser::new_from_line(&line) {
+        match qsp.new_from_line(&line, Some(&api)) {
             Ok(c) => {
                 match c.generate_qs_line() {
                     Some(line) => println!("{} <REGENERATED>", line),
@@ -87,7 +89,8 @@ fn command_run(command_string: &String) {
     };
 
     // Parse command
-    let json_commands = match QuickStatementsParser::new_from_line(command_string) {
+    let qsp = QuickStatementsParser::new_blank();
+    let json_commands = match qsp.new_from_line(command_string, None) {
         Ok(c) => c.to_json().unwrap(),
         Err(e) => {
             println!("{}\nCOULD NOT BE PARSED: {}\n", &command_string, &e);
@@ -107,8 +110,10 @@ fn command_run(command_string: &String) {
         let mut command = QuickStatementsCommand::new_from_json(&json_command);
 
         // Run command
-        bot.set_mw_api(mediawiki::api::Api::new("https://www.wikidata.org/w/api.php").unwrap());
-        //bot.set_mw_api(mediawiki::api::Api::new("https://test.wikidata.org/w/api.php").unwrap());
+        bot.set_mw_api(
+            wikibase::mediawiki::api::Api::new("https://www.wikidata.org/w/api.php").unwrap(),
+        );
+        //bot.set_mw_api(wikibase::mediawiki::api::Api::new("https://test.wikidata.org/w/api.php").unwrap());
         bot.execute_command(&mut command).unwrap();
     }
 }
