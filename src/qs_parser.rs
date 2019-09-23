@@ -154,7 +154,7 @@ pub struct QuickStatementsParser {
 impl QuickStatementsParser {
     /// Translates a line into a QuickStatementsParser object.
     /// Uses api to translate page titles into entity IDs, if given
-    pub fn new_from_line(&self, line: &String, api: Option<&Api>) -> Result<Self, String> {
+    pub fn new_from_line(line: &String, api: Option<&Api>) -> Result<Self, String> {
         lazy_static! {
             static ref RE_META: Regex = Regex::new(r#"^ *([LDAS]) *([a-z_-]+) *$"#).unwrap();
         }
@@ -181,11 +181,9 @@ impl QuickStatementsParser {
         }
 
         // Try to convert a page title into an entity ID
-        if api.is_some() {
-            match Self::get_entity_id_from_title(&parts[0], api) {
-                Some(id) => parts[0] = id,
-                None => {}
-            }
+        match Self::get_entity_id_from_title(&parts[0], api) {
+            Some(id) => parts[0] = id,
+            None => {}
         }
 
         match RE_META.captures(&parts[1]) {
@@ -835,11 +833,10 @@ mod tests {
     #[test]
     fn create() {
         let command = "CREATE";
-        let qsp = QuickStatementsParser::new_blank();
         let mut expected = QuickStatementsParser::new_blank();
         expected.command = CommandType::Create;
         assert_eq!(
-            qsp.new_from_line(&command.to_string(), None).unwrap(),
+            QuickStatementsParser::new_from_line(&command.to_string(), None).unwrap(),
             expected
         );
     }
@@ -847,13 +844,12 @@ mod tests {
     #[test]
     fn merge() {
         let command = "MERGE\tQ123\tQ456";
-        let qsp = QuickStatementsParser::new_blank();
         let mut expected = QuickStatementsParser::new_blank();
         expected.command = CommandType::Merge;
         expected.item = Some(item1());
         expected.target_item = Some(target_item());
         assert_eq!(
-            qsp.new_from_line(&command.to_string(), None).unwrap(),
+            QuickStatementsParser::new_from_line(&command.to_string(), None).unwrap(),
             expected
         );
     }
@@ -862,40 +858,35 @@ mod tests {
     #[should_panic(expected = "MERGE does not allow LAST")]
     fn merge_item1_last() {
         let command = "MERGE\tLAST\tQ456";
-        let qsp = QuickStatementsParser::new_blank();
-        qsp.new_from_line(&command.to_string(), None).unwrap();
+        QuickStatementsParser::new_from_line(&command.to_string(), None).unwrap();
     }
 
     #[test]
     #[should_panic(expected = "MERGE does not allow LAST")]
     fn merge_item2_last() {
         let command = "MERGE\tQ123\tLAST";
-        let qsp = QuickStatementsParser::new_blank();
-        qsp.new_from_line(&command.to_string(), None).unwrap();
+        QuickStatementsParser::new_from_line(&command.to_string(), None).unwrap();
     }
 
     #[test]
     #[should_panic(expected = "Not a valid entity ID: BlAH")]
     fn merge_item1_bad() {
         let command = "MERGE\tBlAH\tQ456";
-        let qsp = QuickStatementsParser::new_blank();
-        qsp.new_from_line(&command.to_string(), None).unwrap();
+        QuickStatementsParser::new_from_line(&command.to_string(), None).unwrap();
     }
 
     #[test]
     #[should_panic(expected = "Missing value")]
     fn merge_only_item1() {
         let command = "MERGE\tQ123";
-        let qsp = QuickStatementsParser::new_blank();
-        qsp.new_from_line(&command.to_string(), None).unwrap();
+        QuickStatementsParser::new_from_line(&command.to_string(), None).unwrap();
     }
 
     #[test]
     #[should_panic(expected = "Not a valid entity ID: ")]
     fn merge_only_item2() {
         let command = "MERGE\t\tQ456";
-        let qsp = QuickStatementsParser::new_blank();
-        qsp.new_from_line(&command.to_string(), None).unwrap();
+        QuickStatementsParser::new_from_line(&command.to_string(), None).unwrap();
     }
 
     #[test]
@@ -1068,6 +1059,28 @@ mod tests {
                 Some(7.89)
             )))
         )
+    }
+
+    #[test]
+    fn title2item() {
+        let command = "Magnus Manske\tP123\tQ456";
+        let api = wikibase::mediawiki::api::Api::new("https://en.wikipedia.org/w/api.php").unwrap();
+        let expected = EntityID::Id(EntityValue::new(EntityType::Item, "Q13520818"));
+        assert!(QuickStatementsParser::new_from_line(&command.to_string(), None).is_err());
+        let qsp = QuickStatementsParser::new_from_line(&command.to_string(), Some(&api)).unwrap();
+        assert_eq!(qsp.item, Some(expected));
+    }
+
+    #[test]
+    fn file2mediainfo() {
+        let command =
+            "File:Ruins_of_the_Dower_House,_Fawsley_Park,_Northamptonshire.jpg\tP123\tQ456";
+        let api =
+            wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php").unwrap();
+        let expected = EntityID::Id(EntityValue::new(EntityType::MediaInfo, "M82397052"));
+        assert!(QuickStatementsParser::new_from_line(&command.to_string(), None).is_err());
+        let qsp = QuickStatementsParser::new_from_line(&command.to_string(), Some(&api)).unwrap();
+        assert_eq!(qsp.item, Some(expected));
     }
 
     // TODO add label/alias/desc/sitelink

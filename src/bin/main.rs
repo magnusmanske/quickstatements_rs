@@ -58,7 +58,6 @@ fn command_parse() {
     let stdin = io::stdin();
     let api =
         wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php").unwrap();
-    let qsp = QuickStatementsParser::new_blank();
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(l) => l.trim().to_string(),
@@ -68,7 +67,7 @@ fn command_parse() {
             continue;
         }
         println!("\n{}", &line);
-        match qsp.new_from_line(&line, Some(&api)) {
+        match QuickStatementsParser::new_from_line(&line, Some(&api)) {
             Ok(c) => {
                 match c.generate_qs_line() {
                     Some(line) => println!("{} <REGENERATED>", line),
@@ -89,8 +88,7 @@ fn command_run(command_string: &String) {
     };
 
     // Parse command
-    let qsp = QuickStatementsParser::new_blank();
-    let json_commands = match qsp.new_from_line(command_string, None) {
+    let json_commands = match QuickStatementsParser::new_from_line(command_string, None) {
         Ok(c) => c.to_json().unwrap(),
         Err(e) => {
             println!("{}\nCOULD NOT BE PARSED: {}\n", &command_string, &e);
