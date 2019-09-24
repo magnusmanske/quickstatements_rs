@@ -555,10 +555,11 @@ impl QuickStatementsParser {
 
         match RE_MONOLINGUAL_STRING.captures(&value) {
             Some(caps) => {
+                // Yes, order 2 then 1 is correct!
                 return Some(Value::MonoLingualText(MonoLingualText::new(
-                    caps.get(1)?.as_str(),
                     caps.get(2)?.as_str(),
-                )))
+                    caps.get(1)?.as_str(),
+                )));
             }
             None => {}
         }
