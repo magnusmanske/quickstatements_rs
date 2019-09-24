@@ -4,10 +4,12 @@ extern crate mysql;
 extern crate wikibase;
 
 use clap::{App, Arg};
+use log::{error, info, warn};
 use quickstatements::qs_bot::QuickStatementsBot;
 use quickstatements::qs_command::QuickStatementsCommand;
 use quickstatements::qs_config::QuickStatements;
 use quickstatements::qs_parser::QuickStatementsParser;
+use simple_logger;
 use std::io;
 use std::io::prelude::*;
 use std::sync::{Arc, Mutex};
@@ -69,18 +71,53 @@ fn command_parse() {
         if line.is_empty() {
             continue;
         }
-        //println!("\n{}", &line);
+        println!("\n{}", &line);
+
+        let params = api.params_into(&vec![
+            ("action", "import"),
+            ("compress", "0"),
+            ("format", "v1"),
+            ("persistent", "0"),
+            ("data", line.as_str()),
+        ]);
+        let j = api
+            .query_raw(
+                "https://tools.wmflabs.org/quickstatements/api.php",
+                &params,
+                "POST",
+            )
+            .unwrap();
+        let j: serde_json::Value = serde_json::from_str(&j).unwrap();
+        let mut php_commands = match j["data"]["commands"].as_array() {
+            Some(commands) => commands.to_vec(),
+            None => vec![],
+        };
+
         match QuickStatementsParser::new_from_line(&line, Some(&api)) {
             Ok(c) => {
                 match c.to_json() {
                     Ok(arr) => {
+                        if arr == php_commands {
+                            info!("PERFECT!");
+                            continue;
+                        }
                         for command in arr {
                             println!("{}{}", comma, command);
+                            if php_commands.is_empty() {
+                                warn!(">NO MORE COMMANDS");
+                            } else {
+                                let php_command = php_commands.remove(0);
+                                if php_command == command {
+                                    info!("> OK");
+                                } else {
+                                    error!("\n>{}", php_command);
+                                }
+                            }
                             comma = ',';
                         }
                     }
                     _ => {
-                        eprintln!("No commands from line {}", &line);
+                        error!("\nNo commands from line {}", &line);
                     }
                 }
                 /*
@@ -95,7 +132,7 @@ fn command_parse() {
                 */
                 //println!("{:?}", &c);
             }
-            Err(e) => eprintln!("{}\nCOULD NOT BE PARSED: {}\n", &line, &e),
+            Err(e) => error!("\n{}\nCOULD NOT BE PARSED: {}\n", &line, &e),
         }
     }
     println!("]");
@@ -154,6 +191,7 @@ fn command_run(site: &str) {
 }
 
 fn main() {
+    simple_logger::init_with_level(log::Level::Info).unwrap();
     let matches = App::new("QuickStatements")
         .version("0.1.0")
         .author("Magnus Manske <mm6@sanger.ac.uk>")

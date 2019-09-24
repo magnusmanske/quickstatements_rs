@@ -9,6 +9,7 @@ use wikibase::{
 pub const COMMONS_API: &str = "https://commons.wikimedia.org/w/api.php";
 const GREGORIAN_CALENDAR: &str = "http://www.wikidata.org/entity/Q1985727";
 const GLOBE_EARTH: &str = "http://www.wikidata.org/entity/Q2";
+const PHP_COMPATIBILITY: bool = true; // TODO
 
 /*
 TODO:
@@ -100,7 +101,8 @@ impl Value {
                 "value" : { "entity-type": "item", "id":id.to_string() }
             }),
             Self::String(v) => json!({"type":"string","value":v.to_string()}),
-            other => return Err(format!("{:?} is not supported yet", &other)),
+            Self::Time(t) => json!({"value":t,"type":"time"}),
+            other => return Err(format!("Value::to_json: {:?} is not supported yet", &other)),
         })
     }
 }
@@ -397,14 +399,22 @@ impl QuickStatementsParser {
 
         let v = v.replace("T", "-").replace("Z", "").replace(":", "-");
         let mut parts = v.split('-');
-        let year = parts.next()?.parse::<u64>().ok()?;
+        let mut year = parts.next()?.to_string();
+
+        let mut leading_zeros = "".to_string();
+        while PHP_COMPATIBILITY && year.starts_with('0') && year != "0" {
+            leading_zeros += "0";
+            year = year[1..].to_string();
+        }
+        let year = year.parse::<u64>().ok()?;
+
         let month = parts.next().or(Some("1"))?.parse::<u64>().ok()?;
         let day = parts.next().or(Some("1"))?.parse::<u64>().ok()?;
         let hour = parts.next().or(Some("0"))?.parse::<u64>().ok()?;
         let min = parts.next().or(Some("0"))?.parse::<u64>().ok()?;
         let sec = parts.next().or(Some("0"))?.parse::<u64>().ok()?;
 
-        if precision >= 12 {
+        if precision >= 12 && !PHP_COMPATIBILITY {
             precision = 11;
         }
         if day == 0 && precision >= 11 {
@@ -414,16 +424,16 @@ impl QuickStatementsParser {
             precision = 9;
         }
 
-        let time = if false {
+        let time = if PHP_COMPATIBILITY {
             // Preserve h/m/s
             format!(
-                "{}{}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-                lead, year, month, day, hour, min, sec
+                "{}{}{}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+                lead, leading_zeros, year, month, day, hour, min, sec
             )
         } else {
             format!(
-                "{}{}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-                lead, year, month, day, 0, 0, 0
+                "{}{}{}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+                lead, leading_zeros, year, month, day, 0, 0, 0
             )
         };
 
@@ -735,6 +745,10 @@ impl QuickStatementsParser {
         match &self.command {
             CommandType::EditStatement => {
                 let mut base = json!({"action":"add","what":"statement"});
+                match &self.comment {
+                    Some(comment) => base["summary"] = json!(comment),
+                    None => {}
+                }
                 match &self.item {
                     Some(id) => base["item"] = json!(id.to_string()),
                     None => return Err(format!("No item set")),
@@ -793,7 +807,12 @@ impl QuickStatementsParser {
                     ret.push(command.clone());
                 }
             }
-            other => return Err(format!("{:?} is not supported yet", &other)),
+            other => {
+                return Err(format!(
+                    "QuickStatementsParser::to_json:{:?} is not supported yet",
+                    &other
+                ))
+            }
         }
         Ok(ret)
     }
