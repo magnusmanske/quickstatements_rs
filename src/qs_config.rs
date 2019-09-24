@@ -41,6 +41,10 @@ impl QuickStatements {
         Some(ret)
     }
 
+    pub fn get_api_for_site(&self, site: &str) -> Option<&str> {
+        self.params["config"]["sites"][site]["api"].as_str()
+    }
+
     pub fn edit_delay_ms(&self) -> Option<u64> {
         match self.params["edit_delay_ms"].as_u64() {
             Some(x) => Some(x),
@@ -105,7 +109,7 @@ impl QuickStatements {
                 None => return None,
             },
         };
-        self.params["config"]["sites"][site]["api"].as_str()
+        self.get_api_for_site(&site)
     }
 
     fn create_mysql_pool(&mut self) {

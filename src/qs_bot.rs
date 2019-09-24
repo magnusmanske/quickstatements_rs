@@ -1,5 +1,6 @@
 use crate::qs_command::QuickStatementsCommand;
 use crate::qs_config::QuickStatements;
+use crate::qs_parser::COMMONS_API;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
@@ -184,7 +185,57 @@ impl QuickStatementsBot {
             .load_entity_revision(&mw_api, entity_id.to_string(), revision)
         {
             Ok(item) => Ok(item.to_owned()),
-            Err(e) => return Err(format!("Error while loading into entities: '{:?}'", e)),
+            Err(e) => self.try_create_fake_entity(entity_id, revision, e.to_string()),
+        }
+    }
+
+    /// Commons MediaInfo entities have a designated ID but might not exists, yet are still good to edit.
+    /// This function will try to detect this case, and temporarily create a fake entity, or return the original error
+    fn try_create_fake_entity(
+        &mut self,
+        entity_id: String,
+        revision: Option<usize>,
+        original_error: String,
+    ) -> Result<wikibase::Entity, String> {
+        lazy_static! {
+            static ref RE_MEDIA_INFO: Regex = Regex::new(r#"^M\d+$"#).expect(
+                "QuickStatementsBot::try_create_fake_entity:RE_MEDIA_INFO does not compile"
+            );
+        }
+
+        let mw_api = self.mw_api.to_owned().ok_or(format!(
+            "QuickStatementsBot::try_create_fake_entity has no mw_api"
+        ))?;
+
+        println!("Entity:{}\nAPI:{}", &entity_id, mw_api.api_url());
+
+        let the_error = Err(format!(
+            "Error while loading into entities: {} rev. {:?} '{}'",
+            entity_id, revision, original_error
+        ));
+
+        if revision.is_none()
+            && mw_api.api_url() == COMMONS_API
+            && RE_MEDIA_INFO.is_match(&entity_id)
+        {
+            println!("{} is a match!", &entity_id);
+            let fake_entity = wikibase::Entity::new_mediainfo(
+                entity_id.to_owned(),
+                vec![],
+                vec![],
+                vec![],
+                false,
+            );
+            let fake_entity_json = json!(fake_entity);
+            self.entities
+                .set_entity_from_json(&fake_entity_json)
+                .map_err(|e| e.to_string())?;
+            match self.entities.get_entity(entity_id) {
+                Some(entity) => Ok(entity),
+                None => the_error,
+            }
+        } else {
+            the_error
         }
     }
 

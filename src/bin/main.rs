@@ -1,12 +1,13 @@
+extern crate clap;
 extern crate config;
 extern crate mysql;
 extern crate wikibase;
 
+use clap::{App, Arg};
 use quickstatements::qs_bot::QuickStatementsBot;
 use quickstatements::qs_command::QuickStatementsCommand;
 use quickstatements::qs_config::QuickStatements;
 use quickstatements::qs_parser::QuickStatementsParser;
-use std::env;
 use std::io;
 use std::io::prelude::*;
 use std::sync::{Arc, Mutex};
@@ -100,56 +101,86 @@ fn command_parse() {
     println!("]");
 }
 
-fn command_run(command_string: &String) {
+fn command_run(site: &str) {
     // Initialize config
     let config = match QuickStatements::new_from_config_json("config_rs.json") {
         Some(qs) => Arc::new(Mutex::new(qs)),
         None => panic!("Could not create QuickStatements bot from config file"),
     };
 
-    // Parse command
-    let json_commands = match QuickStatementsParser::new_from_line(command_string, None) {
-        Ok(c) => c.to_json().unwrap(),
-        Err(e) => {
-            println!("{}\nCOULD NOT BE PARSED: {}\n", &command_string, &e);
-            return;
-        }
-    };
+    let api_url = match config.lock().unwrap().get_api_for_site(site) {
+        Some(url) => url,
+        None => panic!("Could not get API URL for site '{}'", site),
+    }
+    .to_owned();
 
-    /*
-    json_commands.iter().for_each(|c| {
-        println!("{}", ::serde_json::to_string_pretty(c).unwrap());
-    });
-    */
+    println!("{}: {}", site, &api_url);
 
     let mut bot = QuickStatementsBot::new(config.clone(), None, 0);
-    for json_command in json_commands {
-        // Generate command
-        let mut command = QuickStatementsCommand::new_from_json(&json_command);
 
-        // Run command
-        bot.set_mw_api(
-            wikibase::mediawiki::api::Api::new("https://www.wikidata.org/w/api.php").unwrap(),
-        );
-        //bot.set_mw_api(wikibase::mediawiki::api::Api::new("https://test.wikidata.org/w/api.php").unwrap());
-        bot.execute_command(&mut command).unwrap();
+    let stdin = io::stdin();
+    for line in stdin.lock().lines() {
+        let command_string = match line {
+            Ok(l) => l.trim().to_string(),
+            Err(_) => break,
+        };
+        if command_string.is_empty() {
+            continue;
+        }
+
+        // Parse command
+        let json_commands = match QuickStatementsParser::new_from_line(&command_string, None) {
+            Ok(c) => c.to_json().unwrap(),
+            Err(e) => {
+                println!("{}\nCOULD NOT BE PARSED: {}\n", &command_string, &e);
+                return;
+            }
+        };
+
+        json_commands.iter().for_each(|c| {
+            println!("{}", ::serde_json::to_string_pretty(c).unwrap());
+        });
+
+        for json_command in json_commands {
+            // Generate command
+            let mut command = QuickStatementsCommand::new_from_json(&json_command);
+
+            // Run command
+            bot.set_mw_api(wikibase::mediawiki::api::Api::new(&api_url).unwrap());
+            //bot.set_mw_api(wikibase::mediawiki::api::Api::new("https://test.wikidata.org/w/api.php").unwrap());
+            bot.execute_command(&mut command).unwrap();
+        }
     }
-}
-
-fn usage(command_name: &String) {
-    println!("USAGE: {} [bot|parse|run]", command_name);
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        usage(&args[0]);
-        return;
-    }
-    match args[1].as_str() {
+    let matches = App::new("QuickStatements")
+        .version("0.1.0")
+        .author("Magnus Manske <mm6@sanger.ac.uk>")
+        .about("Runs QuickStatement bot or command line operations")
+        .arg(
+            Arg::with_name("SITE")
+                .short("s")
+                .long("site")
+                .required(false)
+                .help("Sets a site for RUN command")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("COMMAND")
+                .help("Command [bot|parse|run]")
+                .required(true)
+                .index(1),
+        )
+        .get_matches();
+
+    let site = matches.value_of("SITE").unwrap_or("wikidata");
+    let command = matches.value_of("COMMAND").unwrap();
+
+    match command {
         "bot" => command_bot(),
         "parse" => command_parse(),
-        "run" => command_run(&args[2].to_string()),
-        _ => usage(&args[0]),
+        "run" => command_run(site),
+        x => panic!("Not a valid command: {}", x),
     }
 }

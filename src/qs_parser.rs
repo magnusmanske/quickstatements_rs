@@ -6,7 +6,7 @@ use wikibase::{
     TimeValue,
 };
 
-const COMMONS_API: &str = "https://commons.wikimedia.org/w/api.php";
+pub const COMMONS_API: &str = "https://commons.wikimedia.org/w/api.php";
 const GREGORIAN_CALENDAR: &str = "http://www.wikidata.org/entity/Q1985727";
 const GLOBE_EARTH: &str = "http://www.wikidata.org/entity/Q2";
 
