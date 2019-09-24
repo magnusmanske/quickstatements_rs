@@ -837,7 +837,14 @@ impl QuickStatementsParser {
                     _ => Err(format!("Label issue")),
                 }
             }
-            //CommandType::SetDescription => json!({}),
+            CommandType::SetDescription => {
+                return match (self.item.as_ref(), self.locale_string.as_ref()) {
+                    (Some(EntityID::Id(item)), Some(ls)) => Ok(vec![
+                        json!({"action":"add","item":item.id(),"language":ls.language(),"value":ls.value(),"what":"description"}),
+                    ]),
+                    _ => Err(format!("Label issue")),
+                }
+            }
             //CommandType::SetAlias => json!({}),
             //CommandType::SetSitelink => json!({}),
             other => {
