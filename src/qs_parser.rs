@@ -101,13 +101,15 @@ impl Value {
                 "value" : { "entity-type": "item", "id":id.to_string() }
             }),
             Self::String(v) => json!({"type":"string","value":v.to_string()}),
-            Self::Time(t) => json!({"value":t,"type":"time"}),
+            Self::Time(v) => json!({"value":v,"type":"time"}),
             Self::GlobeCoordinate(v) => json!({"value":{
                 "globe":v.globe(),
                 "latitude":v.latitude(),
                 "longitude":v.longitude(),
                 "precision":1e-6,
             },"type":"globecoordinate"}),
+            Self::MonoLingualText(v) => json!({"value":v,"type":"monolingualtext"}),
+            // Self::Quantity(v) =>
             other => return Err(format!("Value::to_json: {:?} is not supported yet", &other)),
         })
     }
