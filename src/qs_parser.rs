@@ -7,6 +7,8 @@ use wikibase::{
 };
 
 const COMMONS_API: &str = "https://commons.wikimedia.org/w/api.php";
+const GREGORIAN_CALENDAR: &str = "http://www.wikidata.org/entity/Q1985727";
+const GLOBE_EARTH: &str = "http://www.wikidata.org/entity/Q2";
 
 /*
 TODO:
@@ -428,7 +430,7 @@ impl QuickStatementsParser {
         Some(Value::Time(TimeValue::new(
             0,
             0,
-            "http://www.wikidata.org/entity/Q1985727",
+            GREGORIAN_CALENDAR,
             precision,
             &time,
             0,
@@ -514,7 +516,7 @@ impl QuickStatementsParser {
             Some(caps) => {
                 return Some(Value::GlobeCoordinate(Coordinate::new(
                     None,
-                    "http://www.wikidata.org/entity/Q2".to_string(),
+                    GLOBE_EARTH.to_string(),
                     caps.get(1)?.as_str().parse::<f64>().ok()?,
                     caps.get(2)?.as_str().parse::<f64>().ok()?,
                     None,

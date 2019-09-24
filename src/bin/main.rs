@@ -58,6 +58,8 @@ fn command_parse() {
     let stdin = io::stdin();
     let api =
         wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php").unwrap();
+    println!("[");
+    let mut comma: char = ' ';
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(l) => l.trim().to_string(),
@@ -66,18 +68,36 @@ fn command_parse() {
         if line.is_empty() {
             continue;
         }
-        println!("\n{}", &line);
+        //println!("\n{}", &line);
         match QuickStatementsParser::new_from_line(&line, Some(&api)) {
             Ok(c) => {
-                match c.generate_qs_line() {
-                    Some(line) => println!("{} <REGENERATED>", line),
-                    None => println!("Can't regenerate QS command line"),
+                match c.to_json() {
+                    Ok(arr) => {
+                        for command in arr {
+                            println!("{}{}", comma, command);
+                            comma = ',';
+                        }
+                    }
+                    _ => {
+                        eprintln!("No commands from line {}", &line);
+                    }
                 }
-                println!("{:?}", &c);
+                /*
+                match c.generate_qs_line() {
+                    Some(_line) => println!(
+                        "{:?}{}",
+                        ::serde_json::to_string(&c.to_json().unwrap()).unwrap(),
+                        comma
+                    ),
+                    None => eprintln!("Can't regenerate QS command line"),
+                }
+                */
+                //println!("{:?}", &c);
             }
-            Err(e) => println!("{}\nCOULD NOT BE PARSED: {}\n", &line, &e),
+            Err(e) => eprintln!("{}\nCOULD NOT BE PARSED: {}\n", &line, &e),
         }
     }
+    println!("]");
 }
 
 fn command_run(command_string: &String) {

@@ -308,7 +308,7 @@ impl QuickStatementsBot {
 
         let res = match mw_api.post_query_api_json_mut(&params) {
             Ok(x) => x,
-            Err(e) => return Err(format!("Wikidata editing failed: {:?}", e)),
+            Err(e) => return Err(format!("Wiki editing failed: {:?}", e)),
         };
         //println!("{}", ::serde_json::to_string_pretty(&res).unwrap());
 
