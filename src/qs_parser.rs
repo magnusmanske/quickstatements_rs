@@ -102,6 +102,12 @@ impl Value {
             }),
             Self::String(v) => json!({"type":"string","value":v.to_string()}),
             Self::Time(t) => json!({"value":t,"type":"time"}),
+            Self::GlobeCoordinate(v) => json!({"value":{
+                "globe":v.globe(),
+                "latitude":v.latitude(),
+                "longitude":v.longitude(),
+                "precision":1e-6,
+            },"type":"globecoordinate"}),
             other => return Err(format!("Value::to_json: {:?} is not supported yet", &other)),
         })
     }
