@@ -1,5 +1,4 @@
 use regex::Regex;
-//use serde_json::Value;
 use wikibase::mediawiki::api::Api;
 use wikibase::{
     Coordinate, EntityType, EntityValue, LocaleString, MonoLingualText, QuantityValue, SiteLink,
@@ -164,6 +163,7 @@ pub struct QuickStatementsParser {
     sitelink: Option<SiteLink>,
     locale_string: Option<LocaleString>,
     comment: Option<String>,
+    create_data: Option<serde_json::Value>,
 }
 
 impl QuickStatementsParser {
@@ -252,6 +252,7 @@ impl QuickStatementsParser {
             sitelink: None,
             locale_string: None,
             comment: None,
+            create_data: None,
         }
     }
 
@@ -762,9 +763,9 @@ impl QuickStatementsParser {
 
     /// INCOMPLETE TODO
     pub fn to_json(&self) -> Result<Vec<serde_json::Value>, String> {
-        let mut ret = vec![];
         match &self.command {
             CommandType::EditStatement => {
+                let mut ret = vec![];
                 let mut base = json!({"action":self.get_action(),"what":"statement"});
                 match &self.comment {
                     Some(comment) => base["summary"] = json!(comment),
@@ -826,59 +827,152 @@ impl QuickStatementsParser {
                     command["sources"] = json!(sources);
                     ret.push(command.clone());
                 }
+                Ok(ret)
             }
-            CommandType::Merge => {
-                return match (self.item.as_ref(), self.target_item.as_ref()) {
-                    (Some(EntityID::Id(item2)), Some(EntityID::Id(item1))) => Ok(vec![
-                        json!({"action":"merge","item1":item1.id(),"item2":item2.id(),"type":item1.entity_type()}),
-                    ]),
-                    _ => Err(format!(
-                        "QuickStatementsParser::to_json:Merge: either item or target_item in None"
-                    )),
+            CommandType::Create => {
+                let mut ret = json!({"action":"create","type":"item"});
+                match &self.create_data {
+                    Some(data) => {
+                        ret["data"] = data.to_owned();
+                    }
+                    None => {}
                 }
+                Ok(vec![ret])
             }
-            CommandType::SetLabel => {
-                return match (self.item.as_ref(), self.locale_string.as_ref()) {
-                    (Some(EntityID::Id(item)), Some(ls)) => Ok(vec![
-                        json!({"action":self.get_action(),"item":item.id(),"language":ls.language(),"value":ls.value(),"what":"label"}),
-                    ]),
-                    _ => Err(format!("Label issue")),
-                }
-            }
+            CommandType::Merge => match (self.item.as_ref(), self.target_item.as_ref()) {
+                (Some(EntityID::Id(item2)), Some(EntityID::Id(item1))) => Ok(vec![
+                    json!({"action":"merge","item1":item1.id(),"item2":item2.id(),"type":item1.entity_type()}),
+                ]),
+                _ => Err(format!(
+                    "QuickStatementsParser::to_json:Merge: either item or target_item in None"
+                )),
+            },
+            CommandType::SetLabel => match (self.item.as_ref(), self.locale_string.as_ref()) {
+                (Some(EntityID::Id(item)), Some(ls)) => Ok(vec![
+                    json!({"action":self.get_action(),"item":item.id(),"language":ls.language(),"value":ls.value(),"what":"label"}),
+                ]),
+                _ => Err(format!("Label issue")),
+            },
             CommandType::SetDescription => {
-                return match (self.item.as_ref(), self.locale_string.as_ref()) {
+                match (self.item.as_ref(), self.locale_string.as_ref()) {
                     (Some(EntityID::Id(item)), Some(ls)) => Ok(vec![
                         json!({"action":self.get_action(),"item":item.id(),"language":ls.language(),"value":ls.value(),"what":"description"}),
                     ]),
                     _ => Err(format!("Description issue")),
                 }
             }
-            CommandType::SetAlias => {
-                return match (self.item.as_ref(), self.locale_string.as_ref()) {
-                    (Some(EntityID::Id(item)), Some(ls)) => Ok(vec![
-                        json!({"action":self.get_action(),"item":item.id(),"language":ls.language(),"value":ls.value(),"what":"alias"}),
-                    ]),
-                    _ => Err(format!("Alias issue")),
-                }
+            CommandType::SetAlias => match (self.item.as_ref(), self.locale_string.as_ref()) {
+                (Some(EntityID::Id(item)), Some(ls)) => Ok(vec![
+                    json!({"action":self.get_action(),"item":item.id(),"language":ls.language(),"value":ls.value(),"what":"alias"}),
+                ]),
+                _ => Err(format!("Alias issue")),
+            },
+            CommandType::SetSitelink => match (self.item.as_ref(), self.sitelink.as_ref()) {
+                (Some(EntityID::Id(item)), Some(sl)) => Ok(vec![
+                    json!({"action":self.get_action(),"item":item.id(),"site":sl.site(),"value":sl.title(),"what":"sitelink"}),
+                ]),
+                _ => Err(format!("Sitelink issue")),
+            },
+            CommandType::Unknown => Err(format!(
+                "QuickStatementsParser::to_json:Unknown command is not supported"
+            )),
+        }
+    }
+
+    pub fn compress(commands: &mut Vec<Self>) {
+        let mut id_to_merge = 0;
+
+        loop {
+            if id_to_merge >= commands.len() {
+                break;
             }
-            CommandType::SetSitelink => {
-                return match (self.item.as_ref(), self.sitelink.as_ref()) {
-                    (Some(EntityID::Id(item)), Some(sl)) => Ok(vec![
-                        json!({"action":self.get_action(),"item":item.id(),"site":sl.site(),"value":sl.title(),"what":"sitelink"}),
-                    ]),
-                    _ => Err(format!("Sitelink issue")),
-                }
+            if commands[id_to_merge].item != Some(EntityID::Last)
+                || commands[id_to_merge].get_action() != "add"
+            {
+                id_to_merge += 1;
+                continue;
             }
-            other => {
-                return Err(format!(
-                    "QuickStatementsParser::to_json:{:?} is not supported yet",
-                    &other
-                ))
+            let create_id = id_to_merge - 1;
+            if commands[create_id].command != CommandType::Create {
+                id_to_merge += 1;
+                continue;
+            }
+
+            match Self::compress_command_pair(&commands[create_id], &commands[id_to_merge]) {
+                Some(create_data) => {
+                    commands[create_id].create_data = Some(create_data);
+                    commands.remove(id_to_merge);
+                }
+                None => {
+                    id_to_merge += 1;
+                }
             }
         }
-        Ok(ret)
+    }
+
+    fn compress_command_pair(
+        create_command: &Self,
+        merge_command: &Self,
+    ) -> Option<serde_json::Value> {
+        let mut cd = match &create_command.create_data {
+            Some(cd) => cd.clone(),
+            None => json!({}),
+        };
+
+        match merge_command.command {
+            CommandType::EditStatement => None,
+            CommandType::SetLabel => match &merge_command.locale_string {
+                Some(s) => {
+                    cd["labels"][s.language()] = json!(s);
+                    Some(cd)
+                }
+                None => None,
+            },
+            CommandType::SetDescription => match &merge_command.locale_string {
+                Some(s) => {
+                    cd["descriptions"][s.language()] = json!(s);
+                    Some(cd)
+                }
+                None => None,
+            },
+            CommandType::SetAlias => match &merge_command.locale_string {
+                Some(s) => {
+                    if cd["aliases"][s.language()].is_array() {
+                        cd["aliases"][s.language()]
+                            .as_array_mut()
+                            .unwrap()
+                            .push(json!(s));
+                    } else {
+                        cd["aliases"][s.language()] = json!([s]);
+                    }
+                    Some(cd)
+                }
+                None => None,
+            },
+            CommandType::SetSitelink => match &merge_command.sitelink {
+                Some(s) => {
+                    cd["sitelinks"][s.site()] = json!({"site":s.site(),"title":s.title()});
+                    Some(cd)
+                }
+                None => None,
+            },
+            _ => None,
+        }
     }
 }
+
+/*
+pub enum CommandType {
+    Create,
+    Merge,
+    EditStatement,
+    SetLabel,
+    SetDescription,
+    SetAlias,
+    SetSitelink,
+    Unknown,
+}
+*/
 
 #[cfg(test)]
 mod tests {

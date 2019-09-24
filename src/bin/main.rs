@@ -1,10 +1,12 @@
+#[macro_use]
+extern crate serde_json;
 extern crate clap;
 extern crate config;
 extern crate mysql;
 extern crate wikibase;
 
 use clap::{App, Arg};
-use log::{error, info, warn};
+use log::{error, info};
 use quickstatements::qs_bot::QuickStatementsBot;
 use quickstatements::qs_command::QuickStatementsCommand;
 use quickstatements::qs_config::QuickStatements;
@@ -57,12 +59,49 @@ fn command_bot() {
     }
 }
 
+fn get_php_commands(api: &wikibase::mediawiki::api::Api, lines: String) -> Vec<serde_json::Value> {
+    let params = api.params_into(&vec![
+        ("action", "import"),
+        ("compress", "1"),
+        ("format", "v1"),
+        ("persistent", "0"),
+        ("data", lines.as_str()),
+    ]);
+    let j = api
+        .query_raw(
+            "https://tools.wmflabs.org/quickstatements/api.php",
+            &params,
+            "POST",
+        )
+        .unwrap();
+    let j: serde_json::Value = serde_json::from_str(&j).unwrap();
+    match j["data"]["commands"].as_array() {
+        Some(commands) => commands.to_vec(),
+        None => vec![],
+    }
+}
+
+fn get_commands(
+    api: &wikibase::mediawiki::api::Api,
+    lines: &Vec<String>,
+) -> Vec<QuickStatementsParser> {
+    let mut ret: Vec<QuickStatementsParser> = vec![];
+    for line in lines {
+        match QuickStatementsParser::new_from_line(&line, Some(&api)) {
+            Ok(c) => {
+                ret.push(c);
+            }
+            Err(e) => error!("\n{}\nCOULD NOT BE PARSED: {}\n", &line, &e),
+        }
+    }
+    ret
+}
+
 fn command_parse() {
     let stdin = io::stdin();
     let api =
         wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php").unwrap();
-    println!("[");
-    let mut comma: char = ' ';
+    let mut lines = vec![];
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(l) => l.trim().to_string(),
@@ -71,82 +110,22 @@ fn command_parse() {
         if line.is_empty() {
             continue;
         }
-        //println!("\n{}", &line);
-
-        let params = api.params_into(&vec![
-            ("action", "import"),
-            ("compress", "0"),
-            ("format", "v1"),
-            ("persistent", "0"),
-            ("data", line.as_str()),
-        ]);
-        let j = api
-            .query_raw(
-                "https://tools.wmflabs.org/quickstatements/api.php",
-                &params,
-                "POST",
-            )
-            .unwrap();
-        let j: serde_json::Value = serde_json::from_str(&j).unwrap();
-        let mut php_commands = match j["data"]["commands"].as_array() {
-            Some(commands) => commands.to_vec(),
-            None => vec![],
-        };
-
-        match QuickStatementsParser::new_from_line(&line, Some(&api)) {
-            Ok(c) => {
-                match c.to_json() {
-                    Ok(arr) => {
-                        if arr == php_commands {
-                            //info!("PERFECT!");
-                            for command in arr {
-                                println!("{}{}", comma, command);
-                                comma = ',';
-                            }
-                            continue;
-                        }
-                        println!("\n{}", &line);
-                        for command in arr {
-                            println!("{}{}", comma, command);
-                            if php_commands.is_empty() {
-                                warn!(">NO MORE COMMANDS");
-                            } else {
-                                let php_command = php_commands.remove(0);
-                                if php_command == command {
-                                    info!("> OK");
-                                } else {
-                                    error!("\n>{}", php_command);
-                                }
-                            }
-                            comma = ',';
-                        }
-                        if !php_commands.is_empty() {
-                            error!("\nLEFTOVER COMMANDS:\n{:?}", &php_commands);
-                        }
-                    }
-                    Err(e) => {
-                        error!(
-                            "\nNo commands from line {}: {}, should be:\n>{:?}",
-                            &line, e, &php_commands
-                        );
-                    }
-                }
-                /*
-                match c.generate_qs_line() {
-                    Some(_line) => println!(
-                        "{:?}{}",
-                        ::serde_json::to_string(&c.to_json().unwrap()).unwrap(),
-                        comma
-                    ),
-                    None => eprintln!("Can't regenerate QS command line"),
-                }
-                */
-                //println!("{:?}", &c);
-            }
-            Err(e) => error!("\n{}\nCOULD NOT BE PARSED: {}\n", &line, &e),
-        }
+        lines.push(line);
     }
-    println!("]");
+    let php_commands = get_php_commands(&api, lines.join("\n"));
+    let mut commands = get_commands(&api, &lines);
+    QuickStatementsParser::compress(&mut commands);
+    let commands_json: Vec<serde_json::Value> =
+        commands.iter().flat_map(|c| c.to_json().unwrap()).collect();
+
+    if commands_json == php_commands {
+        info!("Perfect!");
+        println!("{}", json!(commands_json));
+    } else {
+        error!("Mismatch");
+        println!("{}", json!(commands_json));
+        println!("{}", json!(php_commands));
+    }
 }
 
 fn command_run(site: &str) {
