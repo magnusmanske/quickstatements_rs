@@ -109,8 +109,11 @@ impl Value {
                 "precision":1e-6,
             },"type":"globecoordinate"}),
             Self::MonoLingualText(v) => json!({"value":v,"type":"monolingualtext"}),
-            // Self::Quantity(v) =>
-            other => return Err(format!("Value::to_json: {:?} is not supported yet", &other)),
+            Self::Quantity(v) => json!({"value":{
+                "amount":format!("{}",v.amount()),
+                "unit":v.unit(),
+            },"type":"quantity"}),
+            //other => return Err(format!("Value::to_json: {:?} is not supported yet", &other)),
         })
     }
 }
@@ -816,6 +819,27 @@ impl QuickStatementsParser {
                     ret.push(command.clone());
                 }
             }
+            CommandType::Merge => {
+                return match (self.item.as_ref(), self.target_item.as_ref()) {
+                    (Some(EntityID::Id(item2)), Some(EntityID::Id(item1))) => Ok(vec![
+                        json!({"action":"merge","item1":item1.id(),"item2":item2.id(),"type":item1.entity_type()}),
+                    ]),
+                    _ => Err(format!(
+                        "QuickStatementsParser::to_json:Merge: either item or target_item in None"
+                    )),
+                }
+            }
+            CommandType::SetLabel => {
+                return match (self.item.as_ref(), self.locale_string.as_ref()) {
+                    (Some(EntityID::Id(item)), Some(ls)) => Ok(vec![
+                        json!({"action":"add","item":item.id(),"language":ls.language(),"value":ls.value(),"what":"label"}),
+                    ]),
+                    _ => Err(format!("Label issue")),
+                }
+            }
+            //CommandType::SetDescription => json!({}),
+            //CommandType::SetAlias => json!({}),
+            //CommandType::SetSitelink => json!({}),
             other => {
                 return Err(format!(
                     "QuickStatementsParser::to_json:{:?} is not supported yet",

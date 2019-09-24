@@ -116,8 +116,11 @@ fn command_parse() {
                             comma = ',';
                         }
                     }
-                    _ => {
-                        error!("\nNo commands from line {}", &line);
+                    Err(e) => {
+                        error!(
+                            "\nNo commands from line {}: {}, should be:\n>{:?}",
+                            &line, e, &php_commands
+                        );
                     }
                 }
                 /*
