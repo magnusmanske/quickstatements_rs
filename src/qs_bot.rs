@@ -207,8 +207,6 @@ impl QuickStatementsBot {
             "QuickStatementsBot::try_create_fake_entity has no mw_api"
         ))?;
 
-        println!("Entity:{}\nAPI:{}", &entity_id, mw_api.api_url());
-
         let the_error = Err(format!(
             "Error while loading into entities: {} rev. {:?} '{}'",
             entity_id, revision, original_error
@@ -218,7 +216,6 @@ impl QuickStatementsBot {
             && mw_api.api_url() == COMMONS_API
             && RE_MEDIA_INFO.is_match(&entity_id)
         {
-            println!("{} is a match!", &entity_id);
             let fake_entity = wikibase::Entity::new_mediainfo(
                 entity_id.to_owned(),
                 vec![],
