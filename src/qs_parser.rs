@@ -751,12 +751,19 @@ impl QuickStatementsParser {
         Some(ret.join("\t"))
     }
 
+    pub fn get_action(&self) -> &str {
+        match self.modifier {
+            Some(CommandModifier::Remove) => "remove",
+            _ => "add",
+        }
+    }
+
     /// INCOMPLETE TODO
     pub fn to_json(&self) -> Result<Vec<serde_json::Value>, String> {
         let mut ret = vec![];
         match &self.command {
             CommandType::EditStatement => {
-                let mut base = json!({"action":"add","what":"statement"});
+                let mut base = json!({"action":self.get_action(),"what":"statement"});
                 match &self.comment {
                     Some(comment) => base["summary"] = json!(comment),
                     None => {}
@@ -778,7 +785,6 @@ impl QuickStatementsParser {
                 // TODO reference/qualifier removal?
                 match &self.modifier {
                     Some(CommandModifier::Remove) => {
-                        base["action"] = json!("remove");
                         ret.push(base.clone());
                         return Ok(ret);
                     }
@@ -832,7 +838,7 @@ impl QuickStatementsParser {
             CommandType::SetLabel => {
                 return match (self.item.as_ref(), self.locale_string.as_ref()) {
                     (Some(EntityID::Id(item)), Some(ls)) => Ok(vec![
-                        json!({"action":"add","item":item.id(),"language":ls.language(),"value":ls.value(),"what":"label"}),
+                        json!({"action":self.get_action(),"item":item.id(),"language":ls.language(),"value":ls.value(),"what":"label"}),
                     ]),
                     _ => Err(format!("Label issue")),
                 }
@@ -840,13 +846,27 @@ impl QuickStatementsParser {
             CommandType::SetDescription => {
                 return match (self.item.as_ref(), self.locale_string.as_ref()) {
                     (Some(EntityID::Id(item)), Some(ls)) => Ok(vec![
-                        json!({"action":"add","item":item.id(),"language":ls.language(),"value":ls.value(),"what":"description"}),
+                        json!({"action":self.get_action(),"item":item.id(),"language":ls.language(),"value":ls.value(),"what":"description"}),
                     ]),
-                    _ => Err(format!("Label issue")),
+                    _ => Err(format!("Description issue")),
                 }
             }
-            //CommandType::SetAlias => json!({}),
-            //CommandType::SetSitelink => json!({}),
+            CommandType::SetAlias => {
+                return match (self.item.as_ref(), self.locale_string.as_ref()) {
+                    (Some(EntityID::Id(item)), Some(ls)) => Ok(vec![
+                        json!({"action":self.get_action(),"item":item.id(),"language":ls.language(),"value":ls.value(),"what":"alias"}),
+                    ]),
+                    _ => Err(format!("Alias issue")),
+                }
+            }
+            CommandType::SetSitelink => {
+                return match (self.item.as_ref(), self.sitelink.as_ref()) {
+                    (Some(EntityID::Id(item)), Some(sl)) => Ok(vec![
+                        json!({"action":self.get_action(),"item":item.id(),"site":sl.site(),"value":sl.title(),"what":"sitelink"}),
+                    ]),
+                    _ => Err(format!("Sitelink issue")),
+                }
+            }
             other => {
                 return Err(format!(
                     "QuickStatementsParser::to_json:{:?} is not supported yet",
