@@ -91,7 +91,6 @@ impl Value {
         }
     }
 
-    /// INCOMPLETE TODO
     /// Returns the datavalue
     pub fn to_json(&self) -> Result<serde_json::Value, String> {
         Ok(match self {
@@ -112,7 +111,6 @@ impl Value {
                 "amount":format!("{}",v.amount()),
                 "unit":v.unit(),
             },"type":"quantity"}),
-            //other => return Err(format!("Value::to_json: {:?} is not supported yet", &other)),
         })
     }
 }
@@ -761,7 +759,6 @@ impl QuickStatementsParser {
         }
     }
 
-    /// INCOMPLETE TODO
     pub fn to_json(&self) -> Result<Vec<serde_json::Value>, String> {
         match &self.command {
             CommandType::EditStatement => {
@@ -910,6 +907,86 @@ impl QuickStatementsParser {
         }
     }
 
+    fn mainsnak(&self) -> Option<serde_json::Value> {
+        let j = self.to_json().ok()?;
+        Some(
+            json!({"datavalue":j[0]["datavalue"],"snaktype":"value","property":self.property.as_ref().unwrap().id().to_string()}),
+        )
+    }
+
+    fn compress_add_references_and_qualifiers(
+        statement: &mut serde_json::Value,
+        merge_command: &Self,
+    ) {
+        // Qualifiers
+        if !merge_command.qualifiers.is_empty() {
+            merge_command.qualifiers.iter().for_each(|qual| {
+                if !statement["qualifiers"].is_array() {
+                    statement["qualifiers"] = json!([]);
+                }
+                let j = json!({"datavalue":qual.value.to_json().unwrap(),"property":qual.property.id(),"snaktype":"value"});
+                statement["qualifiers"].as_array_mut().unwrap().push(j);
+            })
+        }
+
+        // References
+        /*
+        if !merge_command.references.is_empty() {
+            let mut command = base.clone();
+            command["what"] = json!("sources");
+            let sources: Vec<serde_json::Value> = merge_command
+                .references
+                .iter()
+                .map(|reference| {
+                    json!({
+                        "prop":reference.property.id(), // Assuming property
+                        "value":reference.value.to_json().unwrap(),
+                    })
+                })
+                .collect();
+            command["sources"] = json!(sources);
+            ret.push(command.clone());
+        }
+        */
+    }
+
+    fn compress_edit_statement(
+        cd: serde_json::Value,
+        merge_command: &Self,
+    ) -> Option<serde_json::Value> {
+        let _j = match merge_command.to_json() {
+            Ok(j) => j,
+            _ => return None,
+        };
+        let mut cd = cd;
+        if !cd["claims"].is_array() {
+            cd["claims"] = json!([]);
+        }
+
+        let mut statement = match merge_command.mainsnak() {
+            Some(mainsnak) => json!({ "mainsnak": mainsnak,"rank":"normal","type":"statement" }),
+            None => return None,
+        };
+        let mut found = false;
+        println!(":: {}", &statement);
+        cd["claims"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .for_each(|s| {
+                if s["mainsnak"] != statement["mainsnak"] {
+                    return;
+                }
+                found = true;
+                Self::compress_add_references_and_qualifiers(s, merge_command);
+            });
+        if !found {
+            Self::compress_add_references_and_qualifiers(&mut statement, merge_command);
+            cd["claims"].as_array_mut().unwrap().push(statement);
+        }
+        Some(cd)
+    }
+
     fn compress_command_pair(
         create_command: &Self,
         merge_command: &Self,
@@ -918,9 +995,8 @@ impl QuickStatementsParser {
             Some(cd) => cd.clone(),
             None => json!({}),
         };
-
         match merge_command.command {
-            CommandType::EditStatement => None,
+            CommandType::EditStatement => Self::compress_edit_statement(cd, merge_command),
             CommandType::SetLabel => match &merge_command.locale_string {
                 Some(s) => {
                     cd["labels"][s.language()] = json!(s);
@@ -960,19 +1036,6 @@ impl QuickStatementsParser {
         }
     }
 }
-
-/*
-pub enum CommandType {
-    Create,
-    Merge,
-    EditStatement,
-    SetLabel,
-    SetDescription,
-    SetAlias,
-    SetSitelink,
-    Unknown,
-}
-*/
 
 #[cfg(test)]
 mod tests {
