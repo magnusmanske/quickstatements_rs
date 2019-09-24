@@ -893,6 +893,10 @@ mod tests {
     }
 
     fn make_time(time: &str, precision: u64) -> Option<Value> {
+        let time = match PHP_COMPATIBILITY {
+            true => time.to_string(),
+            false => time.split('T').nth(0).unwrap().to_string() + "00:00:00Z",
+        };
         Some(Value::Time(TimeValue::new(
             0,
             0,
@@ -1025,7 +1029,7 @@ mod tests {
     fn parse_time_full() {
         assert_eq!(
             QuickStatementsParser::parse_time("+2019-06-07T12:13:14Z/8"),
-            make_time("+2019-06-07T00:00:00Z", 8)
+            make_time("+2019-06-07T12:13:14Z", 8)
         )
     }
 
@@ -1033,7 +1037,7 @@ mod tests {
     fn parse_time_bce() {
         assert_eq!(
             QuickStatementsParser::parse_time("-2019-06-07T12:13:14Z/8"),
-            make_time("-2019-06-07T00:00:00Z", 8)
+            make_time("-2019-06-07T12:13:14Z", 8)
         )
     }
 
@@ -1041,7 +1045,7 @@ mod tests {
     fn parse_time_default_precision() {
         assert_eq!(
             QuickStatementsParser::parse_time("+2019-06-07T12:13:14Z"),
-            make_time("+2019-06-07T00:00:00Z", 9)
+            make_time("+2019-06-07T12:13:14Z", 9)
         )
     }
 
