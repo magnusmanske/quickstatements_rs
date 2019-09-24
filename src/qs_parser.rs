@@ -209,7 +209,9 @@ impl QuickStatementsParser {
                     _ => return Err(format!("Bad value: '{}'", &parts[2])),
                 };
                 let mut ret = Self::new_blank_with_comment(comment.clone());
-                ret.item = Some(Self::parse_item_id(&Some(&parts[0]))?);
+                let mut first = parts[0].clone();
+                ret.modifier = Self::parse_command_modifier(&mut first);
+                ret.item = Some(Self::parse_item_id(&Some(&first))?);
                 match caps.get(1).unwrap().as_str() {
                     "L" => {
                         ret.command = CommandType::SetLabel;

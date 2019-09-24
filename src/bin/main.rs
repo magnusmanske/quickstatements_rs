@@ -71,7 +71,7 @@ fn command_parse() {
         if line.is_empty() {
             continue;
         }
-        println!("\n{}", &line);
+        //println!("\n{}", &line);
 
         let params = api.params_into(&vec![
             ("action", "import"),
@@ -98,9 +98,14 @@ fn command_parse() {
                 match c.to_json() {
                     Ok(arr) => {
                         if arr == php_commands {
-                            info!("PERFECT!");
+                            //info!("PERFECT!");
+                            for command in arr {
+                                println!("{}{}", comma, command);
+                                comma = ',';
+                            }
                             continue;
                         }
+                        println!("\n{}", &line);
                         for command in arr {
                             println!("{}{}", comma, command);
                             if php_commands.is_empty() {
@@ -114,6 +119,9 @@ fn command_parse() {
                                 }
                             }
                             comma = ',';
+                        }
+                        if !php_commands.is_empty() {
+                            error!("\nLEFTOVER COMMANDS:\n{:?}", &php_commands);
                         }
                     }
                     Err(e) => {
