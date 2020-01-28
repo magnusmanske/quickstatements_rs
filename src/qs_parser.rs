@@ -877,7 +877,7 @@ impl QuickStatementsParser {
     }
 
     pub fn compress(commands: &mut Vec<Self>) {
-        let mut id_to_merge = 0;
+        let mut id_to_merge = 1;
 
         loop {
             if id_to_merge >= commands.len() {
@@ -930,24 +930,22 @@ impl QuickStatementsParser {
         }
 
         // References
-        /*
         if !merge_command.references.is_empty() {
-            let mut command = base.clone();
-            command["what"] = json!("sources");
-            let sources: Vec<serde_json::Value> = merge_command
-                .references
-                .iter()
-                .map(|reference| {
-                    json!({
-                        "prop":reference.property.id(), // Assuming property
-                        "value":reference.value.to_json().unwrap(),
-                    })
-                })
-                .collect();
-            command["sources"] = json!(sources);
-            ret.push(command.clone());
+            let mut r = json!({"snaks":{}});
+            merge_command.references.iter().for_each(|reference|{
+                let property = reference.property.id();
+                if !r["snaks"][property].is_array() {
+                    r["snaks"][property] = json!([]);
+                }
+                let j = json!({"datavalue":reference.value.to_json().unwrap(),"property":property,"snaktype":"value"});
+                r["snaks"][property].as_array_mut().unwrap().push(j);
+            });
+
+            if !statement["references"].is_array() {
+                statement["references"] = json!([]);
+            }
+            statement["references"].as_array_mut().unwrap().push(r);
         }
-        */
     }
 
     fn compress_edit_statement(
@@ -968,7 +966,6 @@ impl QuickStatementsParser {
             None => return None,
         };
         let mut found = false;
-        println!(":: {}", &statement);
         cd["claims"]
             .as_array_mut()
             .unwrap()

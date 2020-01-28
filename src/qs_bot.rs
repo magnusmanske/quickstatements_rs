@@ -51,6 +51,7 @@ impl QuickStatementsBot {
                         let mut mw_api = wikibase::mediawiki::api::Api::new(url)
                             .map_err(|e| format!("{:?}", e))?;
                         mw_api.set_edit_delay(config.edit_delay_ms());
+                        mw_api.set_max_retry_attempts(1000);
                         config.set_bot_api_auth(&mut mw_api, batch_id);
                         self.mw_api = Some(mw_api);
                     }

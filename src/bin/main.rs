@@ -75,6 +75,7 @@ fn get_php_commands(api: &wikibase::mediawiki::api::Api, lines: String) -> Vec<s
         )
         .unwrap();
     let j: serde_json::Value = serde_json::from_str(&j).unwrap();
+    //println!("{}", &j);
     match j["data"]["commands"].as_array() {
         Some(commands) => commands.to_vec(),
         None => vec![],
@@ -112,6 +113,29 @@ fn command_parse() {
         }
         lines.push(line);
     }
+    let mut commands = get_commands(&api, &lines);
+    QuickStatementsParser::compress(&mut commands);
+    let commands_json: Vec<serde_json::Value> =
+        commands.iter().flat_map(|c| c.to_json().unwrap()).collect();
+    let commands_json = json!({"data":{"commands":json!(commands_json)},"status":"OK"});
+    println!("{}", commands_json);
+}
+
+fn command_validate() {
+    let stdin = io::stdin();
+    let api =
+        wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php").unwrap();
+    let mut lines = vec![];
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(l) => l.trim().to_string(),
+            Err(_) => break,
+        };
+        if line.is_empty() {
+            continue;
+        }
+        lines.push(line);
+    }
     let php_commands = get_php_commands(&api, lines.join("\n"));
     let mut commands = get_commands(&api, &lines);
     QuickStatementsParser::compress(&mut commands);
@@ -120,10 +144,10 @@ fn command_parse() {
 
     if commands_json == php_commands {
         info!("Perfect!");
-        println!("{}", json!(commands_json));
+    //println!("{}", json!(commands_json));
     } else {
         error!("Mismatch");
-        println!("{}", json!(commands_json));
+        println!("\n{}\n", json!(commands_json));
         println!("{}", json!(php_commands));
     }
 }
@@ -208,6 +232,7 @@ fn main() {
     match command {
         "bot" => command_bot(),
         "parse" => command_parse(),
+        "validate" => command_validate(),
         "run" => command_run(site),
         x => panic!("Not a valid command: {}", x),
     }
