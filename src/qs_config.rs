@@ -52,6 +52,13 @@ impl QuickStatements {
         }
     }
 
+    pub fn maxlag_s(&self) -> Option<u64> {
+        match self.params["set_maxlag"].as_u64() {
+            Some(x) => Some(x),
+            None => Some(5), // default: 5sec
+        }
+    }
+
     pub fn get_site_from_batch(&self, batch_id: i64) -> Option<String> {
         let pool = match &self.pool {
             Some(pool) => pool,
@@ -171,7 +178,7 @@ impl QuickStatements {
 
         //sql += " AND id=13324"; // TESTING: Specific batch only
         //sql += " AND user=4420"; // TESTING: [[User:Magnus Manske]] only
-        sql += r#" AND NOT EXISTS (SELECT * FROM command WHERE batch_id=batch.id AND json rlike '"item":"L\\d')"# ; // TESTING: Available batches that do NOT use lexemes
+        sql += r#" AND NOT EXISTS (SELECT * FROM command WHERE batch_id=batch.id AND json rlike '"item":"L\\d')"#; // TESTING: Available batches that do NOT use lexemes
 
         // Find users that are already running the maximum of simultaneous jobs
         // This is to prevent MW API "too many edits" errors
