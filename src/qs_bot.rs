@@ -388,6 +388,11 @@ impl QuickStatementsBot {
                                 Some(s) => {
                                     if s == "actionthrottledtext" {
                                         // Throttled, try again
+                                        println!(
+                                            "Batch #{}: Throttled by API, sleeping {}ms",
+                                            self.batch_id.unwrap_or(0),
+                                            self.throttled_delay_ms
+                                        );
                                         thread::sleep(time::Duration::from_millis(
                                             self.throttled_delay_ms,
                                         ));
