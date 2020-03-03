@@ -33,7 +33,7 @@ impl QuickStatementsBot {
             last_entity_id: None,
             current_entity_id: None,
             current_property_id: None,
-            throttled_delay_ms: 5000,
+            throttled_delay_ms: 1000,
             entity_revision: VecDeque::new(),
         }
     }
