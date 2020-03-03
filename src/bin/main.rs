@@ -55,7 +55,7 @@ fn command_bot() {
 
     loop {
         run_bot(config.clone());
-        //thread::sleep(Duration::from_millis(1000));
+        thread::sleep(Duration::from_millis(1000));
     }
 }
 
