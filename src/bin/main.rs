@@ -14,16 +14,16 @@ use quickstatements::qs_parser::QuickStatementsParser;
 use simple_logger;
 use std::io;
 use std::io::prelude::*;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-fn run_bot(config_arc: Arc<RwLock<QuickStatements>>) {
+fn run_bot(config_arc: Arc<Mutex<QuickStatements>>) {
     //println!("BOT!");
     let batch_id: i64;
     let user_id: i64;
     {
-        let config = config_arc.read().unwrap();
+        let config = config_arc.lock().unwrap();
         let tuple = match config.get_next_batch() {
             Some(n) => n,
             None => return, // Nothing to do
@@ -49,7 +49,7 @@ fn run_bot(config_arc: Arc<RwLock<QuickStatements>>) {
 
 fn command_bot() {
     let config = match QuickStatements::new_from_config_json("config_rs.json") {
-        Some(qs) => Arc::new(RwLock::new(qs)),
+        Some(qs) => Arc::new(Mutex::new(qs)),
         None => panic!("Could not create QuickStatements bot from config file"),
     };
 
@@ -155,11 +155,11 @@ fn command_validate() {
 fn command_run(site: &str) {
     // Initialize config
     let config = match QuickStatements::new_from_config_json("config_rs.json") {
-        Some(qs) => Arc::new(RwLock::new(qs)),
+        Some(qs) => Arc::new(Mutex::new(qs)),
         None => panic!("Could not create QuickStatements bot from config file"),
     };
 
-    let api_url = match config.read().unwrap().get_api_for_site(site) {
+    let api_url = match config.lock().unwrap().get_api_for_site(site) {
         Some(url) => url,
         None => panic!("Could not get API URL for site '{}'", site),
     }
