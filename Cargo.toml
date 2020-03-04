@@ -19,3 +19,9 @@ clap = "2"
 log = "0.4"
 simple_logger = "*"
 num_cpus = "*"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+#target-cpu = "native"
+panic = "abort"
