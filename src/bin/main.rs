@@ -47,6 +47,8 @@ fn run_bot(config: Arc<QuickStatements>) {
 }
 
 fn command_bot() {
+    let cpus = num_cpus::get();
+    println!("{} CPUs available", cpus);
     let config = match QuickStatements::new_from_config_json("config_rs.json") {
         Some(qs) => Arc::new(qs),
         None => panic!("Could not create QuickStatements bot from config file"),
