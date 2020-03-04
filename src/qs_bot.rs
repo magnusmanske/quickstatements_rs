@@ -4,7 +4,7 @@ use crate::qs_parser::COMMONS_API;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::{thread, time};
 use wikibase;
 
@@ -12,7 +12,7 @@ use wikibase;
 pub struct QuickStatementsBot {
     batch_id: Option<i64>,
     user_id: i64,
-    config: Arc<Mutex<QuickStatements>>,
+    config: Arc<QuickStatements>,
     mw_api: Option<wikibase::mediawiki::api::Api>,
     pub entities: wikibase::entity_container::EntityContainer,
     last_entity_id: Option<String>,
@@ -23,7 +23,7 @@ pub struct QuickStatementsBot {
 }
 
 impl QuickStatementsBot {
-    pub fn new(config: Arc<Mutex<QuickStatements>>, batch_id: Option<i64>, user_id: i64) -> Self {
+    pub fn new(config: Arc<QuickStatements>, batch_id: Option<i64>, user_id: i64) -> Self {
         Self {
             batch_id: batch_id,
             user_id: user_id,
@@ -39,9 +39,9 @@ impl QuickStatementsBot {
     }
 
     pub fn start(&mut self) -> Result<(), String> {
-        let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
         match self.batch_id {
             Some(batch_id) => {
+                let config = self.config.clone();
                 config
                     .restart_batch(batch_id)
                     .ok_or("Can't (re)start batch".to_string())?;
@@ -80,8 +80,7 @@ impl QuickStatementsBot {
             Err(_) => {
                 match self.batch_id {
                     Some(batch_id) => {
-                        let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
-                        config
+                        self.config
                             .deactivate_batch_run(batch_id, self.user_id)
                             .ok_or("Can't set batch as stopped".to_string())?;
                     }
@@ -102,8 +101,7 @@ impl QuickStatementsBot {
             None => {
                 match self.batch_id {
                     Some(batch_id) => {
-                        let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
-                        config
+                        self.config
                             .set_batch_finished(batch_id, self.user_id)
                             .ok_or("Can't set batch as finished".to_string())?;
                     }
@@ -117,9 +115,9 @@ impl QuickStatementsBot {
     fn get_next_command(&self) -> Result<Option<QuickStatementsCommand>, String> {
         match self.batch_id {
             Some(batch_id) => {
-                let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
-                config.check_batch_not_stopped(batch_id)?;
-                Ok(config.get_next_command(batch_id))
+                self.config.check_batch_not_stopped(batch_id)?;
+                let result = self.config.get_next_command(batch_id);
+                Ok(result)
             }
             None => Err(format!("No match ID set")),
         }
@@ -438,14 +436,13 @@ impl QuickStatementsBot {
             return Ok(());
         }
 
-        let mut config = self.config.lock().map_err(|e| format!("{:?}", e))?;
-        config
+        self.config
             .set_command_status(command, status, message.map(|s| s.to_string()))
             .ok_or(format!(
                 "Can't config.set_command_status for batch #{}",
                 self.batch_id.unwrap() //Safe
             ))?;
-        config
+        self.config
             .set_last_item_for_batch(self.batch_id.unwrap(), &self.last_entity_id) // unwrap safe
             .ok_or(format!(
                 "Can't config.set_command_status for batch #{}",

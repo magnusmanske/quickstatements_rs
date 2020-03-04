@@ -5,13 +5,14 @@ use mysql as my;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
+use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Debug, Clone)]
 pub struct QuickStatements {
     params: Value,
-    pool: Option<my::Pool>,
-    running_batch_ids: HashSet<i64>,
-    user_counter: HashMap<i64, i64>,
+    pool: Option<Arc<Mutex<my::Pool>>>,
+    running_batch_ids: Arc<RwLock<HashSet<i64>>>,
+    user_counter: Arc<RwLock<HashMap<i64, i64>>>,
     max_batches_per_user: i64,
 }
 
@@ -33,8 +34,8 @@ impl QuickStatements {
         let mut ret = Self {
             params: params,
             pool: None,
-            running_batch_ids: HashSet::new(),
-            user_counter: HashMap::new(),
+            running_batch_ids: Arc::new(RwLock::new(HashSet::new())),
+            user_counter: Arc::new(RwLock::new(HashMap::new())),
             max_batches_per_user: 2,
         };
         ret.create_mysql_pool();
@@ -65,6 +66,8 @@ impl QuickStatements {
             None => return None,
         };
         for row in pool
+            .lock()
+            .unwrap()
             .prep_exec(
                 r#"SELECT site FROM batch WHERE id=?"#,
                 (my::Value::Int(batch_id),),
@@ -83,7 +86,7 @@ impl QuickStatements {
     }
 
     pub fn number_of_bots_running(&self) -> usize {
-        self.running_batch_ids.len()
+        self.running_batch_ids.read().unwrap().len()
     }
 
     pub fn timestamp(&self) -> String {
@@ -96,11 +99,11 @@ impl QuickStatements {
             Some(pool) => pool,
             None => return None,
         };
-        pool.prep_exec(
+        pool.lock().unwrap().prep_exec(
             r#"UPDATE `batch` SET `status`="RUN",`message`="",`ts_last_change`=? WHERE id=? AND `status`!="TEST""#,
             (my::Value::from(self.timestamp()), my::Value::Int(batch_id)),
         ).ok()?;
-        pool.prep_exec(
+        pool.lock().unwrap().prep_exec(
             r#"UPDATE `command` SET `status`="INIT",`message`="",`ts_change`=? WHERE `status`="RUN" AND `batch_id`=?"#,
             (my::Value::from(self.timestamp()),my::Value::Int(batch_id),),
         )
@@ -139,9 +142,9 @@ impl QuickStatements {
 
         // Min 2, max 7 connections
         self.pool = match my::Pool::new_manual(2, 7, builder) {
-            Ok(pool) => Some(pool),
+            Ok(pool) => Some(Arc::new(Mutex::new(pool))),
             _ => None,
-        }
+        };
     }
 
     pub fn get_last_item_from_batch(&self, batch_id: i64) -> Option<String> {
@@ -150,6 +153,8 @@ impl QuickStatements {
             None => return None,
         };
         for row in pool
+            .lock()
+            .unwrap()
             .prep_exec(
                 r#"SELECT last_item FROM batch WHERE `id`=?"#,
                 (my::Value::from(batch_id),),
@@ -185,6 +190,8 @@ impl QuickStatements {
         // Also, it's more fair
         let bad_users: Vec<String> = self
             .user_counter
+            .read()
+            .unwrap()
             .iter()
             .filter_map(|(user_id, cnt)| {
                 if *cnt >= self.max_batches_per_user {
@@ -202,13 +209,13 @@ impl QuickStatements {
 
         sql += " ORDER BY `ts_last_change`";
 
-        for row in pool.prep_exec(sql, ()).ok()? {
+        for row in pool.lock().unwrap().prep_exec(sql, ()).ok()? {
             let row = row.ok()?;
             let id = match &row["id"] {
                 my::Value::Int(x) => *x as i64,
                 _ => continue,
             };
-            if self.running_batch_ids.contains(&id) {
+            if self.running_batch_ids.read().unwrap().contains(&id) {
                 continue;
             }
             let user = match &row["user"] {
@@ -220,17 +227,17 @@ impl QuickStatements {
         None
     }
 
-    pub fn reinitialize_open_batches(&mut self) -> Option<()> {
+    pub fn reinitialize_open_batches(&self) -> Option<()> {
         let pool = match &self.pool {
             Some(pool) => pool,
             None => return None,
         };
         let sql = "UPDATE batch SET status='INIT' WHERE status='DONE' AND id IN (SELECT DISTINCT batch_id FROM command WHERE status='INIT' and batch_id>12000)" ;
-        pool.prep_exec(sql, ()).ok()?;
+        pool.lock().unwrap().prep_exec(sql, ()).ok()?;
         Some(())
     }
 
-    pub fn set_batch_running(&mut self, batch_id: i64, user_id: i64) {
+    pub fn set_batch_running(&self, batch_id: i64, user_id: i64) {
         println!(
             "set_batch_running: Starting batch #{} for user {}",
             batch_id, user_id
@@ -241,35 +248,41 @@ impl QuickStatements {
         }
 
         // Increase user batch counter
-        self.running_batch_ids.insert(batch_id);
-        let user_counter = match self.user_counter.get(&user_id) {
+        self.running_batch_ids.write().unwrap().insert(batch_id);
+        let user_counter = match self.user_counter.read().unwrap().get(&user_id) {
             Some(cnt) => *cnt,
             None => 0,
         };
-        self.user_counter.insert(user_id, user_counter + 1);
+        self.user_counter
+            .write()
+            .unwrap()
+            .insert(user_id, user_counter + 1);
 
         println!("Currently {} bots running", self.number_of_bots_running());
     }
 
-    pub fn deactivate_batch_run(self: &mut Self, batch_id: i64, user_id: i64) -> Option<()> {
+    pub fn deactivate_batch_run(&self, batch_id: i64, user_id: i64) -> Option<()> {
         // Decrease user batch counter
-        self.running_batch_ids.insert(batch_id);
-        let user_counter = match self.user_counter.get(&user_id) {
+        self.running_batch_ids.write().unwrap().insert(batch_id);
+        let user_counter = match self.user_counter.read().unwrap().get(&user_id) {
             Some(cnt) => *cnt,
             None => 0,
         };
-        self.user_counter.insert(user_id, user_counter - 1);
-        self.running_batch_ids.remove(&batch_id);
+        self.user_counter
+            .write()
+            .unwrap()
+            .insert(user_id, user_counter - 1);
+        self.running_batch_ids.write().unwrap().remove(&batch_id);
         println!("Currently {} bots running", self.number_of_bots_running());
         Some(())
     }
 
-    pub fn set_batch_finished(&mut self, batch_id: i64, user_id: i64) -> Option<()> {
+    pub fn set_batch_finished(&self, batch_id: i64, user_id: i64) -> Option<()> {
         println!("set_batch_finished: Batch #{}", batch_id);
         self.set_batch_status("DONE", "", batch_id, user_id)
     }
 
-    pub fn check_batch_not_stopped(self: &mut Self, batch_id: i64) -> Result<(), String> {
+    pub fn check_batch_not_stopped(&self, batch_id: i64) -> Result<(), String> {
         let pool = match &self.pool {
             Some(pool) => pool,
             None => {
@@ -282,7 +295,7 @@ impl QuickStatements {
             "SELECT * FROM batch WHERE id={} AND `status` NOT IN ('RUN','INIT')",
             batch_id
         );
-        let result = match pool.prep_exec(sql, ()) {
+        let result = match pool.lock().unwrap().prep_exec(sql, ()) {
             Ok(r) => r,
             Err(e) => return Err(format!("Error: {}", e)),
         };
@@ -296,7 +309,7 @@ impl QuickStatements {
     }
 
     fn set_batch_status(
-        &mut self,
+        &self,
         status: &str,
         message: &str,
         batch_id: i64,
@@ -306,27 +319,34 @@ impl QuickStatements {
             Some(pool) => pool,
             None => return None,
         };
-        pool.prep_exec(
-            r#"UPDATE `batch` SET `status`=?,`message`=?,`ts_last_change`=? WHERE id=?"#,
-            (
-                my::Value::from(status),
-                my::Value::from(message),
-                my::Value::from(self.timestamp()),
-                my::Value::Int(batch_id),
-            ),
-        )
-        .ok()?;
+        pool.lock()
+            .unwrap()
+            .prep_exec(
+                r#"UPDATE `batch` SET `status`=?,`message`=?,`ts_last_change`=? WHERE id=?"#,
+                (
+                    my::Value::from(status),
+                    my::Value::from(message),
+                    my::Value::from(self.timestamp()),
+                    my::Value::Int(batch_id),
+                ),
+            )
+            .ok()?;
         self.deactivate_batch_run(batch_id, user_id)
     }
 
-    pub fn get_next_command(&mut self, batch_id: i64) -> Option<QuickStatementsCommand> {
+    pub fn get_next_command(&self, batch_id: i64) -> Option<QuickStatementsCommand> {
         let pool = match &self.pool {
             Some(pool) => pool,
             None => return None,
         };
         let sql =
             r#"SELECT * FROM command WHERE batch_id=? AND status IN ('INIT') ORDER BY num LIMIT 1"#;
-        for row in pool.prep_exec(sql, (my::Value::Int(batch_id),)).ok()? {
+        for row in pool
+            .lock()
+            .unwrap()
+            .prep_exec(sql, (my::Value::Int(batch_id),))
+            .ok()?
+        {
             let row = row.ok()?;
             return Some(QuickStatementsCommand::new_from_row(row));
         }
@@ -334,7 +354,7 @@ impl QuickStatements {
     }
 
     pub fn set_command_status(
-        self: &mut Self,
+        self: &Self,
         command: &mut QuickStatementsCommand,
         new_status: &str,
         new_message: Option<String>,
@@ -357,7 +377,7 @@ impl QuickStatements {
             _ => "{}".to_string(),
         };
 
-        pool.prep_exec(
+        pool.lock().unwrap().prep_exec(
             r#"UPDATE `command` SET `ts_change`=?,`json`=?,`status`=?,`message`=? WHERE `id`=?"#,
             (
                 my::Value::from(self.timestamp()),
@@ -372,7 +392,7 @@ impl QuickStatements {
     }
 
     pub fn set_last_item_for_batch(
-        self: &mut Self,
+        self: &Self,
         batch_id: i64,
         last_item: &Option<String>,
     ) -> Option<()> {
@@ -386,20 +406,22 @@ impl QuickStatements {
         };
 
         let ts = self.timestamp();
-        pool.prep_exec(
-            r#"UPDATE `batch` SET `ts_last_change`=?,`last_item`=? WHERE `id`=?"#,
-            (
-                my::Value::from(ts),
-                my::Value::from(last_item),
-                my::Value::from(batch_id),
-            ),
-        )
-        .ok()?;
+        pool.lock()
+            .unwrap()
+            .prep_exec(
+                r#"UPDATE `batch` SET `ts_last_change`=?,`last_item`=? WHERE `id`=?"#,
+                (
+                    my::Value::from(ts),
+                    my::Value::from(last_item),
+                    my::Value::from(batch_id),
+                ),
+            )
+            .ok()?;
         Some(())
     }
 
     fn get_oauth_for_batch(
-        self: &mut Self,
+        self: &Self,
         batch_id: i64,
     ) -> Option<wikibase::mediawiki::api::OAuthParams> {
         let pool = match &self.pool {
@@ -408,7 +430,12 @@ impl QuickStatements {
         };
         let auth_db = "s53220__quickstatements_auth";
         let sql = format!(r#"SELECT * FROM {}.batch_oauth WHERE batch_id=?"#, auth_db);
-        for row in pool.prep_exec(sql, (my::Value::from(batch_id),)).ok()? {
+        for row in pool
+            .lock()
+            .unwrap()
+            .prep_exec(sql, (my::Value::from(batch_id),))
+            .ok()?
+        {
             let row = row.ok()?;
             let serialized_json = match &row["serialized_json"] {
                 my::Value::Bytes(x) => String::from_utf8_lossy(x),
@@ -423,11 +450,7 @@ impl QuickStatements {
         None
     }
 
-    pub fn set_bot_api_auth(
-        self: &mut Self,
-        mw_api: &mut wikibase::mediawiki::api::Api,
-        batch_id: i64,
-    ) {
+    pub fn set_bot_api_auth(&self, mw_api: &mut wikibase::mediawiki::api::Api, batch_id: i64) {
         match self.get_oauth_for_batch(batch_id) {
             Some(oauth_params) => {
                 // Using OAuth

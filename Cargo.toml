@@ -9,7 +9,7 @@ edition = "2018"
 #wikibase = { path = "../wikibase_rs" }
 wikibase = { git="https://gitlab.com/tobias47n9e/wikibase_rs"}
 
-mysql = { version="16" , features = ["ssl"] }
+mysql = { version="16",features = ["ssl"] }
 serde_json = "1"
 config = "0.9.2"
 regex = "1"
