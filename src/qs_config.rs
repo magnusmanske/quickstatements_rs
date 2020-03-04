@@ -5,12 +5,12 @@ use mysql as my;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone)]
 pub struct QuickStatements {
     params: Value,
-    pool: Arc<Mutex<my::Pool>>,
+    pool: my::Pool,
     running_batch_ids: Arc<RwLock<HashSet<i64>>>,
     user_counter: Arc<RwLock<HashMap<i64, i64>>>,
     max_batches_per_user: i64,
@@ -34,7 +34,7 @@ impl QuickStatements {
 
         let ret = Self {
             params: params.clone(),
-            pool: Arc::new(Mutex::new(Self::create_mysql_pool(&params).ok()?)),
+            pool: Self::create_mysql_pool(&params).ok()?,
             running_batch_ids: Arc::new(RwLock::new(HashSet::new())),
             user_counter: Arc::new(RwLock::new(HashMap::new())),
             max_batches_per_user: 2,
@@ -72,8 +72,6 @@ impl QuickStatements {
     pub fn get_site_from_batch(&self, batch_id: i64) -> Option<String> {
         for row in self
             .pool
-            .lock()
-            .unwrap()
             .prep_exec(
                 r#"SELECT site FROM batch WHERE id=?"#,
                 (my::Value::Int(batch_id),),
@@ -101,11 +99,11 @@ impl QuickStatements {
     }
 
     pub fn restart_batch(&self, batch_id: i64) -> Option<()> {
-        self.pool.lock().unwrap().prep_exec(
+        self.pool.prep_exec(
             r#"UPDATE `batch` SET `status`="RUN",`message`="",`ts_last_change`=? WHERE id=? AND `status`!="TEST""#,
             (my::Value::from(self.timestamp()), my::Value::Int(batch_id)),
         ).ok()?;
-        self.pool.lock().unwrap().prep_exec(
+        self.pool.prep_exec(
             r#"UPDATE `command` SET `status`="INIT",`message`="",`ts_change`=? WHERE `status`="RUN" AND `batch_id`=?"#,
             (my::Value::from(self.timestamp()),my::Value::Int(batch_id),),
         )
@@ -154,8 +152,6 @@ impl QuickStatements {
     pub fn get_last_item_from_batch(&self, batch_id: i64) -> Option<String> {
         for row in self
             .pool
-            .lock()
-            .unwrap()
             .prep_exec(
                 r#"SELECT last_item FROM batch WHERE `id`=?"#,
                 (my::Value::from(batch_id),),
@@ -205,7 +201,7 @@ impl QuickStatements {
 
         sql += " ORDER BY `ts_last_change`";
 
-        for row in self.pool.lock().unwrap().prep_exec(sql, ()).ok()? {
+        for row in self.pool.prep_exec(sql, ()).ok()? {
             let row = row.ok()?;
             let id = match &row["id"] {
                 my::Value::Int(x) => *x as i64,
@@ -225,7 +221,7 @@ impl QuickStatements {
 
     pub fn reinitialize_open_batches(&self) -> Option<()> {
         let sql = "UPDATE batch SET status='INIT' WHERE status='DONE' AND id IN (SELECT DISTINCT batch_id FROM command WHERE status='INIT' and batch_id>12000)" ;
-        self.pool.lock().unwrap().prep_exec(sql, ()).ok()?;
+        self.pool.prep_exec(sql, ()).ok()?;
         Some(())
     }
 
@@ -279,7 +275,7 @@ impl QuickStatements {
             "SELECT * FROM batch WHERE id={} AND `status` NOT IN ('RUN','INIT')",
             batch_id
         );
-        let result = match self.pool.lock().unwrap().prep_exec(sql, ()) {
+        let result = match self.pool.prep_exec(sql, ()) {
             Ok(r) => r,
             Err(e) => return Err(format!("Error: {}", e)),
         };
@@ -300,8 +296,6 @@ impl QuickStatements {
         user_id: i64,
     ) -> Option<()> {
         self.pool
-            .lock()
-            .unwrap()
             .prep_exec(
                 r#"UPDATE `batch` SET `status`=?,`message`=?,`ts_last_change`=? WHERE id=?"#,
                 (
@@ -318,13 +312,7 @@ impl QuickStatements {
     pub fn get_next_command(&self, batch_id: i64) -> Option<QuickStatementsCommand> {
         let sql =
             r#"SELECT * FROM command WHERE batch_id=? AND status IN ('INIT') ORDER BY num LIMIT 1"#;
-        for row in self
-            .pool
-            .lock()
-            .unwrap()
-            .prep_exec(sql, (my::Value::Int(batch_id),))
-            .ok()?
-        {
+        for row in self.pool.prep_exec(sql, (my::Value::Int(batch_id),)).ok()? {
             let row = row.ok()?;
             return Some(QuickStatementsCommand::new_from_row(row));
         }
@@ -350,7 +338,7 @@ impl QuickStatements {
             _ => "{}".to_string(),
         };
 
-        self.pool.lock().unwrap().prep_exec(
+        self.pool.prep_exec(
             r#"UPDATE `command` SET `ts_change`=?,`json`=?,`status`=?,`message`=? WHERE `id`=?"#,
             (
                 my::Value::from(self.timestamp()),
@@ -376,8 +364,6 @@ impl QuickStatements {
 
         let ts = self.timestamp();
         self.pool
-            .lock()
-            .unwrap()
             .prep_exec(
                 r#"UPDATE `batch` SET `ts_last_change`=?,`last_item`=? WHERE `id`=?"#,
                 (
@@ -398,8 +384,6 @@ impl QuickStatements {
         let sql = format!(r#"SELECT * FROM {}.batch_oauth WHERE batch_id=?"#, auth_db);
         for row in self
             .pool
-            .lock()
-            .unwrap()
             .prep_exec(sql, (my::Value::from(batch_id),))
             .ok()?
         {
