@@ -1,6 +1,7 @@
 use crate::qs_command::QuickStatementsCommand;
 use crate::qs_config::QuickStatements;
 use crate::qs_parser::COMMONS_API;
+use chrono::Local;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
@@ -73,8 +74,24 @@ impl QuickStatementsBot {
         self.mw_api = Some(mw_api);
     }
 
+    fn log(&self, msg: String) {
+        if self.config.verbose() {
+            let date = Local::now();
+            let timestamp = date.format("%Y-%m-%d][%H:%M:%S");
+            match self.batch_id {
+                Some(id) => {
+                    println!("{} Batch #{}: {}", timestamp, id, msg);
+                }
+                None => {
+                    println!("{} No batch ID: {}", timestamp, msg);
+                }
+            }
+        }
+    }
+
     pub fn run(&mut self) -> Result<bool, String> {
         //Check if batch is still valid (STOP etc)
+        self.log(format!("[run] Getting next command"));
         let command = match self.get_next_command() {
             Ok(c) => c,
             Err(_) => {
@@ -92,6 +109,7 @@ impl QuickStatementsBot {
 
         match command {
             Some(mut command) => {
+                self.log(format!("[run] Executing command"));
                 match self.execute_command(&mut command) {
                     Ok(_) => {}
                     Err(_message) => {} //self.set_command_status("ERROR", Some(&message), &mut command),
@@ -99,6 +117,7 @@ impl QuickStatementsBot {
                 Ok(true)
             }
             None => {
+                self.log(format!("[run] No more commands"));
                 match self.batch_id {
                     Some(batch_id) => {
                         self.config
@@ -128,6 +147,7 @@ impl QuickStatementsBot {
         command: &QuickStatementsCommand,
     ) -> Result<Option<wikibase::Entity>, String> {
         let command_action = command.get_action()?;
+        self.log(format!("[prepare_to_execute] Action '{}'", &command_action));
         // Add/remove require the main item to be loaded
         if command_action == "add" || command_action == "remove" {
             // Reset
@@ -240,14 +260,17 @@ impl QuickStatementsBot {
         self: &mut Self,
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
+        self.log(format!("[execute_command] Init"));
         self.set_command_status("RUN", None, command)?;
         self.current_property_id = None;
         self.current_entity_id = None;
 
+        self.log(format!("[execute_command] Prep"));
         command.insert_last_item_into_sources_and_qualifiers(&self.last_entity_id)?;
         let main_item = self.prepare_to_execute(command)?;
         let action = command.action_to_execute(&main_item);
 
+        self.log(format!("[execute_command] Go"));
         match action {
             Ok(action) => match self.run_action(action, command) {
                 Ok(_) => self.set_command_status("DONE", None, command),
@@ -324,6 +347,8 @@ impl QuickStatementsBot {
         if !j["already_done"].is_null() {
             return Ok(());
         }
+
+        self.log(format!("[run_action] Init"));
 
         //println!("Running action {}", &j);
         let mut params: HashMap<String, String> = HashMap::new();

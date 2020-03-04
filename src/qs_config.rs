@@ -14,6 +14,7 @@ pub struct QuickStatements {
     running_batch_ids: Arc<RwLock<HashSet<i64>>>,
     user_counter: Arc<RwLock<HashMap<i64, i64>>>,
     max_batches_per_user: i64,
+    verbose: bool,
 }
 
 impl QuickStatements {
@@ -37,12 +38,21 @@ impl QuickStatements {
             running_batch_ids: Arc::new(RwLock::new(HashSet::new())),
             user_counter: Arc::new(RwLock::new(HashMap::new())),
             max_batches_per_user: 2,
+            verbose: false,
         };
         ret.create_mysql_pool();
         match ret.pool {
             Some(_) => Some(ret),
             None => None,
         }
+    }
+
+    pub fn set_verbose(&mut self, verbose: bool) {
+        self.verbose = verbose;
+    }
+
+    pub fn verbose(&self) -> bool {
+        self.verbose
     }
 
     pub fn get_api_for_site(&self, site: &str) -> Option<&str> {

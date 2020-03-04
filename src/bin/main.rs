@@ -46,11 +46,14 @@ fn run_bot(config: Arc<QuickStatements>) {
     });
 }
 
-fn command_bot() {
+fn command_bot(verbose: bool) {
     let cpus = num_cpus::get();
     println!("{} CPUs available", cpus);
     let config = match QuickStatements::new_from_config_json("config_rs.json") {
-        Some(qs) => Arc::new(qs),
+        Some(mut qs) => {
+            qs.set_verbose(verbose);
+            Arc::new(qs)
+        }
         None => panic!("Could not create QuickStatements bot from config file"),
     };
 
@@ -220,6 +223,14 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
+            Arg::with_name("VERBOSE")
+                .short("v")
+                .long("verbose")
+                .required(false)
+                .help("Sets verbose mode")
+                .takes_value(false),
+        )
+        .arg(
             Arg::with_name("COMMAND")
                 .help("Command [bot|parse|run]")
                 .required(true)
@@ -228,10 +239,11 @@ fn main() {
         .get_matches();
 
     let site = matches.value_of("SITE").unwrap_or("wikidata");
+    let verbose = matches.is_present("VERBOSE");
     let command = matches.value_of("COMMAND").unwrap();
 
     match command {
-        "bot" => command_bot(),
+        "bot" => command_bot(verbose),
         "parse" => command_parse(),
         "validate" => command_validate(),
         "run" => command_run(site),
