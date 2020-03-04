@@ -114,6 +114,7 @@ impl QuickStatementsBot {
                     Ok(_) => {}
                     Err(_message) => {} //self.set_command_status("ERROR", Some(&message), &mut command),
                 }
+                self.log(format!("[run] Command executed"));
                 Ok(true)
             }
             None => {
@@ -287,9 +288,11 @@ impl QuickStatementsBot {
     }
 
     fn reset_entities(self: &mut Self, res: &Value, command: &QuickStatementsCommand) {
+        self.log(format!("[reset_entities] Init"));
         match command.json["item"].as_str() {
             Some(q) => {
                 if q.to_uppercase() != "LAST" {
+                    self.log(format!("[reset_entities] Start"));
                     self.last_entity_id = Some(q.to_string());
                     self.entities.remove_entity(q);
                     match res["pageinfo"]["lastrevid"].as_u64() {
@@ -301,6 +304,7 @@ impl QuickStatementsBot {
                         }
                         None => {}
                     }
+                    self.log(format!("[reset_entities] End"));
                     return;
                 }
             }
@@ -367,6 +371,8 @@ impl QuickStatementsBot {
             );
         }
         self.add_summary(&mut params, command);
+        self.log(format!("[run_action] Summary added"));
+
         // TODO baserev?
         let mut mw_api = self.mw_api.to_owned().ok_or(format!(
             "QuickStatementsBot::run_action batch #{} has no mw_api",
@@ -379,10 +385,12 @@ impl QuickStatementsBot {
                 .map_err(|e| format!("QuickStatementsBot::run_action get_edit_token '{}'", e))?,
         );
 
+        self.log(format!("[run_action] Pre  post_query_api_json_mut"));
         let res = match mw_api.post_query_api_json_mut(&params) {
             Ok(x) => x,
             Err(e) => return Err(format!("Wiki editing failed: {:?}", e)),
         };
+        self.log(format!("[run_action] Post post_query_api_json_mut"));
         //println!("{}", ::serde_json::to_string_pretty(&res).unwrap());
 
         lazy_static! {
