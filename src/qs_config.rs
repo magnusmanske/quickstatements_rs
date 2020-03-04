@@ -39,7 +39,10 @@ impl QuickStatements {
             max_batches_per_user: 2,
         };
         ret.create_mysql_pool();
-        Some(ret)
+        match ret.pool {
+            Some(_) => Some(ret),
+            None => None,
+        }
     }
 
     pub fn get_api_for_site(&self, site: &str) -> Option<&str> {
@@ -145,6 +148,10 @@ impl QuickStatements {
             Ok(pool) => Some(Arc::new(Mutex::new(pool))),
             _ => None,
         };
+        match self.pool {
+            Some(_) => println!("Pool established"),
+            None => println!("No pool"),
+        }
     }
 
     pub fn get_last_item_from_batch(&self, batch_id: i64) -> Option<String> {
