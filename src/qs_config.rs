@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, RwLock};
 #[derive(Debug, Clone)]
 pub struct QuickStatements {
     params: Value,
-    pool: Option<Arc<Mutex<my::Pool>>>,
+    pool: Arc<Mutex<my::Pool>>,
     running_batch_ids: Arc<RwLock<HashSet<i64>>>,
     user_counter: Arc<RwLock<HashMap<i64, i64>>>,
     max_batches_per_user: i64,
@@ -32,19 +32,15 @@ impl QuickStatements {
             None => json!({}),
         };
 
-        let mut ret = Self {
-            params: params,
-            pool: None,
+        let ret = Self {
+            params: params.clone(),
+            pool: Arc::new(Mutex::new(Self::create_mysql_pool(&params).ok()?)),
             running_batch_ids: Arc::new(RwLock::new(HashSet::new())),
             user_counter: Arc::new(RwLock::new(HashMap::new())),
             max_batches_per_user: 2,
             verbose: false,
         };
-        ret.create_mysql_pool();
-        match ret.pool {
-            Some(_) => Some(ret),
-            None => None,
-        }
+        Some(ret)
     }
 
     pub fn set_verbose(&mut self, verbose: bool) {
@@ -74,11 +70,8 @@ impl QuickStatements {
     }
 
     pub fn get_site_from_batch(&self, batch_id: i64) -> Option<String> {
-        let pool = match &self.pool {
-            Some(pool) => pool,
-            None => return None,
-        };
-        for row in pool
+        for row in self
+            .pool
             .lock()
             .unwrap()
             .prep_exec(
@@ -108,15 +101,11 @@ impl QuickStatements {
     }
 
     pub fn restart_batch(&self, batch_id: i64) -> Option<()> {
-        let pool = match &self.pool {
-            Some(pool) => pool,
-            None => return None,
-        };
-        pool.lock().unwrap().prep_exec(
+        self.pool.lock().unwrap().prep_exec(
             r#"UPDATE `batch` SET `status`="RUN",`message`="",`ts_last_change`=? WHERE id=? AND `status`!="TEST""#,
             (my::Value::from(self.timestamp()), my::Value::Int(batch_id)),
         ).ok()?;
-        pool.lock().unwrap().prep_exec(
+        self.pool.lock().unwrap().prep_exec(
             r#"UPDATE `command` SET `status`="INIT",`message`="",`ts_change`=? WHERE `status`="RUN" AND `batch_id`=?"#,
             (my::Value::from(self.timestamp()),my::Value::Int(batch_id),),
         )
@@ -135,18 +124,20 @@ impl QuickStatements {
         self.get_api_for_site(&site)
     }
 
-    fn create_mysql_pool(&mut self) {
-        if !self.params["mysql"].is_object() {
-            return;
+    fn create_mysql_pool(params: &Value) -> Result<my::Pool, String> {
+        if !params["mysql"].is_object() {
+            return Err(format!(
+                "QuickStatementsConfig::create_mysql_pool: No mysql info in params"
+            ));
         }
         let mut builder = my::OptsBuilder::new();
         //println!("{}", &self.params);
         builder
-            .ip_or_hostname(self.params["mysql"]["host"].as_str())
-            .db_name(self.params["mysql"]["schema"].as_str())
-            .user(self.params["mysql"]["user"].as_str())
-            .pass(self.params["mysql"]["pass"].as_str());
-        match self.params["mysql"]["port"].as_u64() {
+            .ip_or_hostname(params["mysql"]["host"].as_str())
+            .db_name(params["mysql"]["schema"].as_str())
+            .user(params["mysql"]["user"].as_str())
+            .pass(params["mysql"]["pass"].as_str());
+        match params["mysql"]["port"].as_u64() {
             Some(port) => {
                 builder.tcp_port(port as u16);
             }
@@ -154,22 +145,15 @@ impl QuickStatements {
         }
 
         // Min 2, max 7 connections
-        self.pool = match my::Pool::new_manual(2, 7, builder) {
-            Ok(pool) => Some(Arc::new(Mutex::new(pool))),
-            _ => None,
-        };
-        match self.pool {
-            Some(_) => println!("Pool established"),
-            None => println!("No pool"),
+        match my::Pool::new_manual(2, 7, builder) {
+            Ok(pool) => Ok(pool),
+            Err(e) => Err(format!("{:?}", e)),
         }
     }
 
     pub fn get_last_item_from_batch(&self, batch_id: i64) -> Option<String> {
-        let pool = match &self.pool {
-            Some(pool) => pool,
-            None => return None,
-        };
-        for row in pool
+        for row in self
+            .pool
             .lock()
             .unwrap()
             .prep_exec(
@@ -188,11 +172,6 @@ impl QuickStatements {
     }
 
     pub fn get_next_batch(&self) -> Option<(i64, i64)> {
-        let pool = match &self.pool {
-            Some(pool) => pool,
-            None => return None,
-        };
-
         let mut sql: String = "SELECT * FROM batch WHERE `status` IN (".to_string();
         sql += "'INIT','RUN'";
         //sql += "'TEST'" ;
@@ -226,7 +205,7 @@ impl QuickStatements {
 
         sql += " ORDER BY `ts_last_change`";
 
-        for row in pool.lock().unwrap().prep_exec(sql, ()).ok()? {
+        for row in self.pool.lock().unwrap().prep_exec(sql, ()).ok()? {
             let row = row.ok()?;
             let id = match &row["id"] {
                 my::Value::Int(x) => *x as i64,
@@ -245,12 +224,8 @@ impl QuickStatements {
     }
 
     pub fn reinitialize_open_batches(&self) -> Option<()> {
-        let pool = match &self.pool {
-            Some(pool) => pool,
-            None => return None,
-        };
         let sql = "UPDATE batch SET status='INIT' WHERE status='DONE' AND id IN (SELECT DISTINCT batch_id FROM command WHERE status='INIT' and batch_id>12000)" ;
-        pool.lock().unwrap().prep_exec(sql, ()).ok()?;
+        self.pool.lock().unwrap().prep_exec(sql, ()).ok()?;
         Some(())
     }
 
@@ -300,19 +275,11 @@ impl QuickStatements {
     }
 
     pub fn check_batch_not_stopped(&self, batch_id: i64) -> Result<(), String> {
-        let pool = match &self.pool {
-            Some(pool) => pool,
-            None => {
-                return Err(format!(
-                    "QuickStatementsConfig::check_batch_not_stopped: Can't get DB handle"
-                ))
-            }
-        };
         let sql: String = format!(
             "SELECT * FROM batch WHERE id={} AND `status` NOT IN ('RUN','INIT')",
             batch_id
         );
-        let result = match pool.lock().unwrap().prep_exec(sql, ()) {
+        let result = match self.pool.lock().unwrap().prep_exec(sql, ()) {
             Ok(r) => r,
             Err(e) => return Err(format!("Error: {}", e)),
         };
@@ -332,11 +299,8 @@ impl QuickStatements {
         batch_id: i64,
         user_id: i64,
     ) -> Option<()> {
-        let pool = match &self.pool {
-            Some(pool) => pool,
-            None => return None,
-        };
-        pool.lock()
+        self.pool
+            .lock()
             .unwrap()
             .prep_exec(
                 r#"UPDATE `batch` SET `status`=?,`message`=?,`ts_last_change`=? WHERE id=?"#,
@@ -352,13 +316,10 @@ impl QuickStatements {
     }
 
     pub fn get_next_command(&self, batch_id: i64) -> Option<QuickStatementsCommand> {
-        let pool = match &self.pool {
-            Some(pool) => pool,
-            None => return None,
-        };
         let sql =
             r#"SELECT * FROM command WHERE batch_id=? AND status IN ('INIT') ORDER BY num LIMIT 1"#;
-        for row in pool
+        for row in self
+            .pool
             .lock()
             .unwrap()
             .prep_exec(sql, (my::Value::Int(batch_id),))
@@ -376,11 +337,6 @@ impl QuickStatements {
         new_status: &str,
         new_message: Option<String>,
     ) -> Option<()> {
-        let pool = match &self.pool {
-            Some(pool) => pool,
-            None => return None,
-        };
-
         command.json["meta"]["status"] = json!(new_status.to_string().trim().to_uppercase());
 
         let message: String = match &new_message {
@@ -394,7 +350,7 @@ impl QuickStatements {
             _ => "{}".to_string(),
         };
 
-        pool.lock().unwrap().prep_exec(
+        self.pool.lock().unwrap().prep_exec(
             r#"UPDATE `command` SET `ts_change`=?,`json`=?,`status`=?,`message`=? WHERE `id`=?"#,
             (
                 my::Value::from(self.timestamp()),
@@ -413,17 +369,14 @@ impl QuickStatements {
         batch_id: i64,
         last_item: &Option<String>,
     ) -> Option<()> {
-        let pool = match &self.pool {
-            Some(pool) => pool,
-            None => return None,
-        };
         let last_item = match last_item {
             Some(q) => q.to_string(),
             None => "".to_string(),
         };
 
         let ts = self.timestamp();
-        pool.lock()
+        self.pool
+            .lock()
             .unwrap()
             .prep_exec(
                 r#"UPDATE `batch` SET `ts_last_change`=?,`last_item`=? WHERE `id`=?"#,
@@ -441,13 +394,10 @@ impl QuickStatements {
         self: &Self,
         batch_id: i64,
     ) -> Option<wikibase::mediawiki::api::OAuthParams> {
-        let pool = match &self.pool {
-            Some(pool) => pool,
-            None => return None,
-        };
         let auth_db = "s53220__quickstatements_auth";
         let sql = format!(r#"SELECT * FROM {}.batch_oauth WHERE batch_id=?"#, auth_db);
-        for row in pool
+        for row in self
+            .pool
             .lock()
             .unwrap()
             .prep_exec(sql, (my::Value::from(batch_id),))
