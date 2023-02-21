@@ -19,6 +19,9 @@ clap = "2"
 log = "0.4"
 simple_logger = "*"
 num_cpus = "*"
+tokio = { version = "^1", features = ["full","rt-multi-thread"] }
+futures = "*"
+async-recursion = "^1"
 
 [profile.release]
 lto = "fat"

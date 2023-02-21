@@ -401,7 +401,7 @@ impl QuickStatements {
         None
     }
 
-    pub fn set_bot_api_auth(&self, mw_api: &mut wikibase::mediawiki::api::Api, batch_id: i64) {
+    pub async fn set_bot_api_auth(&self, mw_api: &mut wikibase::mediawiki::api::Api, batch_id: i64) {
         match self.get_oauth_for_batch(batch_id) {
             Some(oauth_params) => {
                 // Using OAuth
@@ -423,6 +423,7 @@ impl QuickStatements {
                             .expect("QuickStatements::set_bot_api_auth: Can't get user password");
                         mw_api
                             .login(lgname, lgpassword)
+                            .await
                             .expect("Cannot login as bot");
                     }
                     None => panic!(

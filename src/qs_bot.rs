@@ -1,6 +1,7 @@
 use crate::qs_command::QuickStatementsCommand;
 use crate::qs_config::QuickStatements;
 use crate::qs_parser::COMMONS_API;
+use async_recursion::async_recursion;
 use chrono::Local;
 use regex::Regex;
 use serde_json::Value;
@@ -39,7 +40,7 @@ impl QuickStatementsBot {
         }
     }
 
-    pub fn start(&mut self) -> Result<(), String> {
+    pub async fn start(&mut self) -> Result<(), String> {
         match self.batch_id {
             Some(batch_id) => {
                 let config = self.config.clone();
@@ -50,11 +51,12 @@ impl QuickStatementsBot {
                 match config.get_api_url(batch_id) {
                     Some(url) => {
                         let mut mw_api = wikibase::mediawiki::api::Api::new(url)
+                            .await
                             .map_err(|e| format!("{:?}", e))?;
                         mw_api.set_edit_delay(config.edit_delay_ms());
                         mw_api.set_maxlag(config.maxlag_s());
                         mw_api.set_max_retry_attempts(1000);
-                        config.set_bot_api_auth(&mut mw_api, batch_id);
+                        config.set_bot_api_auth(&mut mw_api, batch_id).await;
                         self.mw_api = Some(mw_api);
                     }
                     None => return Err("No site/API info available".to_string()),
@@ -89,7 +91,7 @@ impl QuickStatementsBot {
         }
     }
 
-    pub fn run(&mut self) -> Result<bool, String> {
+    pub async fn run(&mut self) -> Result<bool, String> {
         //Check if batch is still valid (STOP etc)
         self.log(format!("[run] Getting next command"));
         let command = match self.get_next_command() {
@@ -110,7 +112,7 @@ impl QuickStatementsBot {
         match command {
             Some(mut command) => {
                 self.log(format!("[run] Executing command"));
-                match self.execute_command(&mut command) {
+                match self.execute_command(&mut command).await {
                     Ok(_) => {}
                     Err(_message) => {} //self.set_command_status("ERROR", Some(&message), &mut command),
                 }
@@ -143,7 +145,7 @@ impl QuickStatementsBot {
         }
     }
 
-    fn prepare_to_execute(
+    async fn prepare_to_execute(
         self: &mut Self,
         command: &QuickStatementsCommand,
     ) -> Result<Option<wikibase::Entity>, String> {
@@ -182,14 +184,14 @@ impl QuickStatementsBot {
                 None => return Err("No (last) item available".to_string()),
             };
 
-            let item = self.load_entity(q)?;
+            let item = self.load_entity(q).await?;
             Ok(Some(item.clone()))
         } else {
             Ok(None)
         }
     }
 
-    fn load_entity(&mut self, entity_id: String) -> Result<wikibase::Entity, String> {
+    async fn load_entity(&mut self, entity_id: String) -> Result<wikibase::Entity, String> {
         let mw_api = self.mw_api.to_owned().ok_or(format!(
             "QuickStatementsBot::get_item_from_command  has no mw_api"
         ))?;
@@ -204,6 +206,7 @@ impl QuickStatementsBot {
         match self
             .entities
             .load_entity_revision(&mw_api, entity_id.to_string(), revision)
+            .await
         {
             Ok(item) => Ok(item.to_owned()),
             Err(e) => self.try_create_fake_entity(entity_id, revision, e.to_string()),
@@ -257,7 +260,7 @@ impl QuickStatementsBot {
         }
     }
 
-    pub fn execute_command(
+    pub async fn execute_command(
         self: &mut Self,
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
@@ -268,12 +271,12 @@ impl QuickStatementsBot {
 
         self.log(format!("[execute_command] Prep"));
         command.insert_last_item_into_sources_and_qualifiers(&self.last_entity_id)?;
-        let main_item = self.prepare_to_execute(command)?;
+        let main_item = self.prepare_to_execute(command).await?;
         let action = command.action_to_execute(&main_item);
 
         self.log(format!("[execute_command] Go"));
         match action {
-            Ok(action) => match self.run_action(action, command) {
+            Ok(action) => match self.run_action(action, command).await {
                 Ok(_) => self.set_command_status("DONE", None, command),
                 Err(e) => {
                     self.set_command_status("ERROR", Some(&e), command)?;
@@ -343,7 +346,8 @@ impl QuickStatementsBot {
         params.insert("summary".to_string(), new_summary);
     }
 
-    fn run_action(
+    #[async_recursion]
+    async fn run_action(
         self: &mut Self,
         j: Value,
         command: &mut QuickStatementsCommand,
@@ -382,11 +386,12 @@ impl QuickStatementsBot {
             "token".to_string(),
             mw_api
                 .get_edit_token()
+                .await
                 .map_err(|e| format!("QuickStatementsBot::run_action get_edit_token '{}'", e))?,
         );
 
         self.log(format!("[run_action] Pre  post_query_api_json_mut"));
-        let res = match mw_api.post_query_api_json_mut(&params) {
+        let res = match mw_api.post_query_api_json_mut(&params).await {
             Ok(x) => x,
             Err(e) => return Err(format!("Wiki editing failed: {:?}", e)),
         };
@@ -427,7 +432,7 @@ impl QuickStatementsBot {
                                         thread::sleep(time::Duration::from_millis(
                                             self.throttled_delay_ms,
                                         ));
-                                        return self.run_action(j, command);
+                                        return self.run_action(j, command).await;
                                     }
                                 }
                                 None => {}

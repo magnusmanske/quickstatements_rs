@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-fn run_bot(config: Arc<QuickStatements>) {
+async fn run_bot(config: Arc<QuickStatements>) {
     //println!("BOT!");
     let batch_id: i64;
     let user_id: i64;
@@ -30,11 +30,11 @@ fn run_bot(config: Arc<QuickStatements>) {
         batch_id = tuple.0;
         user_id = tuple.1;
     }
-    thread::spawn(move || {
+    tokio::spawn(async move {
         println!("SPAWN: Starting batch {} for user {}", &batch_id, &user_id);
         let mut bot = QuickStatementsBot::new(config.clone(), Some(batch_id), user_id);
-        match bot.start() {
-            Ok(_) => while bot.run().unwrap_or(false) {},
+        match bot.start().await {
+            Ok(_) => while bot.run().await.unwrap_or(false) {},
             Err(error) => {
                 println!(
                     "Error when starting bot for batch #{}: '{}'",
@@ -46,7 +46,7 @@ fn run_bot(config: Arc<QuickStatements>) {
     });
 }
 
-fn command_bot(verbose: bool) {
+async fn command_bot(verbose: bool) {
     let cpus = num_cpus::get();
     println!("{} CPUs available", cpus);
     let config = match QuickStatements::new_from_config_json("config_rs.json") {
@@ -58,12 +58,12 @@ fn command_bot(verbose: bool) {
     };
 
     loop {
-        run_bot(config.clone());
+        run_bot(config.clone()).await;
         thread::sleep(Duration::from_millis(1000));
     }
 }
 
-fn get_php_commands(api: &wikibase::mediawiki::api::Api, lines: String) -> Vec<serde_json::Value> {
+async fn get_php_commands(api: &wikibase::mediawiki::api::Api, lines: String) -> Vec<serde_json::Value> {
     let params = api.params_into(&vec![
         ("action", "import"),
         ("compress", "1"),
@@ -77,6 +77,7 @@ fn get_php_commands(api: &wikibase::mediawiki::api::Api, lines: String) -> Vec<s
             &params,
             "POST",
         )
+        .await
         .unwrap();
     let j: serde_json::Value = serde_json::from_str(&j).unwrap();
     //println!("{}", &j);
@@ -86,13 +87,13 @@ fn get_php_commands(api: &wikibase::mediawiki::api::Api, lines: String) -> Vec<s
     }
 }
 
-fn get_commands(
+async fn get_commands(
     api: &wikibase::mediawiki::api::Api,
     lines: &Vec<String>,
 ) -> Vec<QuickStatementsParser> {
     let mut ret: Vec<QuickStatementsParser> = vec![];
     for line in lines {
-        match QuickStatementsParser::new_from_line(&line, Some(&api)) {
+        match QuickStatementsParser::new_from_line(&line, Some(&api)).await {
             Ok(c) => {
                 ret.push(c);
             }
@@ -102,10 +103,10 @@ fn get_commands(
     ret
 }
 
-fn command_parse() {
+async fn command_parse() {
     let stdin = io::stdin();
     let api =
-        wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php").unwrap();
+        wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php").await.unwrap();
     let mut lines = vec![];
     for line in stdin.lock().lines() {
         let line = match line {
@@ -117,7 +118,7 @@ fn command_parse() {
         }
         lines.push(line);
     }
-    let mut commands = get_commands(&api, &lines);
+    let mut commands = get_commands(&api, &lines).await;
     QuickStatementsParser::compress(&mut commands);
     let commands_json: Vec<serde_json::Value> =
         commands.iter().flat_map(|c| c.to_json().unwrap()).collect();
@@ -125,10 +126,10 @@ fn command_parse() {
     println!("{}", commands_json);
 }
 
-fn command_validate() {
+async fn command_validate() {
     let stdin = io::stdin();
     let api =
-        wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php").unwrap();
+        wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php").await.unwrap();
     let mut lines = vec![];
     for line in stdin.lock().lines() {
         let line = match line {
@@ -140,8 +141,8 @@ fn command_validate() {
         }
         lines.push(line);
     }
-    let php_commands = get_php_commands(&api, lines.join("\n"));
-    let mut commands = get_commands(&api, &lines);
+    let php_commands = get_php_commands(&api, lines.join("\n")).await;
+    let mut commands = get_commands(&api, &lines).await;
     QuickStatementsParser::compress(&mut commands);
     let commands_json: Vec<serde_json::Value> =
         commands.iter().flat_map(|c| c.to_json().unwrap()).collect();
@@ -156,7 +157,7 @@ fn command_validate() {
     }
 }
 
-fn command_run(site: &str) {
+async fn command_run(site: &str) {
     // Initialize config
     let config = match QuickStatements::new_from_config_json("config_rs.json") {
         Some(qs) => Arc::new(qs),
@@ -184,7 +185,7 @@ fn command_run(site: &str) {
         }
 
         // Parse command
-        let json_commands = match QuickStatementsParser::new_from_line(&command_string, None) {
+        let json_commands = match QuickStatementsParser::new_from_line(&command_string, None).await {
             Ok(c) => c.to_json().unwrap(),
             Err(e) => {
                 println!("{}\nCOULD NOT BE PARSED: {}\n", &command_string, &e);
@@ -201,14 +202,15 @@ fn command_run(site: &str) {
             let mut command = QuickStatementsCommand::new_from_json(&json_command);
 
             // Run command
-            bot.set_mw_api(wikibase::mediawiki::api::Api::new(&api_url).unwrap());
+            bot.set_mw_api(wikibase::mediawiki::api::Api::new(&api_url).await.unwrap());
             //bot.set_mw_api(wikibase::mediawiki::api::Api::new("https://test.wikidata.org/w/api.php").unwrap());
-            bot.execute_command(&mut command).unwrap();
+            bot.execute_command(&mut command).await.unwrap();
         }
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     simple_logger::init_with_level(log::Level::Info).unwrap();
     let matches = App::new("QuickStatements")
         .version("0.1.0")
@@ -243,10 +245,10 @@ fn main() {
     let command = matches.value_of("COMMAND").unwrap();
 
     match command {
-        "bot" => command_bot(verbose),
-        "parse" => command_parse(),
-        "validate" => command_validate(),
-        "run" => command_run(site),
+        "bot" => command_bot(verbose).await,
+        "parse" => command_parse().await,
+        "validate" => command_validate().await,
+        "run" => command_run(site).await,
         x => panic!("Not a valid command: {}", x),
     }
 }

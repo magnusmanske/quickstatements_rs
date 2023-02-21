@@ -167,7 +167,7 @@ pub struct QuickStatementsParser {
 impl QuickStatementsParser {
     /// Translates a line into a QuickStatementsParser object.
     /// Uses api to translate page titles into entity IDs, if given
-    pub fn new_from_line(line: &String, api: Option<&Api>) -> Result<Self, String> {
+    pub async fn new_from_line(line: &String, api: Option<&Api>) -> Result<Self, String> {
         lazy_static! {
             static ref RE_META: Regex = Regex::new(r#"^ *([LDAS]) *([a-z_-]+) *$"#).unwrap();
         }
@@ -194,7 +194,7 @@ impl QuickStatementsParser {
         }
 
         // Try to convert a page title into an entity ID
-        match Self::get_entity_id_from_title(&parts[0], api) {
+        match Self::get_entity_id_from_title(&parts[0], api).await {
             Some(id) => parts[0] = id,
             None => {}
         }
@@ -620,13 +620,13 @@ impl QuickStatementsParser {
     }
 
     /// Returns the Commons MediaInfo ID for a given file
-    fn get_entity_id_from_title_commons(title: &String, api: &Api) -> Option<String> {
+    async fn get_entity_id_from_title_commons(title: &String, api: &Api) -> Option<String> {
         let params = api.params_into(&vec![
             ("action", "query"),
             ("prop", "info"),
             ("titles", title.as_str()),
         ]);
-        match api.get_query_api_json(&params) {
+        match api.get_query_api_json(&params).await {
             Ok(j) => match j["query"]["pages"].as_object() {
                 Some(o) => o
                     .iter()
@@ -639,13 +639,13 @@ impl QuickStatementsParser {
     }
 
     /// Returns the Wikidata item ID for the given title
-    fn get_entity_id_from_title_wikidata(title: &String, api: &Api) -> Option<String> {
+    async fn get_entity_id_from_title_wikidata(title: &String, api: &Api) -> Option<String> {
         let params = api.params_into(&vec![
             ("action", "query"),
             ("prop", "pageprops"),
             ("titles", title.as_str()),
         ]);
-        match api.get_query_api_json(&params) {
+        match api.get_query_api_json(&params).await {
             Ok(j) => match j["query"]["pages"].as_object() {
                 Some(o) => o
                     .iter()
@@ -661,16 +661,16 @@ impl QuickStatementsParser {
     }
 
     /// Returns a Wikidata or Commons Entity ID for a given title
-    fn get_entity_id_from_title(title: &String, api: Option<&Api>) -> Option<String> {
+    async fn get_entity_id_from_title(title: &String, api: Option<&Api>) -> Option<String> {
         match api {
             Some(api) => {
                 let mw_title = wikibase::mediawiki::title::Title::new_from_full(title, api);
                 if api.api_url() == COMMONS_API && mw_title.namespace_id() == 6 {
                     // File => Mxxx
-                    Self::get_entity_id_from_title_commons(title, api)
+                    Self::get_entity_id_from_title_commons(title, api).await
                 } else {
                     // Generic Wiki page
-                    Self::get_entity_id_from_title_wikidata(title, api)
+                    Self::get_entity_id_from_title_wikidata(title, api).await
                 }
             }
             None => None,
@@ -1071,63 +1071,63 @@ mod tests {
         )))
     }
 
-    #[test]
-    fn create() {
+    #[tokio::test]
+    async fn create() {
         let command = "CREATE";
         let mut expected = QuickStatementsParser::new_blank();
         expected.command = CommandType::Create;
         assert_eq!(
-            QuickStatementsParser::new_from_line(&command.to_string(), None).unwrap(),
+            QuickStatementsParser::new_from_line(&command.to_string(), None).await.unwrap(),
             expected
         );
     }
 
-    #[test]
-    fn merge() {
+    #[tokio::test]
+    async fn merge() {
         let command = "MERGE\tQ123\tQ456";
         let mut expected = QuickStatementsParser::new_blank();
         expected.command = CommandType::Merge;
         expected.item = Some(item1());
         expected.target_item = Some(target_item());
         assert_eq!(
-            QuickStatementsParser::new_from_line(&command.to_string(), None).unwrap(),
+            QuickStatementsParser::new_from_line(&command.to_string(), None).await.unwrap(),
             expected
         );
     }
 
-    #[test]
+    #[tokio::test]
     #[should_panic(expected = "MERGE does not allow LAST")]
-    fn merge_item1_last() {
+    async fn merge_item1_last() {
         let command = "MERGE\tLAST\tQ456";
-        QuickStatementsParser::new_from_line(&command.to_string(), None).unwrap();
+        QuickStatementsParser::new_from_line(&command.to_string(), None).await.unwrap();
     }
 
-    #[test]
+    #[tokio::test]
     #[should_panic(expected = "MERGE does not allow LAST")]
-    fn merge_item2_last() {
+    async fn merge_item2_last() {
         let command = "MERGE\tQ123\tLAST";
-        QuickStatementsParser::new_from_line(&command.to_string(), None).unwrap();
+        QuickStatementsParser::new_from_line(&command.to_string(), None).await.unwrap();
     }
 
-    #[test]
+    #[tokio::test]
     #[should_panic(expected = "Not a valid entity ID: BlAH")]
-    fn merge_item1_bad() {
+    async fn merge_item1_bad() {
         let command = "MERGE\tBlAH\tQ456";
-        QuickStatementsParser::new_from_line(&command.to_string(), None).unwrap();
+        QuickStatementsParser::new_from_line(&command.to_string(), None).await.unwrap();
     }
 
-    #[test]
+    #[tokio::test]
     #[should_panic(expected = "Missing value")]
-    fn merge_only_item1() {
+    async fn merge_only_item1() {
         let command = "MERGE\tQ123";
-        QuickStatementsParser::new_from_line(&command.to_string(), None).unwrap();
+        QuickStatementsParser::new_from_line(&command.to_string(), None).await.unwrap();
     }
 
-    #[test]
+    #[tokio::test]
     #[should_panic(expected = "Not a valid entity ID: ")]
-    fn merge_only_item2() {
+    async fn merge_only_item2() {
         let command = "MERGE\t\tQ456";
-        QuickStatementsParser::new_from_line(&command.to_string(), None).unwrap();
+        QuickStatementsParser::new_from_line(&command.to_string(), None).await.unwrap();
     }
 
     #[test]
@@ -1302,25 +1302,25 @@ mod tests {
         )
     }
 
-    #[test]
-    fn title2item() {
+    #[tokio::test]
+    async fn title2item() {
         let command = "Magnus Manske\tP123\tQ456";
-        let api = wikibase::mediawiki::api::Api::new("https://en.wikipedia.org/w/api.php").unwrap();
+        let api = wikibase::mediawiki::api::Api::new("https://en.wikipedia.org/w/api.php").await.unwrap();
         let expected = EntityID::Id(EntityValue::new(EntityType::Item, "Q13520818"));
-        assert!(QuickStatementsParser::new_from_line(&command.to_string(), None).is_err());
-        let qsp = QuickStatementsParser::new_from_line(&command.to_string(), Some(&api)).unwrap();
+        assert!(QuickStatementsParser::new_from_line(&command.to_string(), None).await.is_err());
+        let qsp = QuickStatementsParser::new_from_line(&command.to_string(), Some(&api)).await.unwrap();
         assert_eq!(qsp.item, Some(expected));
     }
 
-    #[test]
-    fn file2mediainfo() {
+    #[tokio::test]
+    async fn file2mediainfo() {
         let command =
             "File:Ruins_of_the_Dower_House,_Fawsley_Park,_Northamptonshire.jpg\tP123\tQ456";
         let api =
-            wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php").unwrap();
+            wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php").await.unwrap();
         let expected = EntityID::Id(EntityValue::new(EntityType::MediaInfo, "M82397052"));
-        assert!(QuickStatementsParser::new_from_line(&command.to_string(), None).is_err());
-        let qsp = QuickStatementsParser::new_from_line(&command.to_string(), Some(&api)).unwrap();
+        assert!(QuickStatementsParser::new_from_line(&command.to_string(), None).await.is_err());
+        let qsp = QuickStatementsParser::new_from_line(&command.to_string(), Some(&api)).await.unwrap();
         assert_eq!(qsp.item, Some(expected));
     }
 
