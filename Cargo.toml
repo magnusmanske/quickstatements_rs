@@ -24,7 +24,7 @@ futures = "*"
 async-recursion = "^1"
 
 [profile.release]
-lto = "fat"
-codegen-units = 1
+#lto = "fat"
+#codegen-units = 1
 #target-cpu = "native"
 panic = "abort"
