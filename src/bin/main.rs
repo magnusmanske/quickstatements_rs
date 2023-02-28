@@ -252,3 +252,9 @@ async fn main() {
         x => panic!("Not a valid command: {}", x),
     }
 }
+
+/*
+cd ~/rust/quickstatements_rs/ && git pull && ./build.sh && \
+~/rm ~/.bot.out ~/.bot.err && \
+toolforge-jobs run --image golang1.11 --continuous --mem 1500Mi --command '/data/project/quickstatements/rust/quickstatements_rs/target/release/main bot' bot
+ */
