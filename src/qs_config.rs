@@ -1,6 +1,7 @@
 use crate::qs_command::QuickStatementsCommand;
 use chrono::prelude::*;
 use config::*;
+use my::prelude::*;
 use mysql as my;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -70,14 +71,9 @@ impl QuickStatements {
     }
 
     pub fn get_site_from_batch(&self, batch_id: i64) -> Option<String> {
-        for row in self
-            .pool
-            .prep_exec(
-                r#"SELECT site FROM batch WHERE id=?"#,
-                (my::Value::Int(batch_id),),
-            )
-            .ok()?
-        {
+        let sql = format!(r#"SELECT site FROM batch WHERE id={}"#,batch_id);
+        let mut conn = self.pool.get_conn().ok()?;
+        for row in conn.as_mut().query_iter(sql).ok()?.iter()? {
             let row = row.ok()?;
             let site: String = match &row["site"] {
                 my::Value::Bytes(x) => String::from_utf8_lossy(&x).to_string(),
@@ -99,11 +95,12 @@ impl QuickStatements {
     }
 
     pub fn restart_batch(&self, batch_id: i64) -> Option<()> {
-        self.pool.prep_exec(
+        let mut conn = self.pool.get_conn().ok()?;
+        conn.as_mut().exec_drop(
             r#"UPDATE `batch` SET `status`="RUN",`message`="",`ts_last_change`=? WHERE id=? AND `status`!="TEST""#,
             (my::Value::from(self.timestamp()), my::Value::Int(batch_id)),
         ).ok()?;
-        self.pool.prep_exec(
+        conn.as_mut().exec_drop(
             r#"UPDATE `command` SET `status`="INIT",`message`="",`ts_change`=? WHERE `status`="RUN" AND `batch_id`=?"#,
             (my::Value::from(self.timestamp()),my::Value::Int(batch_id),),
         )
@@ -128,19 +125,13 @@ impl QuickStatements {
                 "QuickStatementsConfig::create_mysql_pool: No mysql info in params"
             ));
         }
-        let mut builder = my::OptsBuilder::new();
-        //println!("{}", &self.params);
-        builder
+        let port = params["mysql"]["port"].as_u64().unwrap_or(3306) as u16;
+        let builder = my::OptsBuilder::new()
             .ip_or_hostname(params["mysql"]["host"].as_str())
             .db_name(params["mysql"]["schema"].as_str())
             .user(params["mysql"]["user"].as_str())
-            .pass(params["mysql"]["pass"].as_str());
-        match params["mysql"]["port"].as_u64() {
-            Some(port) => {
-                builder.tcp_port(port as u16);
-            }
-            None => {}
-        }
+            .pass(params["mysql"]["pass"].as_str())
+            .tcp_port(port);
 
         // Min 2, max 7 connections
         match my::Pool::new_manual(2, 7, builder) {
@@ -150,14 +141,9 @@ impl QuickStatements {
     }
 
     pub fn get_last_item_from_batch(&self, batch_id: i64) -> Option<String> {
-        for row in self
-            .pool
-            .prep_exec(
-                r#"SELECT last_item FROM batch WHERE `id`=?"#,
-                (my::Value::from(batch_id),),
-            )
-            .ok()?
-        {
+        let sql = format!(r#"SELECT last_item FROM batch WHERE `id`={}"#,batch_id);
+        let mut conn = self.pool.get_conn().ok()?;
+        for row in conn.as_mut().query_iter(sql).ok()?.iter()? {
             let row = row.ok()?;
             return match &row["last_item"] {
                 my::Value::Bytes(x) => Some(String::from_utf8_lossy(x).to_string()),
@@ -201,7 +187,8 @@ impl QuickStatements {
 
         sql += " ORDER BY `ts_last_change`";
 
-        for row in self.pool.prep_exec(sql, ()).ok()? {
+        let mut conn = self.pool.get_conn().ok()?;
+        for row in conn.as_mut().query_iter(sql).ok()?.iter()? {
             let row = row.ok()?;
             let id = match &row["id"] {
                 my::Value::Int(x) => *x as i64,
@@ -221,8 +208,7 @@ impl QuickStatements {
 
     pub fn reinitialize_open_batches(&self) -> Option<()> {
         let sql = "UPDATE batch SET status='INIT' WHERE status='DONE' AND id IN (SELECT DISTINCT batch_id FROM command WHERE status='INIT' and batch_id>12000)" ;
-        self.pool.prep_exec(sql, ()).ok()?;
-        Some(())
+        self.pool.get_conn().ok()?.as_mut().exec_drop(sql,()).ok()
     }
 
     pub fn set_batch_running(&self, batch_id: i64, user_id: i64) {
@@ -275,11 +261,16 @@ impl QuickStatements {
             "SELECT * FROM batch WHERE id={} AND `status` NOT IN ('RUN','INIT')",
             batch_id
         );
-        let result = match self.pool.prep_exec(sql, ()) {
-            Ok(r) => r,
+
+        let mut conn = match self.pool.get_conn() {
+            Ok(conn) => conn,
             Err(e) => return Err(format!("Error: {}", e)),
         };
-        for _row in result {
+        let result_iter = match conn.as_mut().exec_iter(sql,()) {
+            Ok(ri) => ri,
+            Err(e) => return Err(format!("Error: {}", e)),
+        };
+        if result_iter.affected_rows()>0 {
             return Err(format!(
                 "QuickStatementsConfig::check_batch_not_stopped: batch #{} is not RUN or INIT",
                 batch_id
@@ -295,8 +286,7 @@ impl QuickStatements {
         batch_id: i64,
         user_id: i64,
     ) -> Option<()> {
-        self.pool
-            .prep_exec(
+        self.pool.get_conn().ok()?.as_mut().exec_drop(
                 r#"UPDATE `batch` SET `status`=?,`message`=?,`ts_last_change`=? WHERE id=?"#,
                 (
                     my::Value::from(status),
@@ -310,13 +300,13 @@ impl QuickStatements {
     }
 
     pub fn get_next_command(&self, batch_id: i64) -> Option<QuickStatementsCommand> {
-        let sql =
-            r#"SELECT * FROM command WHERE batch_id=? AND status IN ('INIT') ORDER BY num LIMIT 1"#;
-        for row in self.pool.prep_exec(sql, (my::Value::Int(batch_id),)).ok()? {
-            let row = row.ok()?;
-            return Some(QuickStatementsCommand::new_from_row(row));
-        }
-        None
+        let sql = format!(
+            r#"SELECT * FROM command WHERE batch_id={} AND status IN ('INIT') ORDER BY num LIMIT 1"#,
+            batch_id
+        );
+        let mut conn = self.pool.get_conn().ok()?;
+        let row = conn.as_mut().query_iter(sql).ok()?.iter()?.next()?.ok()?;
+        Some(QuickStatementsCommand::new_from_row(row))
     }
 
     pub fn set_command_status(
@@ -338,7 +328,7 @@ impl QuickStatements {
             _ => "{}".to_string(),
         };
 
-        self.pool.prep_exec(
+        self.pool.get_conn().ok()?.as_mut().exec_drop(
             r#"UPDATE `command` SET `ts_change`=?,`json`=?,`status`=?,`message`=? WHERE `id`=?"#,
             (
                 my::Value::from(self.timestamp()),
@@ -363,8 +353,7 @@ impl QuickStatements {
         };
 
         let ts = self.timestamp();
-        self.pool
-            .prep_exec(
+        self.pool.get_conn().ok()?.as_mut().exec_drop(
                 r#"UPDATE `batch` SET `ts_last_change`=?,`last_item`=? WHERE `id`=?"#,
                 (
                     my::Value::from(ts),
@@ -381,12 +370,9 @@ impl QuickStatements {
         batch_id: i64,
     ) -> Option<wikibase::mediawiki::api::OAuthParams> {
         let auth_db = "s53220__quickstatements_auth";
-        let sql = format!(r#"SELECT * FROM {}.batch_oauth WHERE batch_id=?"#, auth_db);
-        for row in self
-            .pool
-            .prep_exec(sql, (my::Value::from(batch_id),))
-            .ok()?
-        {
+        let sql = format!(r#"SELECT * FROM {}.batch_oauth WHERE batch_id={}"#, auth_db, batch_id);
+        let mut conn = self.pool.get_conn().ok()?;
+        for row in conn.as_mut().query_iter(sql).ok()?.iter()? {
             let row = row.ok()?;
             let serialized_json = match &row["serialized_json"] {
                 my::Value::Bytes(x) => String::from_utf8_lossy(x),
@@ -416,10 +402,10 @@ impl QuickStatements {
                             .merge(config::File::with_name(filename))
                             .expect("QuickStatements::set_bot_api_auth: Can't merge settings");
                         let lgname = settings
-                            .get_str("user.user")
+                            .get_string("user.user")
                             .expect("QuickStatements::set_bot_api_auth: Can't get user name");
                         let lgpassword = settings
-                            .get_str("user.pass")
+                            .get_string("user.pass")
                             .expect("QuickStatements::set_bot_api_auth: Can't get user password");
                         mw_api
                             .login(lgname, lgpassword)
