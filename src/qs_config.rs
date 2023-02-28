@@ -190,16 +190,16 @@ impl QuickStatements {
         let mut conn = self.pool.get_conn().ok()?;
         for row in conn.as_mut().query_iter(sql).ok()?.iter()? {
             let row = row.ok()?;
-            let id = match &row["id"] {
-                my::Value::Int(x) => *x as i64,
-                _ => continue,
+            let id: i64 = match row.get("id") {
+                Some(id) => id,
+                None => continue,
             };
             if self.running_batch_ids.read().unwrap().contains(&id) {
                 continue;
             }
-            let user = match &row["user"] {
-                my::Value::Int(x) => *x as i64,
-                _ => continue,
+            let user: i64 = match row.get("user") {
+                Some(id) => id,
+                None => continue,
             };
             return Some((id, user));
         }
@@ -385,11 +385,11 @@ impl QuickStatements {
         let mut conn = self.pool.get_conn().ok()?;
         for row in conn.as_mut().query_iter(sql).ok()?.iter()? {
             let row = row.ok()?;
-            let serialized_json = match &row["serialized_json"] {
-                my::Value::Bytes(x) => String::from_utf8_lossy(x),
-                _ => return None,
+            let v: Vec<u8> = match row.get("serialized_json") {
+                Some(v) => v,
+                None => return None,
             };
-
+            let serialized_json = String::from_utf8_lossy(&v);
             match serde_json::from_str(&serialized_json) {
                 Ok(j) => return Some(wikibase::mediawiki::api::OAuthParams::new_from_json(&j)),
                 _ => return None,
@@ -412,10 +412,11 @@ impl QuickStatements {
                 match self.params["config"]["bot_config_file"].as_str() {
                     Some(filename) => {
                         // Using Bot
-                        let mut settings = Config::default();
-                        settings
-                            .merge(config::File::with_name(filename))
-                            .expect("QuickStatements::set_bot_api_auth: Can't merge settings");
+                        let config_file = config::File::with_name(filename);
+                        let settings = Config::builder()
+                            .add_source(config_file)
+                            .build()
+                            .expect("Cannot create config from config file");
                         let lgname = settings
                             .get_string("user.user")
                             .expect("QuickStatements::set_bot_api_auth: Can't get user name");
