@@ -466,8 +466,10 @@ impl QuickStatementsParser {
                 Regex::new(r#"^([-+]{0,1}\d+\.{0,1}\d*)$"#).unwrap();
             static ref RE_QUANTITY_TOLERANCE: Regex =
                 Regex::new(r#"^([-+]{0,1}\d+\.{0,1}\d*)~(\d+\.{0,1}\d*)$"#).unwrap();
-            static ref RE_QUANTITY_RANGE: Regex =
-                Regex::new(r#"^([-+]{0,1}\d+\.{0,1}\d*)\[([-+]{0,1}\d+\.{0,1}\d*),([-+]{0,1}\d+\.{0,1}\d*)\]$"#).unwrap();
+            static ref RE_QUANTITY_RANGE: Regex = Regex::new(
+                r#"^([-+]{0,1}\d+\.{0,1}\d*)\[([-+]{0,1}\d+\.{0,1}\d*),([-+]{0,1}\d+\.{0,1}\d*)\]$"#
+            )
+            .unwrap();
         }
 
         let value = value.to_string();
@@ -1077,7 +1079,9 @@ mod tests {
         let mut expected = QuickStatementsParser::new_blank();
         expected.command = CommandType::Create;
         assert_eq!(
-            QuickStatementsParser::new_from_line(&command.to_string(), None).await.unwrap(),
+            QuickStatementsParser::new_from_line(&command.to_string(), None)
+                .await
+                .unwrap(),
             expected
         );
     }
@@ -1090,7 +1094,9 @@ mod tests {
         expected.item = Some(item1());
         expected.target_item = Some(target_item());
         assert_eq!(
-            QuickStatementsParser::new_from_line(&command.to_string(), None).await.unwrap(),
+            QuickStatementsParser::new_from_line(&command.to_string(), None)
+                .await
+                .unwrap(),
             expected
         );
     }
@@ -1099,35 +1105,45 @@ mod tests {
     #[should_panic(expected = "MERGE does not allow LAST")]
     async fn merge_item1_last() {
         let command = "MERGE\tLAST\tQ456";
-        QuickStatementsParser::new_from_line(&command.to_string(), None).await.unwrap();
+        QuickStatementsParser::new_from_line(&command.to_string(), None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
     #[should_panic(expected = "MERGE does not allow LAST")]
     async fn merge_item2_last() {
         let command = "MERGE\tQ123\tLAST";
-        QuickStatementsParser::new_from_line(&command.to_string(), None).await.unwrap();
+        QuickStatementsParser::new_from_line(&command.to_string(), None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
     #[should_panic(expected = "Not a valid entity ID: BlAH")]
     async fn merge_item1_bad() {
         let command = "MERGE\tBlAH\tQ456";
-        QuickStatementsParser::new_from_line(&command.to_string(), None).await.unwrap();
+        QuickStatementsParser::new_from_line(&command.to_string(), None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
     #[should_panic(expected = "Missing value")]
     async fn merge_only_item1() {
         let command = "MERGE\tQ123";
-        QuickStatementsParser::new_from_line(&command.to_string(), None).await.unwrap();
+        QuickStatementsParser::new_from_line(&command.to_string(), None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
     #[should_panic(expected = "Not a valid entity ID: ")]
     async fn merge_only_item2() {
         let command = "MERGE\t\tQ456";
-        QuickStatementsParser::new_from_line(&command.to_string(), None).await.unwrap();
+        QuickStatementsParser::new_from_line(&command.to_string(), None)
+            .await
+            .unwrap();
     }
 
     #[test]
@@ -1305,10 +1321,18 @@ mod tests {
     #[tokio::test]
     async fn title2item() {
         let command = "Magnus Manske\tP123\tQ456";
-        let api = wikibase::mediawiki::api::Api::new("https://en.wikipedia.org/w/api.php").await.unwrap();
+        let api = wikibase::mediawiki::api::Api::new("https://en.wikipedia.org/w/api.php")
+            .await
+            .unwrap();
         let expected = EntityID::Id(EntityValue::new(EntityType::Item, "Q13520818"));
-        assert!(QuickStatementsParser::new_from_line(&command.to_string(), None).await.is_err());
-        let qsp = QuickStatementsParser::new_from_line(&command.to_string(), Some(&api)).await.unwrap();
+        assert!(
+            QuickStatementsParser::new_from_line(&command.to_string(), None)
+                .await
+                .is_err()
+        );
+        let qsp = QuickStatementsParser::new_from_line(&command.to_string(), Some(&api))
+            .await
+            .unwrap();
         assert_eq!(qsp.item, Some(expected));
     }
 
@@ -1316,16 +1340,22 @@ mod tests {
     async fn file2mediainfo() {
         let command =
             "File:Ruins_of_the_Dower_House,_Fawsley_Park,_Northamptonshire.jpg\tP123\tQ456";
-        let api =
-            wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php").await.unwrap();
+        let api = wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php")
+            .await
+            .unwrap();
         let expected = EntityID::Id(EntityValue::new(EntityType::MediaInfo, "M82397052"));
-        assert!(QuickStatementsParser::new_from_line(&command.to_string(), None).await.is_err());
-        let qsp = QuickStatementsParser::new_from_line(&command.to_string(), Some(&api)).await.unwrap();
+        assert!(
+            QuickStatementsParser::new_from_line(&command.to_string(), None)
+                .await
+                .is_err()
+        );
+        let qsp = QuickStatementsParser::new_from_line(&command.to_string(), Some(&api))
+            .await
+            .unwrap();
         assert_eq!(qsp.item, Some(expected));
     }
 
     // TODO add label/alias/desc/sitelink
     // TODO sources
     // TODO qualifiers
-
 }

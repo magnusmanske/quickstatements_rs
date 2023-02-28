@@ -71,7 +71,7 @@ impl QuickStatements {
     }
 
     pub fn get_site_from_batch(&self, batch_id: i64) -> Option<String> {
-        let sql = format!(r#"SELECT site FROM batch WHERE id={}"#,batch_id);
+        let sql = format!(r#"SELECT site FROM batch WHERE id={}"#, batch_id);
         let mut conn = self.pool.get_conn().ok()?;
         for row in conn.as_mut().query_iter(sql).ok()?.iter()? {
             let row = row.ok()?;
@@ -141,7 +141,7 @@ impl QuickStatements {
     }
 
     pub fn get_last_item_from_batch(&self, batch_id: i64) -> Option<String> {
-        let sql = format!(r#"SELECT last_item FROM batch WHERE `id`={}"#,batch_id);
+        let sql = format!(r#"SELECT last_item FROM batch WHERE `id`={}"#, batch_id);
         let mut conn = self.pool.get_conn().ok()?;
         for row in conn.as_mut().query_iter(sql).ok()?.iter()? {
             let row = row.ok()?;
@@ -208,7 +208,7 @@ impl QuickStatements {
 
     pub fn reinitialize_open_batches(&self) -> Option<()> {
         let sql = "UPDATE batch SET status='INIT' WHERE status='DONE' AND id IN (SELECT DISTINCT batch_id FROM command WHERE status='INIT' and batch_id>12000)" ;
-        self.pool.get_conn().ok()?.as_mut().exec_drop(sql,()).ok()
+        self.pool.get_conn().ok()?.as_mut().exec_drop(sql, ()).ok()
     }
 
     pub fn set_batch_running(&self, batch_id: i64, user_id: i64) {
@@ -266,11 +266,11 @@ impl QuickStatements {
             Ok(conn) => conn,
             Err(e) => return Err(format!("Error: {}", e)),
         };
-        let result_iter = match conn.as_mut().exec_iter(sql,()) {
+        let result_iter = match conn.as_mut().exec_iter(sql, ()) {
             Ok(ri) => ri,
             Err(e) => return Err(format!("Error: {}", e)),
         };
-        if result_iter.affected_rows()>0 {
+        if result_iter.affected_rows() > 0 {
             return Err(format!(
                 "QuickStatementsConfig::check_batch_not_stopped: batch #{} is not RUN or INIT",
                 batch_id
@@ -286,7 +286,11 @@ impl QuickStatements {
         batch_id: i64,
         user_id: i64,
     ) -> Option<()> {
-        self.pool.get_conn().ok()?.as_mut().exec_drop(
+        self.pool
+            .get_conn()
+            .ok()?
+            .as_mut()
+            .exec_drop(
                 r#"UPDATE `batch` SET `status`=?,`message`=?,`ts_last_change`=? WHERE id=?"#,
                 (
                     my::Value::from(status),
@@ -353,7 +357,11 @@ impl QuickStatements {
         };
 
         let ts = self.timestamp();
-        self.pool.get_conn().ok()?.as_mut().exec_drop(
+        self.pool
+            .get_conn()
+            .ok()?
+            .as_mut()
+            .exec_drop(
                 r#"UPDATE `batch` SET `ts_last_change`=?,`last_item`=? WHERE `id`=?"#,
                 (
                     my::Value::from(ts),
@@ -370,7 +378,10 @@ impl QuickStatements {
         batch_id: i64,
     ) -> Option<wikibase::mediawiki::api::OAuthParams> {
         let auth_db = "s53220__quickstatements_auth";
-        let sql = format!(r#"SELECT * FROM {}.batch_oauth WHERE batch_id={}"#, auth_db, batch_id);
+        let sql = format!(
+            r#"SELECT * FROM {}.batch_oauth WHERE batch_id={}"#,
+            auth_db, batch_id
+        );
         let mut conn = self.pool.get_conn().ok()?;
         for row in conn.as_mut().query_iter(sql).ok()?.iter()? {
             let row = row.ok()?;
@@ -387,7 +398,11 @@ impl QuickStatements {
         None
     }
 
-    pub async fn set_bot_api_auth(&self, mw_api: &mut wikibase::mediawiki::api::Api, batch_id: i64) {
+    pub async fn set_bot_api_auth(
+        &self,
+        mw_api: &mut wikibase::mediawiki::api::Api,
+        batch_id: i64,
+    ) {
         match self.get_oauth_for_batch(batch_id) {
             Some(oauth_params) => {
                 // Using OAuth

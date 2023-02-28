@@ -63,7 +63,10 @@ async fn command_bot(verbose: bool) {
     }
 }
 
-async fn get_php_commands(api: &wikibase::mediawiki::api::Api, lines: String) -> Vec<serde_json::Value> {
+async fn get_php_commands(
+    api: &wikibase::mediawiki::api::Api,
+    lines: String,
+) -> Vec<serde_json::Value> {
     let params = api.params_into(&vec![
         ("action", "import"),
         ("compress", "1"),
@@ -105,8 +108,9 @@ async fn get_commands(
 
 async fn command_parse() {
     let stdin = io::stdin();
-    let api =
-        wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php").await.unwrap();
+    let api = wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php")
+        .await
+        .unwrap();
     let mut lines = vec![];
     for line in stdin.lock().lines() {
         let line = match line {
@@ -128,8 +132,9 @@ async fn command_parse() {
 
 async fn command_validate() {
     let stdin = io::stdin();
-    let api =
-        wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php").await.unwrap();
+    let api = wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php")
+        .await
+        .unwrap();
     let mut lines = vec![];
     for line in stdin.lock().lines() {
         let line = match line {
@@ -185,7 +190,8 @@ async fn command_run(site: &str) {
         }
 
         // Parse command
-        let json_commands = match QuickStatementsParser::new_from_line(&command_string, None).await {
+        let json_commands = match QuickStatementsParser::new_from_line(&command_string, None).await
+        {
             Ok(c) => c.to_json().unwrap(),
             Err(e) => {
                 println!("{}\nCOULD NOT BE PARSED: {}\n", &command_string, &e);
