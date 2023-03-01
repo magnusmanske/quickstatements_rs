@@ -2,7 +2,7 @@
 extern crate serde_json;
 extern crate clap;
 extern crate config;
-extern crate mysql;
+//extern crate mysql;
 extern crate wikibase;
 
 use clap::{App, Arg};
@@ -23,7 +23,7 @@ async fn run_bot(config: Arc<QuickStatements>) {
     let batch_id: i64;
     let user_id: i64;
     {
-        let tuple = match config.get_next_batch() {
+        let tuple = match config.get_next_batch().await {
             Some(n) => n,
             None => return, // Nothing to do
         };

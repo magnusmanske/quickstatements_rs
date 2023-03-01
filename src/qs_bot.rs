@@ -46,9 +46,10 @@ impl QuickStatementsBot {
                 let config = self.config.clone();
                 config
                     .restart_batch(batch_id)
+                    .await
                     .ok_or("Can't (re)start batch".to_string())?;
-                self.last_entity_id = config.get_last_item_from_batch(batch_id);
-                match config.get_api_url(batch_id) {
+                self.last_entity_id = config.get_last_item_from_batch(batch_id).await;
+                match config.get_api_url(batch_id).await {
                     Some(url) => {
                         let mut mw_api = wikibase::mediawiki::api::Api::new(url)
                             .await
@@ -94,7 +95,7 @@ impl QuickStatementsBot {
     pub async fn run(&mut self) -> Result<bool, String> {
         //Check if batch is still valid (STOP etc)
         self.log(format!("[run] Getting next command"));
-        let command = match self.get_next_command() {
+        let command = match self.get_next_command().await {
             Ok(c) => c,
             Err(_) => {
                 match self.batch_id {
@@ -125,6 +126,7 @@ impl QuickStatementsBot {
                     Some(batch_id) => {
                         self.config
                             .set_batch_finished(batch_id, self.user_id)
+                            .await
                             .ok_or("Can't set batch as finished".to_string())?;
                     }
                     None => {}
@@ -134,11 +136,11 @@ impl QuickStatementsBot {
         }
     }
 
-    fn get_next_command(&self) -> Result<Option<QuickStatementsCommand>, String> {
+    async fn get_next_command(&self) -> Result<Option<QuickStatementsCommand>, String> {
         match self.batch_id {
             Some(batch_id) => {
-                self.config.check_batch_not_stopped(batch_id)?;
-                let result = self.config.get_next_command(batch_id);
+                self.config.check_batch_not_stopped(batch_id).await?;
+                let result = self.config.get_next_command(batch_id).await;
                 Ok(result)
             }
             None => Err(format!("No match ID set")),
@@ -265,7 +267,7 @@ impl QuickStatementsBot {
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
         self.log(format!("[execute_command] Init"));
-        self.set_command_status("RUN", None, command)?;
+        self.set_command_status("RUN", None, command).await?;
         self.current_property_id = None;
         self.current_entity_id = None;
 
@@ -277,14 +279,14 @@ impl QuickStatementsBot {
         self.log(format!("[execute_command] Go"));
         match action {
             Ok(action) => match self.run_action(action, command).await {
-                Ok(_) => self.set_command_status("DONE", None, command),
+                Ok(_) => self.set_command_status("DONE", None, command).await,
                 Err(e) => {
-                    self.set_command_status("ERROR", Some(&e), command)?;
+                    self.set_command_status("ERROR", Some(&e), command).await?;
                     Err(e)
                 }
             },
             Err(e) => {
-                self.set_command_status("ERROR", Some(&e), command)?;
+                self.set_command_status("ERROR", Some(&e), command).await?;
                 Err(e)
             }
         }
@@ -461,7 +463,7 @@ impl QuickStatementsBot {
         }
     }
 
-    fn set_command_status(
+    async fn set_command_status(
         self: &mut Self,
         status: &str,
         message: Option<&str>,
@@ -476,12 +478,14 @@ impl QuickStatementsBot {
 
         self.config
             .set_command_status(command, status, message.map(|s| s.to_string()))
+            .await
             .ok_or(format!(
                 "Can't config.set_command_status for batch #{}",
                 self.batch_id.unwrap() //Safe
             ))?;
         self.config
             .set_last_item_for_batch(self.batch_id.unwrap(), &self.last_entity_id) // unwrap safe
+            .await
             .ok_or(format!(
                 "Can't config.set_command_status for batch #{}",
                 self.batch_id.unwrap() //Safe

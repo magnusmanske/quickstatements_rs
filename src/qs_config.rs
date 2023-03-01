@@ -1,8 +1,11 @@
 use crate::qs_command::QuickStatementsCommand;
 use chrono::prelude::*;
 use config::*;
-use my::prelude::*;
-use mysql as my;
+//use my::prelude::*;
+//use mysql as my;
+use mysql_async as my;
+use mysql_async::from_row;
+use mysql_async::prelude::*;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -70,19 +73,20 @@ impl QuickStatements {
         }
     }
 
-    pub fn get_site_from_batch(&self, batch_id: i64) -> Option<String> {
-        let sql = format!(r#"SELECT site FROM batch WHERE id={}"#, batch_id);
-        let mut conn = self.pool.get_conn().ok()?;
-        for row in conn.as_mut().query_iter(sql).ok()?.iter()? {
-            let row = row.ok()?;
-            let site: String = match &row["site"] {
-                my::Value::Bytes(x) => String::from_utf8_lossy(&x).to_string(),
-                _ => continue,
-            };
-            //println!("Site from batch: {}", &site);
-            return Some(site);
-        }
-        None
+    pub async fn get_site_from_batch(&self, batch_id: i64) -> Option<String> {
+        let sql = r#"SELECT site FROM batch WHERE id=:batch_id"#;
+        self.pool
+            .get_conn()
+            .await
+            .ok()?
+            .exec_iter(sql, params! {batch_id})
+            .await
+            .ok()?
+            .map_and_drop(from_row::<String>)
+            .await
+            .ok()?
+            .get(0)
+            .cloned()
     }
 
     pub fn number_of_bots_running(&self) -> usize {
@@ -94,22 +98,16 @@ impl QuickStatements {
         now.format("%Y%m%d%H%M%S").to_string()
     }
 
-    pub fn restart_batch(&self, batch_id: i64) -> Option<()> {
-        let mut conn = self.pool.get_conn().ok()?;
-        conn.as_mut().exec_drop(
-            r#"UPDATE `batch` SET `status`="RUN",`message`="",`ts_last_change`=? WHERE id=? AND `status`!="TEST""#,
-            (my::Value::from(self.timestamp()), my::Value::Int(batch_id)),
-        ).ok()?;
-        conn.as_mut().exec_drop(
-            r#"UPDATE `command` SET `status`="INIT",`message`="",`ts_change`=? WHERE `status`="RUN" AND `batch_id`=?"#,
-            (my::Value::from(self.timestamp()),my::Value::Int(batch_id),),
-        )
-        .ok()?;
-        Some(())
+    pub async fn restart_batch(&self, batch_id: i64) -> Option<()> {
+        let mut conn = self.pool.get_conn().await.ok()?;
+        let ts = self.timestamp();
+        conn.exec_drop(r#"UPDATE `batch` SET `status`="RUN",`message`="",`ts_last_change`=:ts WHERE id=:batch_id AND `status`!="TEST""#, params!{ts,batch_id}).await.ok()?;
+        let ts = self.timestamp();
+        conn.exec_drop(r#"UPDATE `command` SET `status`="INIT",`message`="",`ts_change`=:ts WHERE `status`="RUN" AND `batch_id`=:batch_id"#, params!{ts,batch_id}).await.ok()
     }
 
-    pub fn get_api_url(&self, batch_id: i64) -> Option<&str> {
-        let site: String = match self.get_site_from_batch(batch_id) {
+    pub async fn get_api_url(&self, batch_id: i64) -> Option<&str> {
+        let site: String = match self.get_site_from_batch(batch_id).await {
             Some(site) => site,
             None => match self.params["config"]["site"].as_str() {
                 Some(s) => s.to_string(),
@@ -121,40 +119,53 @@ impl QuickStatements {
 
     fn create_mysql_pool(params: &Value) -> Result<my::Pool, String> {
         if !params["mysql"].is_object() {
-            return Err(format!(
-                "QuickStatementsConfig::create_mysql_pool: No mysql info in params"
-            ));
+            panic!("QuickStatementsConfig::create_mysql_pool: No mysql info in params");
         }
+        // let builder = my::OptsBuilder::new()
+        //     .ip_or_hostname(params["mysql"]["host"].as_str())
+        //     .db_name(params["mysql"]["schema"].as_str())
+        //     .user(params["mysql"]["user"].as_str())
+        //     .pass(params["mysql"]["pass"].as_str())
+        //     .tcp_port(port);
+
         let port = params["mysql"]["port"].as_u64().unwrap_or(3306) as u16;
-        let builder = my::OptsBuilder::new()
-            .ip_or_hostname(params["mysql"]["host"].as_str())
-            .db_name(params["mysql"]["schema"].as_str())
-            .user(params["mysql"]["user"].as_str())
-            .pass(params["mysql"]["pass"].as_str())
+        let host = params["mysql"]["host"].as_str().expect("No host");
+        let schema = params["mysql"]["schema"].as_str().expect("No schema");
+        let user = params["mysql"]["user"].as_str().expect("No user");
+        let pass = params["mysql"]["pass"].as_str().expect("No pass");
+        let opts = my::OptsBuilder::default()
+            .ip_or_hostname(host)
+            .db_name(Some(schema))
+            .user(Some(user))
+            .pass(Some(pass))
             .tcp_port(port);
 
         // Min 2, max 7 connections
-        match my::Pool::new_manual(2, 7, builder) {
-            Ok(pool) => Ok(pool),
-            Err(e) => Err(format!("{:?}", e)),
-        }
+        Ok(mysql_async::Pool::new(opts))
+        // match my::Pool::new_manual(2, 7, builder) {
+        //     Ok(pool) => Ok(pool),
+        //     Err(e) => Err(format!("{:?}", e)),
+        // }
     }
 
-    pub fn get_last_item_from_batch(&self, batch_id: i64) -> Option<String> {
-        let sql = format!(r#"SELECT last_item FROM batch WHERE `id`={}"#, batch_id);
-        let mut conn = self.pool.get_conn().ok()?;
-        for row in conn.as_mut().query_iter(sql).ok()?.iter()? {
-            let row = row.ok()?;
-            return match &row["last_item"] {
-                my::Value::Bytes(x) => Some(String::from_utf8_lossy(x).to_string()),
-                _ => None,
-            };
-        }
-        None
+    pub async fn get_last_item_from_batch(&self, batch_id: i64) -> Option<String> {
+        let sql = r#"SELECT last_item FROM batch WHERE `id`=:batch_id"#;
+        self.pool
+            .get_conn()
+            .await
+            .ok()?
+            .exec_iter(sql, params! {batch_id})
+            .await
+            .ok()?
+            .map_and_drop(from_row::<String>)
+            .await
+            .ok()?
+            .get(0)
+            .cloned()
     }
 
-    pub fn get_next_batch(&self) -> Option<(i64, i64)> {
-        let mut sql: String = "SELECT * FROM batch WHERE `status` IN (".to_string();
+    pub async fn get_next_batch(&self) -> Option<(i64, i64)> {
+        let mut sql: String = "SELECT id,user FROM batch WHERE `status` IN (".to_string();
         sql += "'INIT','RUN'";
         //sql += "'TEST'" ;
         sql += ")";
@@ -184,31 +195,53 @@ impl QuickStatements {
             sql += &bad_users.join(",");
             sql += ")";
         }
-
         sql += " ORDER BY `ts_last_change`";
 
-        let mut conn = self.pool.get_conn().ok()?;
-        for row in conn.as_mut().query_iter(sql).ok()?.iter()? {
-            let row = row.ok()?;
-            let id: i64 = match row.get("id") {
-                Some(id) => id,
-                None => continue,
-            };
-            if self.running_batch_ids.read().unwrap().contains(&id) {
-                continue;
-            }
-            let user: i64 = match row.get("user") {
-                Some(id) => id,
-                None => continue,
-            };
-            return Some((id, user));
-        }
-        None
+        let results = self
+            .pool
+            .get_conn()
+            .await
+            .ok()?
+            .exec_iter(sql, ())
+            .await
+            .ok()?
+            .map_and_drop(from_row::<(i64, i64)>)
+            .await
+            .ok()?;
+        results
+            .iter()
+            .filter(|(id, _)| !self.running_batch_ids.read().unwrap().contains(&id))
+            .cloned()
+            .next()
+
+        // let mut conn = self.pool.get_conn().ok()?;
+        // for row in conn.as_mut().query_iter(sql).ok()?.iter()? {
+        //     let row = row.ok()?;
+        //     let id: i64 = match row.get("id") {
+        //         Some(id) => id,
+        //         None => continue,
+        //     };
+        //     if self.running_batch_ids.read().unwrap().contains(&id) {
+        //         continue;
+        //     }
+        //     let user: i64 = match row.get("user") {
+        //         Some(id) => id,
+        //         None => continue,
+        //     };
+        //     return Some((id, user));
+        // }
+        // None
     }
 
-    pub fn reinitialize_open_batches(&self) -> Option<()> {
+    pub async fn reinitialize_open_batches(&self) -> Option<()> {
         let sql = "UPDATE batch SET status='INIT' WHERE status='DONE' AND id IN (SELECT DISTINCT batch_id FROM command WHERE status='INIT' and batch_id>12000)" ;
-        self.pool.get_conn().ok()?.as_mut().exec_drop(sql, ()).ok()
+        self.pool
+            .get_conn()
+            .await
+            .ok()?
+            .exec_drop(sql, ())
+            .await
+            .ok()
     }
 
     pub fn set_batch_running(&self, batch_id: i64, user_id: i64) {
@@ -251,69 +284,87 @@ impl QuickStatements {
         Some(())
     }
 
-    pub fn set_batch_finished(&self, batch_id: i64, user_id: i64) -> Option<()> {
+    pub async fn set_batch_finished(&self, batch_id: i64, user_id: i64) -> Option<()> {
         println!("set_batch_finished: Batch #{}", batch_id);
-        self.set_batch_status("DONE", "", batch_id, user_id)
+        self.set_batch_status("DONE", "", batch_id, user_id).await
     }
 
-    pub fn check_batch_not_stopped(&self, batch_id: i64) -> Result<(), String> {
-        let sql: String = format!(
-            "SELECT * FROM batch WHERE id={} AND `status` NOT IN ('RUN','INIT')",
-            batch_id
-        );
+    pub async fn check_batch_not_stopped(&self, batch_id: i64) -> Result<(), String> {
+        let sql = r#"SELECT id FROM batch WHERE id=:batch_id AND `status` NOT IN ('RUN','INIT')"#;
 
-        let mut conn = match self.pool.get_conn() {
-            Ok(conn) => conn,
-            Err(e) => return Err(format!("Error: {}", e)),
-        };
-        let result_iter = match conn.as_mut().exec_iter(sql, ()) {
-            Ok(ri) => ri,
-            Err(e) => return Err(format!("Error: {}", e)),
-        };
-        if result_iter.affected_rows() > 0 {
-            return Err(format!(
+        let results = self
+            .pool
+            .get_conn()
+            .await
+            .map_err(|e| e.to_string())?
+            .exec_iter(sql, params! {batch_id})
+            .await
+            .map_err(|e| e.to_string())?
+            .map_and_drop(from_row::<usize>)
+            .await
+            .map_err(|e| e.to_string())?;
+        match results.is_empty() {
+            true => Ok(()),
+            false => Err(format!(
                 "QuickStatementsConfig::check_batch_not_stopped: batch #{} is not RUN or INIT",
                 batch_id
-            ));
+            )),
         }
-        Ok(())
+
+        // let mut conn = match self.pool.get_conn() {
+        //     Ok(conn) => conn,
+        //     Err(e) => return Err(format!("Error: {}", e)),
+        // };
+        // let result_iter = match conn.as_mut().exec_iter(sql, ()) {
+        //     Ok(ri) => ri,
+        //     Err(e) => return Err(format!("Error: {}", e)),
+        // };
+        // if result_iter.affected_rows() > 0 {
+        //     return Err(format!(
+        //         "QuickStatementsConfig::check_batch_not_stopped: batch #{} is not RUN or INIT",
+        //         batch_id
+        //     ));
+        // }
+        // Ok(())
     }
 
-    fn set_batch_status(
+    async fn set_batch_status(
         &self,
         status: &str,
         message: &str,
         batch_id: i64,
         user_id: i64,
     ) -> Option<()> {
+        let ts = self.timestamp();
+        let sql = r#"UPDATE `batch` SET `status`=:status,`message`=:message,`ts_last_change`=:ts WHERE id=:batch_id"#;
         self.pool
             .get_conn()
+            .await
             .ok()?
-            .as_mut()
-            .exec_drop(
-                r#"UPDATE `batch` SET `status`=?,`message`=?,`ts_last_change`=? WHERE id=?"#,
-                (
-                    my::Value::from(status),
-                    my::Value::from(message),
-                    my::Value::from(self.timestamp()),
-                    my::Value::Int(batch_id),
-                ),
-            )
+            .exec_drop(sql, params! {status,message,ts,batch_id})
+            .await
             .ok()?;
         self.deactivate_batch_run(batch_id, user_id)
     }
 
-    pub fn get_next_command(&self, batch_id: i64) -> Option<QuickStatementsCommand> {
-        let sql = format!(
-            r#"SELECT * FROM command WHERE batch_id={} AND status IN ('INIT') ORDER BY num LIMIT 1"#,
-            batch_id
-        );
-        let mut conn = self.pool.get_conn().ok()?;
-        let row = conn.as_mut().query_iter(sql).ok()?.iter()?.next()?.ok()?;
-        Some(QuickStatementsCommand::new_from_row(row))
+    pub async fn get_next_command(&self, batch_id: i64) -> Option<QuickStatementsCommand> {
+        let sql = r#"SELECT id,batch_id,num,json,`status`,message,ts_change FROM command WHERE batch_id=:batch_id AND status IN ('INIT') ORDER BY num LIMIT 1"#;
+        self.pool
+            .get_conn()
+            .await
+            .ok()?
+            .exec_iter(sql, params! {batch_id})
+            .await
+            .ok()?
+            .map_and_drop(from_row::<(i64, i64, i64, String, String, String, String)>)
+            .await
+            .ok()?
+            .iter()
+            .map(|r| QuickStatementsCommand::from_row(r))
+            .next()
     }
 
-    pub fn set_command_status(
+    pub async fn set_command_status(
         self: &Self,
         command: &mut QuickStatementsCommand,
         new_status: &str,
@@ -332,21 +383,19 @@ impl QuickStatements {
             _ => "{}".to_string(),
         };
 
-        self.pool.get_conn().ok()?.as_mut().exec_drop(
-            r#"UPDATE `command` SET `ts_change`=?,`json`=?,`status`=?,`message`=? WHERE `id`=?"#,
-            (
-                my::Value::from(self.timestamp()),
-                my::Value::from(json),
-                my::Value::from(new_status),
-                my::Value::from(message),
-                my::Value::from(&command.id),
-            ),
-        )
-        .ok()?;
-        Some(())
+        let command_id = command.id;
+        let ts = self.timestamp();
+        let sql = r#"UPDATE `command` SET `ts_change`=:ts,`json`=:json,`status`=:new_status,`message`=:message WHERE `id`=:command_id"#;
+        self.pool
+            .get_conn()
+            .await
+            .ok()?
+            .exec_drop(sql, params! {ts,json,new_status,message,command_id})
+            .await
+            .ok()
     }
 
-    pub fn set_last_item_for_batch(
+    pub async fn set_last_item_for_batch(
         self: &Self,
         batch_id: i64,
         last_item: &Option<String>,
@@ -357,45 +406,41 @@ impl QuickStatements {
         };
 
         let ts = self.timestamp();
+        let sql = r#"UPDATE `batch` SET `ts_last_change`=:ts,`last_item`=:last_item WHERE `id`=:batch_id"#;
         self.pool
             .get_conn()
+            .await
             .ok()?
-            .as_mut()
-            .exec_drop(
-                r#"UPDATE `batch` SET `ts_last_change`=?,`last_item`=? WHERE `id`=?"#,
-                (
-                    my::Value::from(ts),
-                    my::Value::from(last_item),
-                    my::Value::from(batch_id),
-                ),
-            )
-            .ok()?;
-        Some(())
+            .exec_drop(sql, params! {ts,last_item,batch_id})
+            .await
+            .ok()
     }
 
-    fn get_oauth_for_batch(
+    async fn get_oauth_for_batch(
         self: &Self,
         batch_id: i64,
     ) -> Option<wikibase::mediawiki::api::OAuthParams> {
         let auth_db = "s53220__quickstatements_auth";
         let sql = format!(
-            r#"SELECT * FROM {}.batch_oauth WHERE batch_id={}"#,
-            auth_db, batch_id
+            r#"SELECT serialized_json FROM {}.batch_oauth WHERE batch_id=:batch_id"#,
+            auth_db
         );
-        let mut conn = self.pool.get_conn().ok()?;
-        for row in conn.as_mut().query_iter(sql).ok()?.iter()? {
-            let row = row.ok()?;
-            let v: Vec<u8> = match row.get("serialized_json") {
-                Some(v) => v,
-                None => return None,
-            };
-            let serialized_json = String::from_utf8_lossy(&v);
-            match serde_json::from_str(&serialized_json) {
-                Ok(j) => return Some(wikibase::mediawiki::api::OAuthParams::new_from_json(&j)),
-                _ => return None,
-            }
-        }
-        None
+
+        let first = self
+            .pool
+            .get_conn()
+            .await
+            .ok()?
+            .exec_iter(sql, params! {batch_id})
+            .await
+            .ok()?
+            .map_and_drop(from_row::<String>)
+            .await
+            .ok()?
+            .get(0)
+            .cloned()?;
+        let j = serde_json::from_str(&first).ok()?;
+        Some(wikibase::mediawiki::api::OAuthParams::new_from_json(&j))
     }
 
     pub async fn set_bot_api_auth(
@@ -403,7 +448,7 @@ impl QuickStatements {
         mw_api: &mut wikibase::mediawiki::api::Api,
         batch_id: i64,
     ) {
-        match self.get_oauth_for_batch(batch_id) {
+        match self.get_oauth_for_batch(batch_id).await {
             Some(oauth_params) => {
                 // Using OAuth
                 mw_api.set_oauth(Some(oauth_params));

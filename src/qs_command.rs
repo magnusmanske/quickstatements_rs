@@ -1,6 +1,7 @@
-use mysql as my;
+//use mysql as my;
+use mysql_async as my;
 use regex::Regex;
-use serde_json::Value;
+use serde_json::{json, Value};
 use wikibase::*;
 
 #[derive(Debug, Clone)]
@@ -15,7 +16,20 @@ pub struct QuickStatementsCommand {
 }
 
 impl QuickStatementsCommand {
+    pub fn from_row(r: &(i64, i64, i64, String, String, String, String)) -> Self {
+        Self {
+            id: r.0,
+            batch_id: r.1,
+            num: r.2,
+            json: serde_json::from_str(&r.3).unwrap_or(json!({})),
+            status: r.4.to_owned(),
+            message: r.5.to_owned(),
+            ts_change: r.6.to_owned(),
+        }
+    }
+
     pub fn new_from_row(row: my::Row) -> Self {
+        // FIXME REMOVE
         Self {
             id: QuickStatementsCommand::rowvalue_as_i64(&row["id"]),
             batch_id: QuickStatementsCommand::rowvalue_as_i64(&row["batch_id"]),
