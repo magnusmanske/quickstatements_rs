@@ -17,6 +17,10 @@ use std::io::prelude::*;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use tokio::runtime;
+
+const THREADS: usize = 4;
+
 
 async fn run_bot(config: Arc<QuickStatements>) {
     //println!("BOT!");
@@ -215,8 +219,8 @@ async fn command_run(site: &str) {
     }
 }
 
-#[tokio::main]
-async fn main() {
+// #[tokio::main]
+fn main() {
     simple_logger::init_with_level(log::Level::Info).unwrap();
     let matches = App::new("QuickStatements")
         .version("0.1.0")
@@ -250,6 +254,15 @@ async fn main() {
     let verbose = matches.is_present("VERBOSE");
     let command = matches.value_of("COMMAND").unwrap();
 
+    let threaded_rt = runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(THREADS)
+        .thread_name("mixnmatch")
+        .thread_stack_size(2*THREADS * 1024 * 1024)
+        .build().expect("Can't create tokio runtime");
+
+    threaded_rt.block_on(async move {
+
     match command {
         "bot" => command_bot(verbose).await,
         "parse" => command_parse().await,
@@ -257,6 +270,7 @@ async fn main() {
         "run" => command_run(site).await,
         x => panic!("Not a valid command: {}", x),
     }
+});
 }
 
 /*
