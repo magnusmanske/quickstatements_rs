@@ -34,20 +34,24 @@ async fn run_bot(config: Arc<QuickStatements>) {
         batch_id = tuple.0;
         user_id = tuple.1;
     }
-    tokio::spawn(async move {
-        println!("SPAWN: Starting batch {} for user {}", &batch_id, &user_id);
-        let mut bot = QuickStatementsBot::new(config.clone(), Some(batch_id), user_id);
-        match bot.start().await {
-            Ok(_) => while bot.run().await.unwrap_or(false) {},
-            Err(error) => {
-                println!(
-                    "Error when starting bot for batch #{}: '{}'",
-                    &batch_id, &error
-                );
-                // TODO mark this as problematic so it doesn't get run again next time?
-            }
+    println!("Starting batch {} for user {}", &batch_id, &user_id);
+    let mut bot = QuickStatementsBot::new(config.clone(), Some(batch_id), user_id);
+    
+    match bot.start().await {
+        Ok(_) => {
+            tokio::spawn(async move {
+                while bot.run().await.unwrap_or(false) {}
+            });
         }
-    });
+        Err(error) => {
+            println!(
+                "Error when starting bot for batch #{}: '{}'",
+                &batch_id, &error
+            );
+            // TODO mark this as problematic so it doesn't get run again next time?
+        }
+    }
+    
 }
 
 async fn command_bot(verbose: bool) {
