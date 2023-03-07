@@ -19,7 +19,7 @@ use std::thread;
 use std::time::Duration;
 use tokio::runtime;
 
-const THREADS: usize = 4;
+const THREADS: usize = 1;
 
 
 async fn run_bot(config: Arc<QuickStatements>) {
