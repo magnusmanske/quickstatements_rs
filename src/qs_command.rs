@@ -1,5 +1,3 @@
-//use mysql as my;
-use mysql_async as my;
 use regex::Regex;
 use serde_json::{json, Value};
 use wikibase::*;
@@ -28,25 +26,6 @@ impl QuickStatementsCommand {
         }
     }
 
-    pub fn new_from_row(row: my::Row) -> Self {
-        // FIXME REMOVE
-        Self {
-            id: QuickStatementsCommand::rowvalue_as_i64(&row["id"]),
-            batch_id: QuickStatementsCommand::rowvalue_as_i64(&row["batch_id"]),
-            num: QuickStatementsCommand::rowvalue_as_i64(&row["num"]),
-            json: match &row["json"] {
-                my::Value::Bytes(x) => match serde_json::from_str(&String::from_utf8_lossy(x)) {
-                    Ok(y) => y,
-                    _ => json!({}),
-                },
-                _ => Value::Null,
-            },
-            status: QuickStatementsCommand::rowvalue_as_string(&row["status"]),
-            message: QuickStatementsCommand::rowvalue_as_string(&row["message"]),
-            ts_change: QuickStatementsCommand::rowvalue_as_string(&row["ts_change"]),
-        }
-    }
-
     pub fn new_from_json(json: &Value) -> Self {
         Self {
             id: -1,
@@ -56,20 +35,6 @@ impl QuickStatementsCommand {
             status: "".to_string(),
             message: "".to_string(),
             ts_change: "".to_string(),
-        }
-    }
-
-    fn rowvalue_as_i64(v: &my::Value) -> i64 {
-        match v {
-            my::Value::Int(x) => *x,
-            _ => 0,
-        }
-    }
-
-    fn rowvalue_as_string(v: &my::Value) -> String {
-        match v {
-            my::Value::Bytes(x) => String::from_utf8_lossy(x).to_string(),
-            _ => String::from(""),
         }
     }
 
@@ -587,14 +552,6 @@ mod tests {
             None,
             false,
         )
-    }
-
-    #[test]
-    fn rowvalue_as_i64() {
-        assert_eq!(
-            QuickStatementsCommand::rowvalue_as_i64(&my::Value::Int(12345)),
-            12345
-        );
     }
 
     #[test]
