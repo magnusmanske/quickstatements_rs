@@ -1,7 +1,6 @@
 use crate::qs_command::QuickStatementsCommand;
 use crate::qs_config::QuickStatements;
 use crate::qs_parser::COMMONS_API;
-use async_recursion::async_recursion;
 use chrono::Local;
 use regex::Regex;
 use serde_json::Value;
@@ -348,7 +347,6 @@ impl QuickStatementsBot {
         params.insert("summary".to_string(), new_summary);
     }
 
-    #[async_recursion]
     async fn run_action(
         self: &mut Self,
         j: Value,
@@ -364,7 +362,7 @@ impl QuickStatementsBot {
         let mut params: HashMap<String, String> = HashMap::new();
         for (k, v) in j
             .as_object()
-            .ok_or("QUickStatementsBot::run_action: j is not an object".to_string())?
+            .ok_or("QuickStatementsBot::run_action: j is not an object".to_string())?
         {
             params.insert(
                 k.to_string(),
@@ -384,22 +382,35 @@ impl QuickStatementsBot {
             "QuickStatementsBot::run_action batch #{} has no mw_api",
             self.batch_id.unwrap_or(0)
         ))?;
-        params.insert(
-            "token".to_string(),
-            mw_api
-                .get_edit_token()
-                .await
-                .map_err(|e| format!("QuickStatementsBot::run_action get_edit_token '{}'", e))?,
-        );
+        loop {
+            params.insert(
+                "token".to_string(),
+                mw_api
+                    .get_edit_token()
+                    .await
+                    .map_err(|e| format!("QuickStatementsBot::run_action get_edit_token '{}'", e))?,
+            );
 
-        self.log(format!("[run_action] Pre  post_query_api_json_mut"));
-        let res = match mw_api.post_query_api_json_mut(&params).await {
-            Ok(x) => x,
-            Err(e) => return Err(format!("Wiki editing failed: {:?}", e)),
-        };
-        self.log(format!("[run_action] Post post_query_api_json_mut"));
-        //println!("{}", ::serde_json::to_string_pretty(&res).unwrap());
+            self.log(format!("[run_action] Pre  post_query_api_json_mut"));
+            let res = match mw_api.post_query_api_json_mut(&params).await {
+                Ok(x) => x,
+                Err(e) => return Err(format!("Wiki editing failed: {:?}", e)),
+            };
+            self.log(format!("[run_action] Post post_query_api_json_mut"));
 
+            let res = self.check_run_action_result(res, &params, command)?;
+            if !res {
+                return Ok(())
+            }
+
+            thread::sleep(time::Duration::from_millis(
+                self.throttled_delay_ms,
+            ));
+        }
+    }
+
+    /// Checks the command result, returns Ok(true) to re-do, Ok(false) if done, Err otherwise
+    fn check_run_action_result(&mut self, res: Value, params: &HashMap<String, String>, command: &mut QuickStatementsCommand) -> Result<bool, String> {
         lazy_static! {
             static ref RE_QUAL_OK: Regex =
                 Regex::new("^The statement has already a qualifier with hash")
@@ -413,7 +424,7 @@ impl QuickStatementsBot {
             Some(num) => {
                 if num == 1 {
                     self.reset_entities(&res, command);
-                    Ok(())
+                    Ok(false)
                 } else {
                     Err(format!("Success flag is '{}' in API result", num))
                 }
@@ -431,10 +442,7 @@ impl QuickStatementsBot {
                                             self.batch_id.unwrap_or(0),
                                             self.throttled_delay_ms
                                         );
-                                        thread::sleep(time::Duration::from_millis(
-                                            self.throttled_delay_ms,
-                                        ));
-                                        return self.run_action(j, command).await;
+                                        return Ok(true);
                                     }
                                 }
                                 None => {}
@@ -448,11 +456,11 @@ impl QuickStatementsBot {
                         command.json["meta"]["message"] = json!(s);
                         // That qualifier already exists, return OK
                         if RE_QUAL_OK.is_match(s) {
-                            return Ok(());
+                            return Ok(false);
                         }
                         // That reference already exists, return OK
                         if RE_REF_OK.is_match(s) {
-                            return Ok(());
+                            return Ok(false);
                         }
                     }
                     None => {}
