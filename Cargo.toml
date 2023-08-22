@@ -16,7 +16,7 @@ config = "*"
 regex = "1"
 lazy_static = "1"
 chrono = "*"
-clap = "2"
+clap = { version = "4" , features = ["derive","cargo"] }
 log = "*"
 simple_logger = "*"
 num_cpus = "*"

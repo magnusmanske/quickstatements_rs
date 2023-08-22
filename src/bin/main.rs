@@ -1,11 +1,9 @@
 #[macro_use]
 extern crate serde_json;
-extern crate clap;
 extern crate config;
-//extern crate mysql;
 extern crate wikibase;
 
-use clap::{App, Arg};
+use clap::Parser;
 use log::{error, info};
 use quickstatements::qs_bot::QuickStatementsBot;
 use quickstatements::qs_command::QuickStatementsCommand;
@@ -223,41 +221,34 @@ async fn command_run(site: &str) {
     }
 }
 
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = "Runs QuickStatement bot or command line operations")]
+struct Args {
+    /// Sets a site for RUN command
+    #[arg(short, long, default_value_t=format!("wikidata"))]
+    site: String,
+
+    #[arg(short, long)]
+    verbose: bool,
+
+    /// Command [bot|parse|validate|run]
+    #[arg(short, long)]
+    command: String
+}
+
 #[tokio::main]
 async fn main() {
     simple_logger::init_with_level(log::Level::Info).unwrap();
-    let matches = App::new("QuickStatements")
-        .version("0.1.0")
-        .author("Magnus Manske <mm6@sanger.ac.uk>")
-        .about("Runs QuickStatement bot or command line operations")
-        .arg(
-            Arg::with_name("SITE")
-                .short("s")
-                .long("site")
-                .required(false)
-                .help("Sets a site for RUN command")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("VERBOSE")
-                .short("v")
-                .long("verbose")
-                .required(false)
-                .help("Sets verbose mode")
-                .takes_value(false),
-        )
-        .arg(
-            Arg::with_name("COMMAND")
-                .help("Command [bot|parse|run]")
-                .required(true)
-                .index(1),
-        )
-        .get_matches();
+    let args = Args::parse();
+    match args.command.as_str() {
+        "bot" => command_bot(args.verbose).await,
+        "parse" => command_parse().await,
+        "validate" => command_validate().await,
+        "run" => command_run(&args.site).await,
+        x => panic!("Not a valid command: {}", x),
+    }
 
-    let site = matches.value_of("SITE").unwrap_or("wikidata");
-    let verbose = matches.is_present("VERBOSE");
-    let command = matches.value_of("COMMAND").unwrap();
-
+    // Old manually controlled multi-threading async code
     // let threaded_rt = runtime::Builder::new_multi_thread()
     //     .enable_all()
     //     .worker_threads(THREADS)
@@ -265,15 +256,7 @@ async fn main() {
     //     .thread_stack_size(2*THREADS * 1024 * 1024)
     //     .build().expect("Can't create tokio runtime");
     // threaded_rt.block_on(async move {
-
-    match command {
-        "bot" => command_bot(verbose).await,
-        "parse" => command_parse().await,
-        "validate" => command_validate().await,
-        "run" => command_run(site).await,
-        x => panic!("Not a valid command: {}", x),
-    }
-// });
+    // });
 }
 
 /*
