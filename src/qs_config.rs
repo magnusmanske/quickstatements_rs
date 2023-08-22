@@ -1,5 +1,5 @@
 use crate::qs_command::QuickStatementsCommand;
-use chrono::prelude::*;
+use chrono::prelude::Utc;
 use config::*;
 //use my::prelude::*;
 //use mysql as my;
