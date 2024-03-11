@@ -49,10 +49,7 @@ impl QuickStatementsCommand {
         Ok(json!({"action":"wbremoveclaims","claim":statement_id}))
     }
 
-    pub fn action_remove_sitelink(
-        self: &mut Self,
-        item: &wikibase::Entity,
-    ) -> Result<Value, String> {
+    pub fn action_remove_sitelink(&mut self, item: &wikibase::Entity) -> Result<Value, String> {
         let tmp = self.json["value"].clone();
         self.json["value"] = json!("");
         let ret = self.action_set_sitelink(item);
@@ -73,9 +70,9 @@ impl QuickStatementsCommand {
         // Check if this same sitelink is already set
         match item.sitelinks() {
             Some(sitelinks) => {
-                let title_underscores = title.replace(" ", "_");
+                let title_underscores = title.replace(' ', "_");
                 for sl in sitelinks {
-                    if sl.site() == site && sl.title().replace(" ", "_") == title_underscores {
+                    if sl.site() == site && sl.title().replace(' ', "_") == title_underscores {
                         return self.already_done();
                     }
                 }
@@ -96,12 +93,9 @@ impl QuickStatementsCommand {
     }
 
     fn action_add_statement(&self, item: &wikibase::Entity) -> Result<Value, String> {
-        match self.get_statement_id(item)? {
-            Some(_statement_id) => {
-                //println!("Such a statement already exists as {}", &statement_id);
-                return self.already_done();
-            }
-            None => {}
+        if let Some(_statement_id) = self.get_statement_id(item)? {
+            //println!("Such a statement already exists as {}", &statement_id);
+            return self.already_done();
         }
         let q = item.id().to_string();
         let property = match self.json["property"].as_str() {
@@ -127,13 +121,10 @@ impl QuickStatementsCommand {
         let text = self.json["value"]
             .as_str()
             .ok_or("Can't find text (=value)".to_string())?;
-        match item.label_in_locale(language) {
-            Some(s) => {
-                if s == text {
-                    return self.already_done();
-                }
+        if let Some(s) = item.label_in_locale(language) {
+            if s == text {
+                return self.already_done();
             }
-            None => {}
         }
         Ok(
             json!({"action":"wbsetlabel","id":self.get_prefixed_id(item.id()),"language":language,"value":text}),
@@ -147,13 +138,10 @@ impl QuickStatementsCommand {
         let text = self.json["value"]
             .as_str()
             .ok_or("Can't find text (=value)".to_string())?;
-        match item.description_in_locale(language) {
-            Some(s) => {
-                if s == text {
-                    return self.already_done();
-                }
+        if let Some(s) = item.description_in_locale(language) {
+            if s == text {
+                return self.already_done();
             }
-            None => {}
         }
         Ok(
             json!({"action":"wbsetdescription","id":self.get_prefixed_id(item.id()),"language":language,"value":text}),
@@ -192,7 +180,7 @@ impl QuickStatementsCommand {
     /// Replaces LAST in the command with the last item, or fails
     /// This method is called propagateLastItem in the PHP version
     pub fn insert_last_item_into_sources_and_qualifiers(
-        self: &mut Self,
+        &mut self,
         last_entity_id: &Option<String>,
     ) -> Result<(), String> {
         if last_entity_id.is_none() {
@@ -200,19 +188,15 @@ impl QuickStatementsCommand {
         }
         let q = last_entity_id.clone().unwrap();
         let mut json = self.json.clone();
-        match self.json["item"].as_str() {
-            Some("LAST") => json["item"] = json!(q),
-            _ => {}
+        if let Some("LAST") = self.json["item"].as_str() {
+            json["item"] = json!(q)
         }
         self.replace_last_item(&mut json["datavalue"], last_entity_id)?;
-        self.replace_last_item(&mut json["qualifier"]["value"], &last_entity_id)?;
-        match json["sources"].as_array_mut() {
-            Some(arr) => {
-                for mut v in arr {
-                    self.replace_last_item(&mut v, last_entity_id)?
-                }
+        self.replace_last_item(&mut json["qualifier"]["value"], last_entity_id)?;
+        if let Some(arr) = json["sources"].as_array_mut() {
+            for v in arr {
+                self.replace_last_item(v, last_entity_id)?
             }
-            None => {}
         }
         self.json = json;
         Ok(())
@@ -261,7 +245,7 @@ impl QuickStatementsCommand {
     }
 
     fn action_add_sources(&self, item: &wikibase::Entity) -> Result<Value, String> {
-        let statement_id = match self.get_statement_id(&item)? {
+        let statement_id = match self.get_statement_id(item)? {
             Some(id) => id,
             None => {
                 return Err(format!(
@@ -281,7 +265,7 @@ impl QuickStatementsCommand {
                         None => return Err("No prop value in source".to_string()),
                     };
                     let prop = self.check_prop(prop)?;
-                    let snaktype = self.get_snak_type_for_datavalue(&source)?;
+                    let snaktype = self.get_snak_type_for_datavalue(source)?;
                     let snaktype = snaktype.to_owned();
                     let snak = match snaktype.as_str() {
                         "value" => json!({
@@ -355,7 +339,7 @@ impl QuickStatementsCommand {
         }))
     }
 
-    fn add_to_entity(self: &mut Self, item: &Option<wikibase::Entity>) -> Result<Value, String> {
+    fn add_to_entity(&mut self, item: &Option<wikibase::Entity>) -> Result<Value, String> {
         let item = item
             .to_owned()
             .expect("QuickStatementsCommand::add_to_entity: item is None");
@@ -371,10 +355,7 @@ impl QuickStatementsCommand {
         }
     }
 
-    fn remove_from_entity(
-        self: &mut Self,
-        item: &Option<wikibase::Entity>,
-    ) -> Result<Value, String> {
+    fn remove_from_entity(&mut self, item: &Option<wikibase::Entity>) -> Result<Value, String> {
         let item = item
             .to_owned()
             .expect("QuickStatementsCommand::remove_from_entity: item is None");
@@ -387,21 +368,21 @@ impl QuickStatementsCommand {
                 self.action_remove_statement(statement_id)
             }
             Some("sitelink") => self.action_remove_sitelink(&item),
-            other => return Err(format!("Bad 'what': '{:?}'", other)),
+            other => Err(format!("Bad 'what': '{:?}'", other)),
         }
     }
 
     pub fn get_action(&self) -> Result<String, String> {
         let cj = self.json["action"].clone();
         match cj.as_str() {
-            None => return Err(format!("No action in command")),
-            Some("") => return Err(format!("Empty action in command")),
+            None => Err("No action in command".to_string()),
+            Some("") => Err("Empty action in command".to_string()),
             Some(s) => Ok(s.to_string()),
         }
     }
 
     pub fn action_to_execute(
-        self: &mut Self,
+        &mut self,
         main_item: &Option<wikibase::Entity>,
     ) -> Result<Value, String> {
         match self.get_action()?.as_str() {
@@ -437,7 +418,7 @@ impl QuickStatementsCommand {
             wikibase::Value::Quantity(v) => {
                 Some(*v.amount() == v2["amount"].as_str()?.parse::<f64>().ok()?)
             }
-            wikibase::Value::StringValue(v) => Some(v.to_string() == v2.as_str()?),
+            wikibase::Value::StringValue(v) => Some(*v == v2.as_str()?),
             wikibase::Value::Time(v) => {
                 let t1 = RE_TIME.replace_all(v.time(), "$a$b");
                 let t2 = RE_TIME.replace_all(v2["time"].as_str()?, "$a$b");
@@ -465,9 +446,8 @@ impl QuickStatementsCommand {
 
     fn get_statement_id(&self, item: &wikibase::Entity) -> Result<Option<String>, String> {
         // Try directly by statement ID, as string
-        match self.json["id"].as_str() {
-            Some(id) => return Ok(Some(id.to_string())),
-            None => {}
+        if let Some(id) = self.json["id"].as_str() {
+            return Ok(Some(id.to_string()));
         }
 
         // No ID given, find the property
@@ -491,7 +471,7 @@ impl QuickStatementsCommand {
                 None => continue,
             };
             //println!("!!{:?} : {:?}", &dv, &datavalue);
-            match self.is_same_datavalue(&dv, &self.json["datavalue"]) {
+            match self.is_same_datavalue(dv, &self.json["datavalue"]) {
                 Some(b) => {
                     if b {
                         let id = claim
@@ -523,10 +503,8 @@ impl QuickStatementsCommand {
     }
 
     pub fn get_entity_id_option(&self, v: &Value) -> Option<String> {
-        match v.as_str() {
-            Some(s) => Some(QuickStatementsCommand::fix_entity_id(s.to_string())),
-            None => None,
-        }
+        v.as_str()
+            .map(|s| QuickStatementsCommand::fix_entity_id(s.to_string()))
     }
 
     pub fn fix_entity_id(id: String) -> String {

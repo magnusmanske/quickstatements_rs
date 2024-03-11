@@ -1,4 +1,5 @@
 use regex::Regex;
+use std::fmt;
 use wikibase::mediawiki::api::Api;
 use wikibase::{
     Coordinate, EntityType, EntityValue, LocaleString, MonoLingualText, QuantityValue, SiteLink,
@@ -23,11 +24,11 @@ pub enum EntityID {
     Last,
 }
 
-impl EntityID {
-    pub fn to_string(&self) -> String {
+impl fmt::Display for EntityID {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            EntityID::Id(e) => e.id().to_string(),
-            EntityID::Last => "LAST".to_string(),
+            EntityID::Id(e) => write!(f, "{}", e.id()),
+            EntityID::Last => write!(f, "LAST"),
         }
     }
 }
@@ -51,7 +52,7 @@ impl Value {
         match self {
             Self::Entity(v) => Some(v.to_string()),
             Self::GlobeCoordinate(v) => Some(
-                vec![
+                [
                     "@".to_string(),
                     v.latitude().to_string(),
                     "/".to_string(),
@@ -60,22 +61,11 @@ impl Value {
                 .join("")
                 .to_string(),
             ),
-            Self::MonoLingualText(v) => Some(
-                vec![v.language(), ":\"", v.text(), "\""]
-                    .join("")
-                    .to_string(),
-            ),
+            Self::MonoLingualText(v) => Some(format!("{}:\"{}\"", v.language(), v.text())),
             Self::Quantity(v) => {
                 let mut ret = vec![v.amount().to_string()];
-                match (v.lower_bound(), v.upper_bound()) {
-                    (Some(lower), Some(upper)) => ret.push(
-                        "[".to_string()
-                            + &lower.to_string()
-                            + &",".to_string()
-                            + &upper.to_string()
-                            + &"]".to_string(),
-                    ),
-                    _ => {}
+                if let (Some(lower), Some(upper)) = (v.lower_bound(), v.upper_bound()) {
+                    ret.push(format!("[{lower},{upper}]"));
                 }
                 if v.unit() != "1" {
                     let unit = v.unit().to_string();
@@ -84,10 +74,8 @@ impl Value {
                 }
                 Some(ret.join("").to_string())
             }
-            Self::String(v) => Some("\"".to_string() + &v + &"\"".to_string()),
-            Self::Time(v) => {
-                Some(v.time().to_string() + &"/".to_string() + &v.precision().to_string())
-            }
+            Self::String(v) => Some("\"".to_string() + &v + "\""),
+            Self::Time(v) => Some(v.time().to_string() + "/" + &v.precision().to_string()),
         }
     }
 
@@ -176,10 +164,10 @@ impl QuickStatementsParser {
         let mut parts: Vec<String> = line
             .trim()
             .replace("||", "\t")
-            .split("\t")
+            .split('\t')
             .map(|s| s.to_string())
             .collect();
-        if parts.len() == 0 {
+        if parts.is_empty() {
             return Err("Empty string".to_string());
         }
 
@@ -194,44 +182,40 @@ impl QuickStatementsParser {
         }
 
         // Try to convert a page title into an entity ID
-        match Self::get_entity_id_from_title(&parts[0], api).await {
-            Some(id) => parts[0] = id,
-            None => {}
+        if let Some(id) = Self::get_entity_id_from_title(&parts[0], api).await {
+            parts[0] = id
         }
 
-        match RE_META.captures(&parts[1]) {
-            Some(caps) => {
-                let key = caps.get(2).unwrap().as_str();
-                let value = match Self::parse_value(parts[2].clone()) {
-                    Some(Value::String(s)) => s,
-                    _ => return Err(format!("Bad value: '{}'", &parts[2])),
-                };
-                let mut ret = Self::new_blank_with_comment(comment.clone());
-                let mut first = parts[0].clone();
-                ret.modifier = Self::parse_command_modifier(&mut first);
-                ret.item = Some(Self::parse_item_id(&Some(&first))?);
-                match caps.get(1).unwrap().as_str() {
-                    "L" => {
-                        ret.command = CommandType::SetLabel;
-                        ret.locale_string = Some(LocaleString::new(key, &value));
-                    }
-                    "D" => {
-                        ret.command = CommandType::SetDescription;
-                        ret.locale_string = Some(LocaleString::new(key, &value));
-                    }
-                    "A" => {
-                        ret.command = CommandType::SetAlias;
-                        ret.locale_string = Some(LocaleString::new(key, &value));
-                    }
-                    "S" => {
-                        ret.command = CommandType::SetSitelink;
-                        ret.sitelink = Some(SiteLink::new(key, &value, vec![]));
-                    }
-                    _ => return Err(format!("Bad command: '{}'", &parts[1])),
+        if let Some(caps) = RE_META.captures(&parts[1]) {
+            let key = caps.get(2).unwrap().as_str();
+            let value = match Self::parse_value(parts[2].clone()) {
+                Some(Value::String(s)) => s,
+                _ => return Err(format!("Bad value: '{}'", &parts[2])),
+            };
+            let mut ret = Self::new_blank_with_comment(comment.clone());
+            let mut first = parts[0].clone();
+            ret.modifier = Self::parse_command_modifier(&mut first);
+            ret.item = Some(Self::parse_item_id(&Some(&first))?);
+            match caps.get(1).unwrap().as_str() {
+                "L" => {
+                    ret.command = CommandType::SetLabel;
+                    ret.locale_string = Some(LocaleString::new(key, &value));
                 }
-                return Ok(ret);
+                "D" => {
+                    ret.command = CommandType::SetDescription;
+                    ret.locale_string = Some(LocaleString::new(key, &value));
+                }
+                "A" => {
+                    ret.command = CommandType::SetAlias;
+                    ret.locale_string = Some(LocaleString::new(key, &value));
+                }
+                "S" => {
+                    ret.command = CommandType::SetSitelink;
+                    ret.sitelink = Some(SiteLink::new(key, &value, vec![]));
+                }
+                _ => return Err(format!("Bad command: '{}'", &parts[1])),
             }
-            None => {}
+            return Ok(ret);
         }
 
         Self::new_edit_statement(parts, comment)
@@ -263,7 +247,7 @@ impl QuickStatementsParser {
     fn new_create(comment: Option<String>) -> Result<Self, String> {
         let mut ret = Self::new_blank_with_comment(comment);
         ret.command = CommandType::Create;
-        return Ok(ret);
+        Ok(ret)
     }
 
     fn new_merge(
@@ -276,12 +260,12 @@ impl QuickStatementsParser {
         ret.item = Some(Self::parse_item_id(&i1)?);
         ret.target_item = Some(Self::parse_item_id(&i2)?);
         if ret.item.is_none() || ret.target_item.is_none() {
-            return Err(format!("MERGE requires two parameters"));
+            return Err("MERGE requires two parameters".to_string());
         }
         if ret.item == Some(EntityID::Last) || ret.target_item == Some(EntityID::Last) {
-            return Err(format!("MERGE does not allow LAST"));
+            return Err("MERGE does not allow LAST".to_string());
         }
-        return Ok(ret);
+        Ok(ret)
     }
 
     fn new_edit_statement(parts: Vec<String>, comment: Option<String>) -> Result<Self, String> {
@@ -291,7 +275,7 @@ impl QuickStatementsParser {
 
         let mut ret = Self::new_blank_with_comment(comment);
         ret.command = CommandType::EditStatement;
-        let mut first = match parts.get(0) {
+        let mut first = match parts.first() {
             Some(s) => s.trim().to_uppercase(),
             None => return Err(format!("Missing column 1 in {:?}", &parts)),
         };
@@ -312,7 +296,7 @@ impl QuickStatementsParser {
     }
 
     fn parse_edit_statement_property(
-        self: &mut Self,
+        &mut self,
         parts: Vec<String>,
         second: String,
     ) -> Result<(), String> {
@@ -320,9 +304,9 @@ impl QuickStatementsParser {
         self.value = Some(match parts.get(2) {
             Some(value) => match Self::parse_value(value.to_string()) {
                 Some(value) => value,
-                None => return Err(format!("Cannot parse value")),
+                None => return Err("Cannot parse value".to_string()),
             },
-            None => return Err(format!("No value given")),
+            None => return Err("No value given".to_string()),
         });
 
         // References and qualifiers
@@ -334,13 +318,13 @@ impl QuickStatementsParser {
         i.next();
         i.next();
         i.next();
+        /* trunk-ignore(clippy/while_let_loop) */
         loop {
             let (subtype, property) = match i.next() {
                 Some(p) => match RE_REF_QUAL.captures(p) {
                     Some(caps) => {
                         let subtype = caps.get(1).unwrap().as_str().to_string();
-                        let prop_string =
-                            "P".to_string() + &caps.get(2).unwrap().as_str().to_string();
+                        let prop_string = "P".to_string() + caps.get(2).unwrap().as_str();
                         let property = self.parse_property_id(&prop_string)?;
                         (subtype, property)
                     }
@@ -368,10 +352,10 @@ impl QuickStatementsParser {
     }
 
     fn parse_property_id(&self, prop: &String) -> Result<EntityValue, String> {
-        let id = Self::parse_item_id(&Some(&prop))?;
+        let id = Self::parse_item_id(&Some(prop))?;
         let ev = match id {
             EntityID::Id(ev) => ev,
-            EntityID::Last => return Err(format!("LAST is not a valid property")),
+            EntityID::Last => return Err("LAST is not a valid property".to_string()),
         };
         if *ev.entity_type() != EntityType::Property {
             return Err(format!("{} is not a property", &prop));
@@ -385,7 +369,7 @@ impl QuickStatementsParser {
             static ref RE_PRECISION: Regex = Regex::new(r#"^(.+)/(\d+)$"#).unwrap();
         }
 
-        if !RE_TIME.is_match(&value) {
+        if !RE_TIME.is_match(value) {
             return None;
         }
 
@@ -409,7 +393,7 @@ impl QuickStatementsParser {
             None => (v, 9),
         };
 
-        let v = v.replace("T", "-").replace("Z", "").replace(":", "-");
+        let v = v.replace('T', "-").replace('Z', "").replace(':', "-");
         let mut parts = v.split('-');
         let mut year = parts.next()?.to_string();
 
@@ -476,51 +460,42 @@ impl QuickStatementsParser {
         let (value, unit) = match RE_QUANTITY_UNIT.captures(&value) {
             Some(caps) => {
                 let value = caps.get(1)?.as_str().to_string();
-                let unit = "http://www.wikidata.org/entity/Q".to_string() + &caps.get(2)?.as_str();
+                let unit = format!("http://www.wikidata.org/entity/Q{}", caps.get(2)?.as_str());
                 (value, unit)
             }
             None => (value, "1".to_string()),
         };
 
-        match RE_QUANTITY_PLAIN.captures(&value) {
-            Some(caps) => {
-                return Some(Value::Quantity(wikibase::QuantityValue::new(
-                    caps.get(1)?.as_str().parse::<f64>().ok()?,
-                    None,
-                    unit,
-                    None,
-                )))
-            }
-            None => {}
+        if let Some(caps) = RE_QUANTITY_PLAIN.captures(&value) {
+            return Some(Value::Quantity(wikibase::QuantityValue::new(
+                caps.get(1)?.as_str().parse::<f64>().ok()?,
+                None,
+                unit,
+                None,
+            )));
         }
 
-        match RE_QUANTITY_TOLERANCE.captures(&value) {
-            Some(caps) => {
-                let amount = caps.get(1)?.as_str().parse::<f64>().ok()?;
-                let tolerance = caps.get(2)?.as_str().parse::<f64>().ok()?;
-                return Some(Value::Quantity(wikibase::QuantityValue::new(
-                    amount,
-                    Some(amount - tolerance),
-                    unit,
-                    Some(amount + tolerance),
-                )));
-            }
-            None => {}
+        if let Some(caps) = RE_QUANTITY_TOLERANCE.captures(&value) {
+            let amount = caps.get(1)?.as_str().parse::<f64>().ok()?;
+            let tolerance = caps.get(2)?.as_str().parse::<f64>().ok()?;
+            return Some(Value::Quantity(wikibase::QuantityValue::new(
+                amount,
+                Some(amount - tolerance),
+                unit,
+                Some(amount + tolerance),
+            )));
         }
 
-        match RE_QUANTITY_RANGE.captures(&value) {
-            Some(caps) => {
-                let amount = caps.get(1)?.as_str().parse::<f64>().ok()?;
-                let lower = caps.get(2)?.as_str().parse::<f64>().ok()?;
-                let upper = caps.get(3)?.as_str().parse::<f64>().ok()?;
-                return Some(Value::Quantity(wikibase::QuantityValue::new(
-                    amount,
-                    Some(lower),
-                    unit,
-                    Some(upper),
-                )));
-            }
-            None => {}
+        if let Some(caps) = RE_QUANTITY_RANGE.captures(&value) {
+            let amount = caps.get(1)?.as_str().parse::<f64>().ok()?;
+            let lower = caps.get(2)?.as_str().parse::<f64>().ok()?;
+            let upper = caps.get(3)?.as_str().parse::<f64>().ok()?;
+            return Some(Value::Quantity(wikibase::QuantityValue::new(
+                amount,
+                Some(lower),
+                unit,
+                Some(upper),
+            )));
         }
 
         None
@@ -536,48 +511,38 @@ impl QuickStatementsParser {
 
         let value = value.trim();
 
-        match RE_COORDINATE.captures(&value) {
-            Some(caps) => {
-                return Some(Value::GlobeCoordinate(Coordinate::new(
-                    None,
-                    GLOBE_EARTH.to_string(),
-                    caps.get(1)?.as_str().parse::<f64>().ok()?,
-                    caps.get(2)?.as_str().parse::<f64>().ok()?,
-                    None,
-                )))
-            }
-            None => {}
+        if let Some(caps) = RE_COORDINATE.captures(value) {
+            return Some(Value::GlobeCoordinate(Coordinate::new(
+                None,
+                GLOBE_EARTH.to_string(),
+                caps.get(1)?.as_str().parse::<f64>().ok()?,
+                caps.get(2)?.as_str().parse::<f64>().ok()?,
+                None,
+            )));
         }
 
-        match Self::parse_quantity(&value) {
-            Some(t) => return Some(t),
-            None => {}
+        if let Some(t) = Self::parse_quantity(value) {
+            return Some(t);
         }
 
-        match Self::parse_time(&value) {
-            Some(t) => return Some(t),
-            None => {}
+        if let Some(t) = Self::parse_time(value) {
+            return Some(t);
         }
 
-        match RE_MONOLINGUAL_STRING.captures(&value) {
-            Some(caps) => {
-                // Yes, order 2 then 1 is correct!
-                return Some(Value::MonoLingualText(MonoLingualText::new(
-                    caps.get(2)?.as_str(),
-                    caps.get(1)?.as_str(),
-                )));
-            }
-            None => {}
+        if let Some(caps) = RE_MONOLINGUAL_STRING.captures(value) {
+            // Yes, order 2 then 1 is correct!
+            return Some(Value::MonoLingualText(MonoLingualText::new(
+                caps.get(2)?.as_str(),
+                caps.get(1)?.as_str(),
+            )));
         }
 
-        match RE_STRING.captures(&value) {
-            Some(caps) => return Some(Value::String(caps.get(1)?.as_str().to_string())),
-            None => {}
+        if let Some(caps) = RE_STRING.captures(value) {
+            return Some(Value::String(caps.get(1)?.as_str().to_string()));
         }
 
-        match Self::parse_item_id(&Some(&value.to_string())) {
-            Ok(id) => return Some(Value::Entity(id)),
-            Err(_) => {}
+        if let Ok(id) = Self::parse_item_id(&Some(&value.to_string())) {
+            return Some(Value::Entity(id));
         }
 
         None
@@ -587,7 +552,7 @@ impl QuickStatementsParser {
         if first.is_empty() {
             return None;
         }
-        if first.starts_with("-") {
+        if first.starts_with('-') {
             let (_, remain) = first.split_at(1);
             *first = remain.trim().to_string();
             return Some(CommandModifier::Remove);
@@ -622,12 +587,8 @@ impl QuickStatementsParser {
     }
 
     /// Returns the Commons MediaInfo ID for a given file
-    async fn get_entity_id_from_title_commons(title: &String, api: &Api) -> Option<String> {
-        let params = api.params_into(&vec![
-            ("action", "query"),
-            ("prop", "info"),
-            ("titles", title.as_str()),
-        ]);
+    async fn get_entity_id_from_title_commons(title: &str, api: &Api) -> Option<String> {
+        let params = api.params_into(&[("action", "query"), ("prop", "info"), ("titles", title)]);
         match api.get_query_api_json(&params).await {
             Ok(j) => match j["query"]["pages"].as_object() {
                 Some(o) => o
@@ -641,11 +602,11 @@ impl QuickStatementsParser {
     }
 
     /// Returns the Wikidata item ID for the given title
-    async fn get_entity_id_from_title_wikidata(title: &String, api: &Api) -> Option<String> {
-        let params = api.params_into(&vec![
+    async fn get_entity_id_from_title_wikidata(title: &str, api: &Api) -> Option<String> {
+        let params = api.params_into(&[
             ("action", "query"),
             ("prop", "pageprops"),
-            ("titles", title.as_str()),
+            ("titles", title),
         ]);
         match api.get_query_api_json(&params).await {
             Ok(j) => match j["query"]["pages"].as_object() {
@@ -663,7 +624,7 @@ impl QuickStatementsParser {
     }
 
     /// Returns a Wikidata or Commons Entity ID for a given title
-    async fn get_entity_id_from_title(title: &String, api: Option<&Api>) -> Option<String> {
+    async fn get_entity_id_from_title(title: &str, api: Option<&Api>) -> Option<String> {
         match api {
             Some(api) => {
                 let mw_title = wikibase::mediawiki::title::Title::new_from_full(title, api);
@@ -772,25 +733,22 @@ impl QuickStatementsParser {
                 }
                 match &self.item {
                     Some(id) => base["item"] = json!(id.to_string()),
-                    None => return Err(format!("No item set")),
+                    None => return Err("No item set".to_string()),
                 }
                 match &self.property {
                     Some(ev) => base["property"] = json!(ev.id().to_string()), // Assuming property
-                    None => return Err(format!("No property set")),
+                    None => return Err("No property set".to_string()),
                 }
                 match &self.value {
                     Some(value) => base["datavalue"] = value.to_json()?,
-                    None => return Err(format!("No value set")),
+                    None => return Err("No value set".to_string()),
                 }
 
                 // Short-circuit statement removal
                 // TODO reference/qualifier removal?
-                match &self.modifier {
-                    Some(CommandModifier::Remove) => {
-                        ret.push(base.clone());
-                        return Ok(ret);
-                    }
-                    _ => {}
+                if let Some(CommandModifier::Remove) = &self.modifier {
+                    ret.push(base.clone());
+                    return Ok(ret);
                 }
 
                 // Adding only from here on
@@ -842,39 +800,40 @@ impl QuickStatementsParser {
                 (Some(EntityID::Id(item2)), Some(EntityID::Id(item1))) => Ok(vec![
                     json!({"action":"merge","item1":item1.id(),"item2":item2.id(),"type":item1.entity_type()}),
                 ]),
-                _ => Err(format!(
+                _ => Err(
                     "QuickStatementsParser::to_json:Merge: either item or target_item in None"
-                )),
+                        .to_string(),
+                ),
             },
             CommandType::SetLabel => match (self.item.as_ref(), self.locale_string.as_ref()) {
                 (Some(EntityID::Id(item)), Some(ls)) => Ok(vec![
                     json!({"action":self.get_action(),"item":item.id(),"language":ls.language(),"value":ls.value(),"what":"label"}),
                 ]),
-                _ => Err(format!("Label issue")),
+                _ => Err("Label issue".to_string()),
             },
             CommandType::SetDescription => {
                 match (self.item.as_ref(), self.locale_string.as_ref()) {
                     (Some(EntityID::Id(item)), Some(ls)) => Ok(vec![
                         json!({"action":self.get_action(),"item":item.id(),"language":ls.language(),"value":ls.value(),"what":"description"}),
                     ]),
-                    _ => Err(format!("Description issue")),
+                    _ => Err("Description issue".to_string()),
                 }
             }
             CommandType::SetAlias => match (self.item.as_ref(), self.locale_string.as_ref()) {
                 (Some(EntityID::Id(item)), Some(ls)) => Ok(vec![
                     json!({"action":self.get_action(),"item":item.id(),"language":ls.language(),"value":ls.value(),"what":"alias"}),
                 ]),
-                _ => Err(format!("Alias issue")),
+                _ => Err("Alias issue".to_string()),
             },
             CommandType::SetSitelink => match (self.item.as_ref(), self.sitelink.as_ref()) {
                 (Some(EntityID::Id(item)), Some(sl)) => Ok(vec![
                     json!({"action":self.get_action(),"item":item.id(),"site":sl.site(),"value":sl.title(),"what":"sitelink"}),
                 ]),
-                _ => Err(format!("Sitelink issue")),
+                _ => Err("Sitelink issue".to_string()),
             },
-            CommandType::Unknown => Err(format!(
-                "QuickStatementsParser::to_json:Unknown command is not supported"
-            )),
+            CommandType::Unknown => {
+                Err("QuickStatementsParser::to_json:Unknown command is not supported".to_string())
+            }
         }
     }
 

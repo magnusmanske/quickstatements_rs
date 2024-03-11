@@ -85,7 +85,7 @@ impl QuickStatements {
             .map_and_drop(from_row::<String>)
             .await
             .ok()?
-            .get(0)
+            .first()
             .cloned()
     }
 
@@ -160,7 +160,7 @@ impl QuickStatements {
             .map_and_drop(from_row::<String>)
             .await
             .ok()?
-            .get(0)
+            .first()
             .cloned()
     }
 
@@ -210,7 +210,7 @@ impl QuickStatements {
             .ok()?;
         results
             .iter()
-            .filter(|(id, _)| !self.running_batch_ids.read().unwrap().contains(&id))
+            .filter(|(id, _)| !self.running_batch_ids.read().unwrap().contains(id))
             .cloned()
             .next()
 
@@ -244,15 +244,13 @@ impl QuickStatements {
             .ok()
     }
 
-    pub fn set_batch_running(&self, batch_id: i64, user_id: i64) {
+    pub async fn set_batch_running(&self, batch_id: i64, user_id: i64) {
         println!(
             "set_batch_running: Starting batch #{} for user {}",
             batch_id, user_id
         );
 
-        match self.reinitialize_open_batches() {
-            _ => {}
-        }
+        let _ = self.reinitialize_open_batches().await;
 
         // Increase user batch counter
         self.running_batch_ids.write().unwrap().insert(batch_id);
@@ -360,12 +358,12 @@ impl QuickStatements {
             .await
             .ok()?
             .iter()
-            .map(|r| QuickStatementsCommand::from_row(r))
+            .map(QuickStatementsCommand::from_row)
             .next()
     }
 
     pub async fn set_command_status(
-        self: &Self,
+        &self,
         command: &mut QuickStatementsCommand,
         new_status: &str,
         new_message: Option<String>,
@@ -396,7 +394,7 @@ impl QuickStatements {
     }
 
     pub async fn set_last_item_for_batch(
-        self: &Self,
+        &self,
         batch_id: i64,
         last_item: &Option<String>,
     ) -> Option<()> {
@@ -417,7 +415,7 @@ impl QuickStatements {
     }
 
     async fn get_oauth_for_batch(
-        self: &Self,
+        &self,
         batch_id: i64,
     ) -> Option<wikibase::mediawiki::api::OAuthParams> {
         let auth_db = "s53220__quickstatements_auth";
@@ -437,7 +435,7 @@ impl QuickStatements {
             .map_and_drop(from_row::<String>)
             .await
             .ok()?
-            .get(0)
+            .first()
             .cloned()?;
         let j = serde_json::from_str(&first).ok()?;
         Some(wikibase::mediawiki::api::OAuthParams::new_from_json(&j))

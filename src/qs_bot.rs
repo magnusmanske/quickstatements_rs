@@ -26,8 +26,8 @@ pub struct QuickStatementsBot {
 impl QuickStatementsBot {
     pub fn new(config: Arc<QuickStatements>, batch_id: Option<i64>, user_id: i64) -> Self {
         Self {
-            batch_id: batch_id,
-            user_id: user_id,
+            batch_id,
+            user_id,
             config: config.clone(),
             mw_api: None,
             entities: wikibase::entity_container::EntityContainer::new(),
@@ -62,10 +62,10 @@ impl QuickStatementsBot {
                     None => return Err("No site/API info available".to_string()),
                 }
 
-                config.set_batch_running(batch_id, self.user_id);
+                config.set_batch_running(batch_id, self.user_id).await;
             }
             None => {
-                return Err(format!("No batch ID set"));
+                return Err("No batch ID set".to_string());
             }
         }
 
@@ -93,17 +93,14 @@ impl QuickStatementsBot {
 
     pub async fn run(&mut self) -> Result<bool, String> {
         //Check if batch is still valid (STOP etc)
-        self.log(format!("[run] Getting next command"));
+        self.log("[run] Getting next command".to_string());
         let command = match self.get_next_command().await {
             Ok(c) => c,
             Err(_) => {
-                match self.batch_id {
-                    Some(batch_id) => {
-                        self.config
-                            .deactivate_batch_run(batch_id, self.user_id)
-                            .ok_or("Can't set batch as stopped".to_string())?;
-                    }
-                    None => {}
+                if let Some(batch_id) = self.batch_id {
+                    self.config
+                        .deactivate_batch_run(batch_id, self.user_id)
+                        .ok_or("Can't set batch as stopped".to_string())?;
                 }
                 return Ok(false);
             }
@@ -111,24 +108,21 @@ impl QuickStatementsBot {
 
         match command {
             Some(mut command) => {
-                self.log(format!("[run] Executing command"));
+                self.log("[run] Executing command".to_string());
                 match self.execute_command(&mut command).await {
                     Ok(_) => {}
                     Err(_message) => {} //self.set_command_status("ERROR", Some(&message), &mut command),
                 }
-                self.log(format!("[run] Command executed"));
+                self.log("[run] Command executed".to_string());
                 Ok(true)
             }
             None => {
-                self.log(format!("[run] No more commands"));
-                match self.batch_id {
-                    Some(batch_id) => {
-                        self.config
-                            .set_batch_finished(batch_id, self.user_id)
-                            .await
-                            .ok_or("Can't set batch as finished".to_string())?;
-                    }
-                    None => {}
+                self.log("[run] No more commands".to_string());
+                if let Some(batch_id) = self.batch_id {
+                    self.config
+                        .set_batch_finished(batch_id, self.user_id)
+                        .await
+                        .ok_or("Can't set batch as finished".to_string())?;
                 }
                 Ok(false)
             }
@@ -142,12 +136,12 @@ impl QuickStatementsBot {
                 let result = self.config.get_next_command(batch_id).await;
                 Ok(result)
             }
-            None => Err(format!("No match ID set")),
+            None => Err("No match ID set".to_string()),
         }
     }
 
     async fn prepare_to_execute(
-        self: &mut Self,
+        &mut self,
         command: &QuickStatementsCommand,
     ) -> Result<Option<wikibase::Entity>, String> {
         let command_action = command.get_action()?;
@@ -159,22 +153,16 @@ impl QuickStatementsBot {
             self.current_entity_id = command.get_entity_id_option(&command.json["item"]);
 
             // Special case
-            match command.json["what"].as_str() {
-                Some(what) => {
-                    if what == "statement"
-                        && command.json["item"].as_str().is_none()
-                        && command.json["id"].as_str().is_some()
-                    {
-                        match command.json["id"].as_str() {
-                            Some(q) => {
-                                let q = QuickStatementsCommand::fix_entity_id(q.to_string());
-                                self.current_entity_id = Some(q.clone());
-                            }
-                            None => {}
-                        }
+            if let Some(what) = command.json["what"].as_str() {
+                if what == "statement"
+                    && command.json["item"].as_str().is_none()
+                    && command.json["id"].as_str().is_some()
+                {
+                    if let Some(q) = command.json["id"].as_str() {
+                        let q = QuickStatementsCommand::fix_entity_id(q.to_string());
+                        self.current_entity_id = Some(q.clone());
                     }
                 }
-                None => {}
             }
 
             if self.current_entity_id == Some("LAST".to_string()) {
@@ -193,9 +181,10 @@ impl QuickStatementsBot {
     }
 
     async fn load_entity(&mut self, entity_id: String) -> Result<wikibase::Entity, String> {
-        let mw_api = self.mw_api.to_owned().ok_or(format!(
-            "QuickStatementsBot::get_item_from_command  has no mw_api"
-        ))?;
+        let mw_api = self
+            .mw_api
+            .to_owned()
+            .ok_or("QuickStatementsBot::get_item_from_command  has no mw_api".to_string())?;
 
         let revision = self
             .entity_revision
@@ -228,9 +217,10 @@ impl QuickStatementsBot {
             );
         }
 
-        let mw_api = self.mw_api.to_owned().ok_or(format!(
-            "QuickStatementsBot::try_create_fake_entity has no mw_api"
-        ))?;
+        let mw_api = self
+            .mw_api
+            .to_owned()
+            .ok_or("QuickStatementsBot::try_create_fake_entity has no mw_api".to_string())?;
 
         let the_error = Err(format!(
             "Error while loading into entities: {} rev. {:?} '{}'",
@@ -262,20 +252,20 @@ impl QuickStatementsBot {
     }
 
     pub async fn execute_command(
-        self: &mut Self,
+        &mut self,
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
-        self.log(format!("[execute_command] Init"));
+        self.log("[execute_command] Init".to_string());
         self.set_command_status("RUN", None, command).await?;
         self.current_property_id = None;
         self.current_entity_id = None;
 
-        self.log(format!("[execute_command] Prep"));
+        self.log("[execute_command] Prep".to_string());
         command.insert_last_item_into_sources_and_qualifiers(&self.last_entity_id)?;
         let main_item = self.prepare_to_execute(command).await?;
         let action = command.action_to_execute(&main_item);
 
-        self.log(format!("[execute_command] Go"));
+        self.log("[execute_command] Go".to_string());
         match action {
             Ok(action) => match self.run_action(action, command).await {
                 Ok(_) => self.set_command_status("DONE", None, command).await,
@@ -291,44 +281,36 @@ impl QuickStatementsBot {
         }
     }
 
-    fn reset_entities(self: &mut Self, res: &Value, command: &QuickStatementsCommand) {
-        self.log(format!("[reset_entities] Init"));
-        match command.json["item"].as_str() {
-            Some(q) => {
-                if q.to_uppercase() != "LAST" {
-                    self.log(format!("[reset_entities] Start"));
-                    self.last_entity_id = Some(q.to_string());
-                    self.entities.remove_entity(q);
-                    match res["pageinfo"]["lastrevid"].as_u64() {
-                        Some(revision_id) => {
-                            self.entity_revision.retain(|er| er.0 != q);
-                            self.entity_revision
-                                .push_front((q.to_string(), revision_id as usize));
-                            self.entity_revision.truncate(5); // Keep only the last 5 around to save RAM
-                        }
-                        None => {}
-                    }
-                    self.log(format!("[reset_entities] End"));
-                    return;
+    fn reset_entities(&mut self, res: &Value, command: &QuickStatementsCommand) {
+        self.log("[reset_entities] Init".to_string());
+        if let Some(q) = command.json["item"].as_str() {
+            if q.to_uppercase() != "LAST" {
+                self.log("[reset_entities] Start".to_string());
+                self.last_entity_id = Some(q.to_string());
+                self.entities.remove_entity(q);
+                if let Some(revision_id) = res["pageinfo"]["lastrevid"].as_u64() {
+                    self.entity_revision.retain(|er| er.0 != q);
+                    self.entity_revision
+                        .push_front((q.to_string(), revision_id as usize));
+                    self.entity_revision.truncate(5); // Keep only the last 5 around to save RAM
                 }
+                self.log("[reset_entities] End".to_string());
+                return;
             }
-            None => {}
         }
 
         match &res["entity"] {
             serde_json::Value::Null => {}
-            entity_json => match wikibase::entity_diff::EntityDiff::get_entity_id(&entity_json) {
-                Some(q) => {
+            entity_json => {
+                if let Some(q) = wikibase::entity_diff::EntityDiff::get_entity_id(entity_json) {
                     self.last_entity_id = Some(q.to_owned());
                     self.entities
-                        .set_entity_from_json(&entity_json)
+                        .set_entity_from_json(entity_json)
                         .expect("Setting entity from JSON failed");
                     self.entity_revision.retain(|er| er.0 != q);
-                    return;
                 }
-                None => {}
-            },
-        };
+            }
+        }
     }
 
     fn add_summary(
@@ -341,14 +323,14 @@ impl QuickStatementsBot {
             command.batch_id, command.batch_id
         );
         let new_summary = match &params.get("summary") {
-            Some(s) => s.to_string() + &"; ".to_string() + &summary,
+            Some(s) => s.to_string() + "; " + &summary,
             None => summary,
         };
         params.insert("summary".to_string(), new_summary);
     }
 
     async fn run_action(
-        self: &mut Self,
+        &mut self,
         j: Value,
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
@@ -356,7 +338,7 @@ impl QuickStatementsBot {
             return Ok(());
         }
 
-        self.log(format!("[run_action] Init"));
+        self.log("[run_action] Init".to_string());
 
         //println!("Running action {}", &j);
         let mut params: HashMap<String, String> = HashMap::new();
@@ -375,7 +357,7 @@ impl QuickStatementsBot {
             );
         }
         self.add_summary(&mut params, command);
-        self.log(format!("[run_action] Summary added"));
+        self.log("[run_action] Summary added".to_string());
 
         // TODO baserev?
         let mut mw_api = self.mw_api.to_owned().ok_or(format!(
@@ -385,32 +367,34 @@ impl QuickStatementsBot {
         loop {
             params.insert(
                 "token".to_string(),
-                mw_api
-                    .get_edit_token()
-                    .await
-                    .map_err(|e| format!("QuickStatementsBot::run_action get_edit_token '{}'", e))?,
+                mw_api.get_edit_token().await.map_err(|e| {
+                    format!("QuickStatementsBot::run_action get_edit_token '{}'", e)
+                })?,
             );
 
-            self.log(format!("[run_action] Pre  post_query_api_json_mut"));
+            self.log("[run_action] Pre  post_query_api_json_mut".to_string());
             let res = match mw_api.post_query_api_json_mut(&params).await {
                 Ok(x) => x,
                 Err(e) => return Err(format!("Wiki editing failed: {:?}", e)),
             };
-            self.log(format!("[run_action] Post post_query_api_json_mut"));
+            self.log("[run_action] Post post_query_api_json_mut".to_string());
 
             let res = self.check_run_action_result(res, &params, command)?;
             if !res {
-                return Ok(())
+                return Ok(());
             }
 
-            thread::sleep(time::Duration::from_millis(
-                self.throttled_delay_ms,
-            ));
+            thread::sleep(time::Duration::from_millis(self.throttled_delay_ms));
         }
     }
 
     /// Checks the command result, returns Ok(true) to re-do, Ok(false) if done, Err otherwise
-    fn check_run_action_result(&mut self, res: Value, params: &HashMap<String, String>, command: &mut QuickStatementsCommand) -> Result<bool, String> {
+    fn check_run_action_result(
+        &mut self,
+        res: Value,
+        params: &HashMap<String, String>,
+        command: &mut QuickStatementsCommand,
+    ) -> Result<bool, String> {
         lazy_static! {
             static ref RE_QUAL_OK: Regex =
                 Regex::new("^The statement has already a qualifier with hash")
@@ -430,40 +414,31 @@ impl QuickStatementsBot {
                 }
             }
             None => {
-                match res["error"]["messages"].as_array() {
-                    Some(arr) => {
-                        for a in arr {
-                            match a["name"].as_str() {
-                                Some(s) => {
-                                    if s == "actionthrottledtext" {
-                                        // Throttled, try again
-                                        println!(
-                                            "Batch #{}: Throttled by API, sleeping {}ms",
-                                            self.batch_id.unwrap_or(0),
-                                            self.throttled_delay_ms
-                                        );
-                                        return Ok(true);
-                                    }
-                                }
-                                None => {}
+                if let Some(arr) = res["error"]["messages"].as_array() {
+                    for a in arr {
+                        if let Some(s) = a["name"].as_str() {
+                            if s == "actionthrottledtext" {
+                                // Throttled, try again
+                                println!(
+                                    "Batch #{}: Throttled by API, sleeping {}ms",
+                                    self.batch_id.unwrap_or(0),
+                                    self.throttled_delay_ms
+                                );
+                                return Ok(true);
                             }
                         }
                     }
-                    None => {}
                 }
-                match res["error"]["info"].as_str() {
-                    Some(s) => {
-                        command.json["meta"]["message"] = json!(s);
-                        // That qualifier already exists, return OK
-                        if RE_QUAL_OK.is_match(s) {
-                            return Ok(false);
-                        }
-                        // That reference already exists, return OK
-                        if RE_REF_OK.is_match(s) {
-                            return Ok(false);
-                        }
+                if let Some(s) = res["error"]["info"].as_str() {
+                    command.json["meta"]["message"] = json!(s);
+                    // That qualifier already exists, return OK
+                    if RE_QUAL_OK.is_match(s) {
+                        return Ok(false);
                     }
-                    None => {}
+                    // That reference already exists, return OK
+                    if RE_REF_OK.is_match(s) {
+                        return Ok(false);
+                    }
                 }
                 println!("\nCOMMAND ERROR #{}:\n{:?}\n{}", &command.id, &params, &res);
                 Err("No success flag set in API result".to_string())
@@ -472,7 +447,7 @@ impl QuickStatementsBot {
     }
 
     async fn set_command_status(
-        self: &mut Self,
+        &mut self,
         status: &str,
         message: Option<&str>,
         command: &mut QuickStatementsCommand,

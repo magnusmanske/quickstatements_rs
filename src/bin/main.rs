@@ -9,16 +9,11 @@ use quickstatements::qs_bot::QuickStatementsBot;
 use quickstatements::qs_command::QuickStatementsCommand;
 use quickstatements::qs_config::QuickStatements;
 use quickstatements::qs_parser::QuickStatementsParser;
-use simple_logger;
 use std::io;
 use std::io::prelude::*;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-// use tokio::runtime;
-
-// const THREADS: usize = 1;
-
 
 async fn run_bot(config: Arc<QuickStatements>) {
     //println!("BOT!");
@@ -34,12 +29,10 @@ async fn run_bot(config: Arc<QuickStatements>) {
     }
     println!("Starting batch {} for user {}", &batch_id, &user_id);
     let mut bot = QuickStatementsBot::new(config.clone(), Some(batch_id), user_id);
-    
+
     match bot.start().await {
         Ok(_) => {
-            tokio::spawn(async move {
-                while bot.run().await.unwrap_or(false) {}
-            });
+            tokio::spawn(async move { while bot.run().await.unwrap_or(false) {} });
         }
         Err(error) => {
             println!(
@@ -49,13 +42,12 @@ async fn run_bot(config: Arc<QuickStatements>) {
             // TODO mark this as problematic so it doesn't get run again next time?
         }
     }
-    
 }
 
-async fn command_bot(verbose: bool) {
+async fn command_bot(verbose: bool, config_file: &str) {
     let cpus = num_cpus::get();
     println!("{} CPUs available", cpus);
-    let config = match QuickStatements::new_from_config_json("config_rs.json") {
+    let config = match QuickStatements::new_from_config_json(config_file) {
         Some(mut qs) => {
             qs.set_verbose(verbose);
             Arc::new(qs)
@@ -73,7 +65,7 @@ async fn get_php_commands(
     api: &wikibase::mediawiki::api::Api,
     lines: String,
 ) -> Vec<serde_json::Value> {
-    let params = api.params_into(&vec![
+    let params = api.params_into(&[
         ("action", "import"),
         ("compress", "1"),
         ("format", "v1"),
@@ -102,7 +94,7 @@ async fn get_commands(
 ) -> Vec<QuickStatementsParser> {
     let mut ret: Vec<QuickStatementsParser> = vec![];
     for line in lines {
-        match QuickStatementsParser::new_from_line(&line, Some(&api)).await {
+        match QuickStatementsParser::new_from_line(line, Some(api)).await {
             Ok(c) => {
                 ret.push(c);
             }
@@ -222,7 +214,12 @@ async fn command_run(site: &str) {
 }
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = "Runs QuickStatement bot or command line operations")]
+#[command(
+    author,
+    version,
+    about,
+    long_about = "Runs QuickStatement bot or command line operations"
+)]
 struct Args {
     /// Sets a site for RUN command
     #[arg(short, long, default_value_t=format!("wikidata"))]
@@ -232,8 +229,12 @@ struct Args {
     verbose: bool,
 
     /// Command [bot|parse|validate|run]
-    #[arg(short, long)]
-    command: String
+    #[arg(long)]
+    command: String,
+
+    /// Configuration file (JSON)
+    #[arg(long, default_value_t=format!("config_rs.json"))]
+    config_file: String,
 }
 
 #[tokio::main]
@@ -241,22 +242,12 @@ async fn main() {
     simple_logger::init_with_level(log::Level::Info).unwrap();
     let args = Args::parse();
     match args.command.as_str() {
-        "bot" => command_bot(args.verbose).await,
+        "bot" => command_bot(args.verbose, &args.config_file).await,
         "parse" => command_parse().await,
         "validate" => command_validate().await,
         "run" => command_run(&args.site).await,
         x => panic!("Not a valid command: {}", x),
     }
-
-    // Old manually controlled multi-threading async code
-    // let threaded_rt = runtime::Builder::new_multi_thread()
-    //     .enable_all()
-    //     .worker_threads(THREADS)
-    //     .thread_name("mixnmatch")
-    //     .thread_stack_size(2*THREADS * 1024 * 1024)
-    //     .build().expect("Can't create tokio runtime");
-    // threaded_rt.block_on(async move {
-    // });
 }
 
 /*
