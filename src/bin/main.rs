@@ -79,7 +79,7 @@ fn seppuku(config: Arc<QuickStatements>, last_bot_run: Arc<Mutex<Instant>>) {
             println!("Commiting seppuku");
             std::process::exit(0);
         }
-        tokio::time::sleep(Duration::from_secs(MAX_INACTIVITY_BEFORE_SEPPUKU)).await;
+        tokio::time::sleep(Duration::from_secs(MAX_INACTIVITY_BEFORE_SEPPUKU_SEC)).await;
     });
 }
 
