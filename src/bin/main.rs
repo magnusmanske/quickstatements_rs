@@ -11,9 +11,12 @@ use quickstatements::qs_config::QuickStatements;
 use quickstatements::qs_parser::QuickStatementsParser;
 use std::io;
 use std::io::prelude::*;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const SLEEP_BETWEEN_BOT_RUNS_MS: u64 = 1000;
+const MAX_INACTIVITY_BEFORE_SEPPUKU: u64 = 60;
 
 async fn run_bot(config: Arc<QuickStatements>) {
     //println!("BOT!");
@@ -55,10 +58,29 @@ async fn command_bot(verbose: bool, config_file: &str) {
         None => panic!("Could not create QuickStatements bot from config file"),
     };
 
+    let last_bot_run = Arc::new(Mutex::new(Instant::now()));
+    seppuku(config.clone(), last_bot_run.clone());
+
+    // Run bot
     loop {
         run_bot(config.clone()).await;
-        thread::sleep(Duration::from_millis(1000));
+        *last_bot_run.lock().unwrap() = Instant::now();
+        thread::sleep(Duration::from_millis(SLEEP_BETWEEN_BOT_RUNS_MS));
     }
+}
+
+/// Seppuku if no activity for a while
+fn seppuku(config: Arc<QuickStatements>, last_bot_run: Arc<Mutex<Instant>>) {
+    tokio::spawn(async move {
+        let last = *last_bot_run.lock().unwrap();
+        if last.elapsed().as_secs() > MAX_INACTIVITY_BEFORE_SEPPUKU
+            && config.get_next_batch().await.is_some()
+        {
+            println!("Commiting seppuku");
+            std::process::exit(0);
+        }
+        tokio::time::sleep(Duration::from_secs(MAX_INACTIVITY_BEFORE_SEPPUKU)).await;
+    });
 }
 
 async fn get_php_commands(
