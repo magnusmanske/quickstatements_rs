@@ -16,7 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const SLEEP_BETWEEN_BOT_RUNS_MS: u64 = 1000;
-const MAX_INACTIVITY_BEFORE_SEPPUKU: u64 = 60;
+const MAX_INACTIVITY_BEFORE_SEPPUKU_SEC: u64 = 60;
 
 async fn run_bot(config: Arc<QuickStatements>) {
     //println!("BOT!");
@@ -73,7 +73,7 @@ async fn command_bot(verbose: bool, config_file: &str) {
 fn seppuku(config: Arc<QuickStatements>, last_bot_run: Arc<Mutex<Instant>>) {
     tokio::spawn(async move {
         let last = *last_bot_run.lock().unwrap();
-        if last.elapsed().as_secs() > MAX_INACTIVITY_BEFORE_SEPPUKU
+        if last.elapsed().as_secs() > MAX_INACTIVITY_BEFORE_SEPPUKU_SEC
             && config.get_next_batch().await.is_some()
         {
             println!("Commiting seppuku");
