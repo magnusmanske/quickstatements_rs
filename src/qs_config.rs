@@ -1,7 +1,7 @@
 use crate::qs_command::QuickStatementsCommand;
+use anyhow::Result;
 use chrono::prelude::Utc;
 use config::*;
-use anyhow::Result;
 use mysql_async as my;
 use mysql_async::from_row;
 use mysql_async::prelude::*;
