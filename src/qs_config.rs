@@ -1,8 +1,7 @@
 use crate::qs_command::QuickStatementsCommand;
 use chrono::prelude::Utc;
 use config::*;
-//use my::prelude::*;
-//use mysql as my;
+use anyhow::Result;
 use mysql_async as my;
 use mysql_async::from_row;
 use mysql_async::prelude::*;
@@ -104,6 +103,13 @@ impl QuickStatements {
         conn.exec_drop(r#"UPDATE `batch` SET `status`="RUN",`message`="",`ts_last_change`=:ts WHERE id=:batch_id AND `status`!="TEST""#, params!{ts,batch_id}).await.ok()?;
         let ts = self.timestamp();
         conn.exec_drop(r#"UPDATE `command` SET `status`="INIT",`message`="",`ts_change`=:ts WHERE `status`="RUN" AND `batch_id`=:batch_id"#, params!{ts,batch_id}).await.ok()
+    }
+
+    pub async fn reset_all_running_batches(&self) -> Result<()> {
+        let mut conn = self.pool.get_conn().await?;
+        let ts = self.timestamp();
+        conn.exec_drop(r#"UPDATE `batch` SET `status`="INIT",`message`="",`ts_last_change`=:ts WHERE `status`="RUN""#, params!{ts}).await?;
+        Ok(())
     }
 
     pub async fn get_api_url(&self, batch_id: i64) -> Option<&str> {

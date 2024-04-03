@@ -58,6 +58,11 @@ async fn command_bot(verbose: bool, config_file: &str) {
         None => panic!("Could not create QuickStatements bot from config file"),
     };
 
+    config
+        .reset_all_running_batches()
+        .await
+        .expect("Could not reset running batches");
+
     let last_bot_run = Arc::new(Mutex::new(Instant::now()));
     seppuku(config.clone(), last_bot_run.clone());
 
