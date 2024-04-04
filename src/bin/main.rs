@@ -77,14 +77,16 @@ async fn command_bot(verbose: bool, config_file: &str) {
 /// Seppuku if no activity for a while
 fn seppuku(config: Arc<QuickStatements>, last_bot_run: Arc<Mutex<Instant>>) {
     tokio::spawn(async move {
-        let last = *last_bot_run.lock().unwrap();
-        if last.elapsed().as_secs() > MAX_INACTIVITY_BEFORE_SEPPUKU_SEC
-            && config.get_next_batch().await.is_some()
-        {
-            println!("Commiting seppuku");
-            std::process::exit(0);
+        loop {
+            let last = *last_bot_run.lock().unwrap();
+            if last.elapsed().as_secs() > MAX_INACTIVITY_BEFORE_SEPPUKU_SEC
+                && config.get_next_batch().await.is_some()
+            {
+                println!("Commiting seppuku");
+                std::process::exit(0);
+            }
+            tokio::time::sleep(Duration::from_secs(MAX_INACTIVITY_BEFORE_SEPPUKU_SEC)).await;
         }
-        tokio::time::sleep(Duration::from_secs(MAX_INACTIVITY_BEFORE_SEPPUKU_SEC)).await;
     });
 }
 
