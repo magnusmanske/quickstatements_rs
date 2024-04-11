@@ -127,13 +127,6 @@ impl QuickStatements {
         if !params["mysql"].is_object() {
             panic!("QuickStatementsConfig::create_mysql_pool: No mysql info in params");
         }
-        // let builder = my::OptsBuilder::new()
-        //     .ip_or_hostname(params["mysql"]["host"].as_str())
-        //     .db_name(params["mysql"]["schema"].as_str())
-        //     .user(params["mysql"]["user"].as_str())
-        //     .pass(params["mysql"]["pass"].as_str())
-        //     .tcp_port(port);
-
         let port = params["mysql"]["port"].as_u64().unwrap_or(3306) as u16;
         let host = params["mysql"]["host"].as_str().expect("No host");
         let schema = params["mysql"]["schema"].as_str().expect("No schema");
@@ -146,12 +139,7 @@ impl QuickStatements {
             .pass(Some(pass))
             .tcp_port(port);
 
-        // Min 2, max 7 connections
         Ok(mysql_async::Pool::new(opts))
-        // match my::Pool::new_manual(2, 7, builder) {
-        //     Ok(pool) => Ok(pool),
-        //     Err(e) => Err(format!("{:?}", e)),
-        // }
     }
 
     pub async fn get_last_item_from_batch(&self, batch_id: i64) -> Option<String> {
@@ -219,24 +207,6 @@ impl QuickStatements {
             .filter(|(id, _)| !self.running_batch_ids.read().unwrap().contains(id))
             .cloned()
             .next()
-
-        // let mut conn = self.pool.get_conn().ok()?;
-        // for row in conn.as_mut().query_iter(sql).ok()?.iter()? {
-        //     let row = row.ok()?;
-        //     let id: i64 = match row.get("id") {
-        //         Some(id) => id,
-        //         None => continue,
-        //     };
-        //     if self.running_batch_ids.read().unwrap().contains(&id) {
-        //         continue;
-        //     }
-        //     let user: i64 = match row.get("user") {
-        //         Some(id) => id,
-        //         None => continue,
-        //     };
-        //     return Some((id, user));
-        // }
-        // None
     }
 
     pub async fn reinitialize_open_batches(&self) -> Option<()> {
@@ -314,22 +284,6 @@ impl QuickStatements {
                 batch_id
             )),
         }
-
-        // let mut conn = match self.pool.get_conn() {
-        //     Ok(conn) => conn,
-        //     Err(e) => return Err(format!("Error: {}", e)),
-        // };
-        // let result_iter = match conn.as_mut().exec_iter(sql, ()) {
-        //     Ok(ri) => ri,
-        //     Err(e) => return Err(format!("Error: {}", e)),
-        // };
-        // if result_iter.affected_rows() > 0 {
-        //     return Err(format!(
-        //         "QuickStatementsConfig::check_batch_not_stopped: batch #{} is not RUN or INIT",
-        //         batch_id
-        //     ));
-        // }
-        // Ok(())
     }
 
     async fn set_batch_status(
