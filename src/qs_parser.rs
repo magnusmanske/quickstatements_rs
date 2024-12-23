@@ -74,7 +74,7 @@ impl Value {
                 }
                 Some(ret.join("").to_string())
             }
-            Self::String(v) => Some("\"".to_string() + &v + "\""),
+            Self::String(v) => Some("\"".to_string() + v + "\""),
             Self::Time(v) => Some(v.time().to_string() + "/" + &v.precision().to_string()),
         }
     }
@@ -727,9 +727,8 @@ impl QuickStatementsParser {
             CommandType::EditStatement => {
                 let mut ret = vec![];
                 let mut base = json!({"action":self.get_action(),"what":"statement"});
-                match &self.comment {
-                    Some(comment) => base["summary"] = json!(comment),
-                    None => {}
+                if let Some(comment) = &self.comment {
+                    base["summary"] = json!(comment)
                 }
                 match &self.item {
                     Some(id) => base["item"] = json!(id.to_string()),
@@ -788,11 +787,8 @@ impl QuickStatementsParser {
             }
             CommandType::Create => {
                 let mut ret = json!({"action":"create","type":"item"});
-                match &self.create_data {
-                    Some(data) => {
-                        ret["data"] = data.to_owned();
-                    }
-                    None => {}
+                if let Some(data) = &self.create_data {
+                    ret["data"] = data.to_owned();
                 }
                 Ok(vec![ret])
             }
@@ -1010,7 +1006,7 @@ mod tests {
     fn make_time(time: &str, precision: u64) -> Option<Value> {
         let time = match PHP_COMPATIBILITY {
             true => time.to_string(),
-            false => time.split('T').nth(0).unwrap().to_string() + "00:00:00Z",
+            false => time.split('T').next().unwrap().to_string() + "00:00:00Z",
         };
         Some(Value::Time(TimeValue::new(
             0,

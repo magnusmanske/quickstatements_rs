@@ -68,16 +68,13 @@ impl QuickStatementsCommand {
         };
 
         // Check if this same sitelink is already set
-        match item.sitelinks() {
-            Some(sitelinks) => {
-                let title_underscores = title.replace(' ', "_");
-                for sl in sitelinks {
-                    if sl.site() == site && sl.title().replace(' ', "_") == title_underscores {
-                        return self.already_done();
-                    }
+        if let Some(sitelinks) = item.sitelinks() {
+            let title_underscores = title.replace(' ', "_");
+            for sl in sitelinks {
+                if sl.site() == site && sl.title().replace(' ', "_") == title_underscores {
+                    return self.already_done();
                 }
             }
-            None => {}
         }
 
         Ok(json!({
@@ -424,6 +421,7 @@ impl QuickStatementsCommand {
                 let t2 = RE_TIME.replace_all(v2["time"].as_str()?, "$a$b");
                 Some(v.calendarmodel() == v2["calendarmodel"].as_str()? && t1 == t2)
             }
+            wikibase::Value::EntitySchema(es) => Some(es.id() == v2["id"].as_str()?),
         }
     }
 
