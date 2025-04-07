@@ -251,10 +251,48 @@ impl QuickStatementsBot {
         }
     }
 
+    async fn check_if_user_is_blocked(
+        &self,
+        command: &mut QuickStatementsCommand,
+    ) -> Result<bool, String> {
+        // Only check randomly every 20 commands to keep API load down
+        if command.id % 20 != 0 {
+            return Ok(false);
+        }
+
+        // Get user name
+        let user_name = self
+            .config
+            .get_user_name(self.user_id)
+            .await
+            .ok_or("User not found".to_string())?;
+
+        // Get MediaWiki API
+        let api_url = self
+            .config
+            .get_api_url(self.batch_id.unwrap_or_default())
+            .await
+            .ok_or_else(|| "API URL not found".to_string())?;
+        let mut mw_api = wikibase::mediawiki::api::Api::new(api_url)
+            .await
+            .map_err(|e| format!("{:?}", e))?;
+
+        // Check if user has a blockid
+        QuickStatements::is_user_blocked(&mut mw_api, &user_name).await
+    }
+
     pub async fn execute_command(
         &mut self,
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
+        if Ok(true) == self.check_if_user_is_blocked(command).await {
+            let _ = self.set_command_status("BLOCKED", None, command).await;
+            let _ = self
+                .config
+                .set_batch_status("BLOCKED", "", self.batch_id.unwrap_or(0), self.user_id)
+                .await;
+            return Err("User is blocked".to_string());
+        }
         self.log("[execute_command] Init".to_string());
         self.set_command_status("RUN", None, command).await?;
         self.current_property_id = None;

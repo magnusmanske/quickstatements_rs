@@ -9,6 +9,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::sync::{Arc, RwLock};
+use wikibase::mediawiki::Api;
 
 #[derive(Debug, Clone)]
 pub struct QuickStatements {
@@ -121,6 +122,24 @@ impl QuickStatements {
             },
         };
         self.get_api_for_site(&site)
+    }
+
+    pub async fn is_user_blocked(mw_api: &mut Api, user_name: &str) -> Result<bool, String> {
+        let params: HashMap<String, String> = [
+            ("action", "query"),
+            ("list", "users"),
+            ("ususers", user_name),
+            ("usprop", "blockinfo"),
+            ("format", "json"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let res = match mw_api.post_query_api_json_mut(&params).await {
+            Ok(x) => x,
+            Err(e) => return Err(format!("Wiki query failed: {:?}", e)),
+        };
+        Ok(res["query"]["users"][0]["blockid"].is_number())
     }
 
     fn create_mysql_pool(params: &Value) -> Result<my::Pool, String> {
@@ -286,7 +305,7 @@ impl QuickStatements {
         }
     }
 
-    async fn set_batch_status(
+    pub async fn set_batch_status(
         &self,
         status: &str,
         message: &str,
@@ -374,6 +393,29 @@ impl QuickStatements {
             .ok()
     }
 
+    pub async fn get_user_name(&self, user_id: i64) -> Option<String> {
+        let auth_db = "s53220__quickstatements_auth";
+        let sql = format!(
+            r#"SELECT name FROM {}.user WHERE user_id=:user_id"#,
+            auth_db
+        );
+
+        let first = self
+            .pool
+            .get_conn()
+            .await
+            .ok()?
+            .exec_iter(sql, params! {user_id})
+            .await
+            .ok()?
+            .map_and_drop(from_row::<String>)
+            .await
+            .ok()?
+            .first()
+            .cloned()?;
+        Some(first)
+    }
+
     async fn get_oauth_for_batch(
         &self,
         batch_id: i64,
@@ -438,5 +480,22 @@ impl QuickStatements {
                 }
             }
         }
+    }
+}
+
+// is_user_blocked
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_is_user_blocked() {
+        let mut mw_api = Api::new("https://www.wikidata.org/w/api.php")
+            .await
+            .unwrap();
+        let result1 = QuickStatements::is_user_blocked(&mut mw_api, "Magnus Manske").await;
+        let result2 = QuickStatements::is_user_blocked(&mut mw_api, "Yves Schneider").await;
+        assert_eq!(result1, Ok(false));
+        assert_eq!(result2, Ok(true));
     }
 }

@@ -318,7 +318,7 @@ impl QuickStatementsParser {
         i.next();
         i.next();
         i.next();
-        /* trunk-ignore(clippy/while_let_loop) */
+        #[allow(clippy::while_let_loop)]
         loop {
             let (subtype, property) = match i.next() {
                 Some(p) => match RE_REF_QUAL.captures(p) {
@@ -646,17 +646,15 @@ impl QuickStatementsParser {
                 .expect("QuickStatementsParser::parse_comment:RE_COMMENT does not compile");
         }
         match RE_COMMENT.captures(&line.to_string()) {
-            Some(caps) => {
-                return (
-                    String::from(caps.get(1).unwrap().as_str()) + caps.get(3).unwrap().as_str(),
-                    Some(caps.get(2).unwrap().as_str().to_string()),
-                );
-            }
+            Some(caps) => (
+                String::from(caps.get(1).unwrap().as_str()) + caps.get(3).unwrap().as_str(),
+                Some(caps.get(2).unwrap().as_str().to_string()),
+            ),
             None => (line.to_string(), None),
         }
     }
 
-    fn quote(s: &String) -> String {
+    fn quote(s: &str) -> String {
         "\"".to_string() + s + "\""
     }
 
@@ -690,17 +688,17 @@ impl QuickStatementsParser {
             CommandType::SetLabel => vec![
                 self.item.clone()?.to_string(),
                 "L".to_string() + self.locale_string.clone()?.language(),
-                Self::quote(&self.locale_string.clone()?.value().to_string()),
+                Self::quote(self.locale_string.clone()?.value()),
             ],
             CommandType::SetDescription => vec![
                 self.item.clone()?.to_string(),
                 "D".to_string() + self.locale_string.clone()?.language(),
-                Self::quote(&self.locale_string.clone()?.value().to_string()),
+                Self::quote(self.locale_string.clone()?.value()),
             ],
             CommandType::SetAlias => vec![
                 self.item.clone()?.to_string(),
                 "A".to_string() + self.locale_string.clone()?.language(),
-                Self::quote(&self.locale_string.clone()?.value().to_string()),
+                Self::quote(self.locale_string.clone()?.value()),
             ],
             CommandType::SetSitelink => vec![
                 self.item.clone()?.to_string(),

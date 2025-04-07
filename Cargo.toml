@@ -23,6 +23,7 @@ tokio = { version = "^1", features = ["full", "rt-multi-thread"] }
 futures = "*"
 async-recursion = "^1"
 anyhow = "*"
+rand = "*"
 
 [profile.release]
 lto = "fat"
