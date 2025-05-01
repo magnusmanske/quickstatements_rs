@@ -483,7 +483,6 @@ impl QuickStatements {
     }
 }
 
-// is_user_blocked
 #[cfg(test)]
 mod tests {
     use super::*;
