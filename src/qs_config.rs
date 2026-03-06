@@ -59,17 +59,11 @@ impl QuickStatements {
     }
 
     pub fn edit_delay_ms(&self) -> Option<u64> {
-        match self.params["edit_delay_ms"].as_u64() {
-            Some(x) => Some(x),
-            None => Some(1000), // default: 1000ms=1sec
-        }
+        Some(self.params["edit_delay_ms"].as_u64().unwrap_or(1000))
     }
 
     pub fn maxlag_s(&self) -> Option<u64> {
-        match self.params["set_maxlag"].as_u64() {
-            Some(x) => Some(x),
-            None => Some(5), // default: 5sec
-        }
+        Some(self.params["set_maxlag"].as_u64().unwrap_or(5))
     }
 
     pub async fn get_site_from_batch(&self, batch_id: i64) -> Option<String> {
