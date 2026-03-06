@@ -216,9 +216,8 @@ impl QuickStatements {
             .ok()?;
         results
             .iter()
-            .filter(|(id, _)| !self.running_batch_ids.read().unwrap().contains(id))
-            .cloned()
-            .next()
+            .find(|(id, _)| !self.running_batch_ids.read().unwrap().contains(id))
+            .copied()
     }
 
     pub async fn reinitialize_open_batches(&self) -> Option<()> {
