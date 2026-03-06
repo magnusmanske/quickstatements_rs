@@ -28,7 +28,7 @@ impl QuickStatementsBot {
         Self {
             batch_id,
             user_id,
-            config: config.clone(),
+            config,
             mw_api: None,
             entities: wikibase::entity_container::EntityContainer::new(),
             last_entity_id: None,
