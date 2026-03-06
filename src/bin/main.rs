@@ -12,7 +12,6 @@ use quickstatements::qs_parser::QuickStatementsParser;
 use std::io;
 use std::io::prelude::*;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 const SLEEP_BETWEEN_BOT_RUNS_MS: u64 = 1000;
@@ -70,7 +69,7 @@ async fn command_bot(verbose: bool, config_file: &str) {
     loop {
         run_bot(config.clone()).await;
         *last_bot_run.lock().unwrap() = Instant::now();
-        thread::sleep(Duration::from_millis(SLEEP_BETWEEN_BOT_RUNS_MS));
+        tokio::time::sleep(Duration::from_millis(SLEEP_BETWEEN_BOT_RUNS_MS)).await;
     }
 }
 

@@ -6,7 +6,7 @@ use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::{thread, time};
+use std::time::Duration;
 use wikibase;
 
 #[derive(Debug, Clone)]
@@ -422,7 +422,7 @@ impl QuickStatementsBot {
                 return Ok(());
             }
 
-            thread::sleep(time::Duration::from_millis(self.throttled_delay_ms));
+            tokio::time::sleep(Duration::from_millis(self.throttled_delay_ms)).await;
         }
     }
 
