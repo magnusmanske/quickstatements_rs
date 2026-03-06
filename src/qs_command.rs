@@ -813,22 +813,632 @@ mod tests {
         );
     }
 
-    /*
     #[test]
-    fn qualifier() {
-        let j = json!({"action": "add","datavalue":{"type": "wikibase-entityid","value":{"entity-type": "item","id": "Q12345"}}, "item": "Q4115189","meta":{"id": 1,}, "property": "P279","qualifier":{"prop": "P31","value":{"type": "wikibase-entityid","value":{"entity-type": "item","id": "Q42"}}}, "sources": null, "what": "qualifier"});
-        let api = wikibase::mediawiki::api::Api::new("https://www.wikidata.org/w/api.php").unwrap();
-        let mut ec = wikibase::entity_container::EntityContainer::new();
-        let item = ec.load_entity(&api, "Q4115189").unwrap();
-        let command = QuickStatementsCommand::new_from_json(&j);
-        let id = command.get_statement_id(&item);
-        println!("{:?}", id);
+    fn from_row() {
+        let row = (
+            1_i64,
+            2_i64,
+            3_i64,
+            r#"{"action":"add"}"#.to_string(),
+            "INIT".to_string(),
+            "some message".to_string(),
+            "20230101120000".to_string(),
+        );
+        let cmd = QuickStatementsCommand::from_row(&row);
+        assert_eq!(cmd.id, 1);
+        assert_eq!(cmd.batch_id, 2);
+        assert_eq!(cmd.num, 3);
+        assert_eq!(cmd.json["action"], "add");
+        assert_eq!(cmd.status, "INIT");
+        assert_eq!(cmd.message, "some message");
+        assert_eq!(cmd.ts_change, "20230101120000");
     }
-    */
 
-    // TODO
-    // action_add_statement
-    // action_add_qualifier
-    // action_add_sources
-    // get_statement_id
+    #[test]
+    fn from_row_invalid_json() {
+        let row = (
+            1_i64,
+            2_i64,
+            3_i64,
+            "not valid json".to_string(),
+            "INIT".to_string(),
+            "".to_string(),
+            "".to_string(),
+        );
+        let cmd = QuickStatementsCommand::from_row(&row);
+        assert_eq!(cmd.json, json!({}));
+    }
+
+    #[test]
+    fn new_from_json_defaults() {
+        let c = QuickStatementsCommand::new_from_json(&json!({"action":"add"}));
+        assert_eq!(c.id, -1);
+        assert_eq!(c.batch_id, -1);
+        assert_eq!(c.num, -1);
+        assert_eq!(c.status, "");
+        assert_eq!(c.message, "");
+        assert_eq!(c.ts_change, "");
+        assert_eq!(c.json["action"], "add");
+    }
+
+    #[test]
+    fn is_valid_command_ok() {
+        let c = QuickStatementsCommand::new_from_json(&json!({"action":"add"}));
+        assert!(c.is_valid_command().is_ok());
+    }
+
+    #[test]
+    fn is_valid_command_not_object() {
+        let c = QuickStatementsCommand::new_from_json(&json!("string"));
+        assert!(c.is_valid_command().is_err());
+    }
+
+    #[test]
+    fn get_action_ok() {
+        let c = QuickStatementsCommand::new_from_json(&json!({"action":"add"}));
+        assert_eq!(c.get_action(), Ok("add".to_string()));
+    }
+
+    #[test]
+    fn get_action_missing() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert!(c.get_action().is_err());
+    }
+
+    #[test]
+    fn get_action_empty() {
+        let c = QuickStatementsCommand::new_from_json(&json!({"action":""}));
+        assert_eq!(c.get_action(), Err("Empty action in command".to_string()));
+    }
+
+    #[test]
+    fn action_to_execute_create() {
+        let mut c =
+            QuickStatementsCommand::new_from_json(&json!({"action":"create","type":"item"}));
+        let result = c.action_to_execute(&None);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap()["action"], "wbeditentity");
+    }
+
+    #[test]
+    fn action_to_execute_merge() {
+        let mut c = QuickStatementsCommand::new_from_json(
+            &json!({"action":"merge","item1":"Q1","item2":"Q2"}),
+        );
+        let result = c.action_to_execute(&None);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap()["action"], "wbmergeitems");
+    }
+
+    #[test]
+    fn action_to_execute_unknown_action() {
+        let mut c = QuickStatementsCommand::new_from_json(&json!({"action":"unknown_action"}));
+        let result = c.action_to_execute(&None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn action_to_execute_add_label() {
+        let mut c = QuickStatementsCommand::new_from_json(
+            &json!({"action":"add","what":"label","language":"en","value":"Test Label"}),
+        );
+        let item = empty_test_item();
+        let result = c.action_to_execute(&Some(item));
+        assert!(result.is_ok());
+        let r = result.unwrap();
+        assert_eq!(r["action"], "wbsetlabel");
+        assert_eq!(r["value"], "Test Label");
+    }
+
+    #[test]
+    fn action_to_execute_add_description() {
+        let mut c = QuickStatementsCommand::new_from_json(
+            &json!({"action":"add","what":"description","language":"en","value":"Test Desc"}),
+        );
+        let item = empty_test_item();
+        let result = c.action_to_execute(&Some(item));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap()["action"], "wbsetdescription");
+    }
+
+    #[test]
+    fn action_to_execute_add_alias() {
+        let mut c = QuickStatementsCommand::new_from_json(
+            &json!({"action":"add","what":"alias","language":"en","value":"Test Alias"}),
+        );
+        let item = empty_test_item();
+        let result = c.action_to_execute(&Some(item));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap()["action"], "wbsetaliases");
+    }
+
+    #[test]
+    fn action_to_execute_add_sitelink() {
+        let mut c = QuickStatementsCommand::new_from_json(
+            &json!({"action":"add","what":"sitelink","site":"enwiki","value":"Test Page"}),
+        );
+        let item = empty_test_item();
+        let result = c.action_to_execute(&Some(item));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap()["action"], "wbsetsitelink");
+    }
+
+    #[test]
+    fn action_to_execute_bad_what() {
+        let mut c =
+            QuickStatementsCommand::new_from_json(&json!({"action":"add","what":"nonsense"}));
+        let item = empty_test_item();
+        let result = c.action_to_execute(&Some(item));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn action_set_label_already_done() {
+        let mut item = empty_test_item();
+        item.set_label(wikibase::LocaleString::new("en", "Existing Label"));
+        let c = QuickStatementsCommand::new_from_json(
+            &json!({"language":"en","value":"Existing Label"}),
+        );
+        assert_eq!(c.action_set_label(&item), Ok(json!({"already_done":1})));
+    }
+
+    #[test]
+    fn action_set_label_missing_language() {
+        let c = QuickStatementsCommand::new_from_json(&json!({"value":"Test"}));
+        assert!(c.action_set_label(&empty_test_item()).is_err());
+    }
+
+    #[test]
+    fn action_set_label_missing_value() {
+        let c = QuickStatementsCommand::new_from_json(&json!({"language":"en"}));
+        assert!(c.action_set_label(&empty_test_item()).is_err());
+    }
+
+    #[test]
+    fn action_set_description_already_done() {
+        let mut item = empty_test_item();
+        item.set_description(wikibase::LocaleString::new("en", "Existing Desc"));
+        let c = QuickStatementsCommand::new_from_json(
+            &json!({"language":"en","value":"Existing Desc"}),
+        );
+        assert_eq!(
+            c.action_set_description(&item),
+            Ok(json!({"already_done":1}))
+        );
+    }
+
+    #[test]
+    fn action_set_description_missing_language() {
+        let c = QuickStatementsCommand::new_from_json(&json!({"value":"Test"}));
+        assert!(c.action_set_description(&empty_test_item()).is_err());
+    }
+
+    #[test]
+    fn action_set_description_missing_value() {
+        let c = QuickStatementsCommand::new_from_json(&json!({"language":"en"}));
+        assert!(c.action_set_description(&empty_test_item()).is_err());
+    }
+
+    #[test]
+    fn action_set_sitelink_already_done() {
+        let mut item = empty_test_item();
+        item.set_sitelink(wikibase::SiteLink::new("enwiki", "Test Page", vec![]));
+        let c =
+            QuickStatementsCommand::new_from_json(&json!({"site":"enwiki","value":"Test Page"}));
+        assert_eq!(c.action_set_sitelink(&item), Ok(json!({"already_done":1})));
+    }
+
+    #[test]
+    fn action_set_sitelink_already_done_underscores() {
+        let mut item = empty_test_item();
+        item.set_sitelink(wikibase::SiteLink::new("enwiki", "Test Page", vec![]));
+        let c =
+            QuickStatementsCommand::new_from_json(&json!({"site":"enwiki","value":"Test_Page"}));
+        assert_eq!(c.action_set_sitelink(&item), Ok(json!({"already_done":1})));
+    }
+
+    #[test]
+    fn action_set_sitelink_missing_site() {
+        let c = QuickStatementsCommand::new_from_json(&json!({"value":"Page"}));
+        assert!(c.action_set_sitelink(&empty_test_item()).is_err());
+    }
+
+    #[test]
+    fn action_set_sitelink_missing_value() {
+        let c = QuickStatementsCommand::new_from_json(&json!({"site":"enwiki"}));
+        assert!(c.action_set_sitelink(&empty_test_item()).is_err());
+    }
+
+    #[test]
+    fn action_create_entity_no_type() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert!(c.action_create_entity().is_err());
+    }
+
+    #[test]
+    fn action_merge_entities_missing_item1() {
+        let c = QuickStatementsCommand::new_from_json(&json!({"item2":"Q456"}));
+        assert!(c.action_merge_entities().is_err());
+    }
+
+    #[test]
+    fn action_merge_entities_missing_item2() {
+        let c = QuickStatementsCommand::new_from_json(&json!({"item1":"Q123"}));
+        assert!(c.action_merge_entities().is_err());
+    }
+
+    #[test]
+    fn action_merge_entities_not_object() {
+        let c = QuickStatementsCommand::new_from_json(&json!("string"));
+        assert!(c.action_merge_entities().is_err());
+    }
+
+    #[test]
+    fn get_snak_type_for_datavalue_object() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert_eq!(
+            c.get_snak_type_for_datavalue(&json!({"value":{"key":"val"}})),
+            Ok("value".to_string())
+        );
+    }
+
+    #[test]
+    fn get_snak_type_for_datavalue_null() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        let dv = json!({"value": null});
+        assert!(c.get_snak_type_for_datavalue(&dv).is_err());
+    }
+
+    #[test]
+    fn check_prop_valid() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert_eq!(c.check_prop("P1"), Ok("P1".to_string()));
+        assert_eq!(c.check_prop("P999999"), Ok("P999999".to_string()));
+    }
+
+    #[test]
+    fn check_prop_invalid_lowercase() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert!(c.check_prop("p123").is_err());
+    }
+
+    #[test]
+    fn check_prop_invalid_prefix() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert!(c.check_prop("Q123").is_err());
+    }
+
+    #[test]
+    fn check_prop_invalid_no_digits() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert!(c.check_prop("P").is_err());
+    }
+
+    #[test]
+    fn get_entity_id_option_none_for_non_string() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert_eq!(c.get_entity_id_option(&json!(123)), None);
+        assert_eq!(c.get_entity_id_option(&json!(null)), None);
+        assert_eq!(c.get_entity_id_option(&json!(true)), None);
+    }
+
+    #[test]
+    fn fix_entity_id_no_statement_suffix() {
+        assert_eq!(
+            QuickStatementsCommand::fix_entity_id("Q42".to_string()),
+            "Q42"
+        );
+    }
+
+    #[test]
+    fn fix_entity_id_with_statement_suffix() {
+        assert_eq!(
+            QuickStatementsCommand::fix_entity_id("Q42$some-guid".to_string()),
+            "Q42"
+        );
+    }
+
+    #[test]
+    fn fix_entity_id_lowercase() {
+        assert_eq!(
+            QuickStatementsCommand::fix_entity_id("q42".to_string()),
+            "Q42"
+        );
+    }
+
+    #[test]
+    fn insert_last_item_none_is_noop() {
+        let mut c = QuickStatementsCommand::new_from_json(
+            &json!({"item":"Q123","datavalue":{"type":"string","value":"test"}}),
+        );
+        let original_json = c.json.clone();
+        c.insert_last_item_into_sources_and_qualifiers(&None)
+            .unwrap();
+        assert_eq!(c.json, original_json);
+    }
+
+    #[test]
+    fn insert_last_item_replaces_item_last() {
+        let mut c = QuickStatementsCommand::new_from_json(
+            &json!({"item":"LAST","datavalue":{"type":"string","value":"test"}}),
+        );
+        c.insert_last_item_into_sources_and_qualifiers(&Some("Q999".to_string()))
+            .unwrap();
+        assert_eq!(c.json["item"], "Q999");
+    }
+
+    #[test]
+    fn insert_last_item_replaces_datavalue_last() {
+        let mut c = QuickStatementsCommand::new_from_json(&json!({
+            "item":"Q123",
+            "datavalue":{"type":"wikibase-entityid","value":{"id":"LAST"}}
+        }));
+        c.insert_last_item_into_sources_and_qualifiers(&Some("Q999".to_string()))
+            .unwrap();
+        assert_eq!(c.json["datavalue"]["value"]["id"], "Q999");
+    }
+
+    #[test]
+    fn insert_last_item_replaces_qualifier_last() {
+        let mut c = QuickStatementsCommand::new_from_json(&json!({
+            "item":"Q123",
+            "qualifier":{"value":{"type":"wikibase-entityid","value":{"id":"LAST"}}}
+        }));
+        c.insert_last_item_into_sources_and_qualifiers(&Some("Q999".to_string()))
+            .unwrap();
+        assert_eq!(c.json["qualifier"]["value"]["value"]["id"], "Q999");
+    }
+
+    #[test]
+    fn insert_last_item_replaces_sources_last() {
+        let mut c = QuickStatementsCommand::new_from_json(&json!({
+            "item":"Q123",
+            "sources":[{"type":"wikibase-entityid","value":{"id":"LAST"}}]
+        }));
+        c.insert_last_item_into_sources_and_qualifiers(&Some("Q999".to_string()))
+            .unwrap();
+        assert_eq!(c.json["sources"][0]["value"]["id"], "Q999");
+    }
+
+    #[test]
+    fn insert_last_item_does_not_replace_non_last() {
+        let mut c = QuickStatementsCommand::new_from_json(&json!({
+            "item":"Q123",
+            "datavalue":{"type":"wikibase-entityid","value":{"id":"Q456"}}
+        }));
+        c.insert_last_item_into_sources_and_qualifiers(&Some("Q999".to_string()))
+            .unwrap();
+        assert_eq!(c.json["datavalue"]["value"]["id"], "Q456");
+    }
+
+    #[test]
+    fn action_add_statement_no_property() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "datavalue":{"type":"wikibase-entityid","value":{"entity-type":"item","id":"Q42"}}
+        }));
+        let result = c.action_add_statement(&empty_test_item());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn action_add_statement_ok() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "property":"P31",
+            "datavalue":{"type":"wikibase-entityid","value":{"entity-type":"item","id":"Q42"}}
+        }));
+        let result = c.action_add_statement(&empty_test_item());
+        assert!(result.is_ok());
+        let r = result.unwrap();
+        assert_eq!(r["action"], "wbcreateclaim");
+        assert_eq!(r["property"], "P31");
+        assert_eq!(r["entity"], "Q12345");
+    }
+
+    #[test]
+    fn action_add_qualifier_no_statement() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "property":"P31",
+            "datavalue":{"type":"wikibase-entityid","value":{"entity-type":"item","id":"Q42"}},
+            "qualifier":{"prop":"P585","value":{"type":"time","value":{"time":"+2020-01-01T00:00:00Z","calendarmodel":"http://www.wikidata.org/entity/Q1985727"}}}
+        }));
+        let result = c.action_add_qualifier(&empty_test_item());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn action_add_sources_no_statement() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "property":"P31",
+            "datavalue":{"type":"wikibase-entityid","value":{"entity-type":"item","id":"Q42"}},
+            "sources":[{"prop":"P248","value":{"type":"wikibase-entityid","value":{"entity-type":"item","id":"Q36578"}}}]
+        }));
+        let result = c.action_add_sources(&empty_test_item());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn action_remove_sitelink_restores_value() {
+        let mut c = QuickStatementsCommand::new_from_json(
+            &json!({"site":"enwiki","value":"Original Title"}),
+        );
+        let mut item = empty_test_item();
+        item.set_sitelink(wikibase::SiteLink::new("enwiki", "Some Page", vec![]));
+        let _ = c.action_remove_sitelink(&item);
+        // The original value should be restored after the call
+        assert_eq!(c.json["value"], "Original Title");
+    }
+
+    #[test]
+    fn is_same_datavalue_different_types() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        let result = c.is_same_datavalue(
+            &wikibase::DataValue::new(
+                wikibase::DataValueType::StringType,
+                wikibase::Value::StringValue("test".to_string()),
+            ),
+            &json!({"type":"quantity","value":{"amount":"42"}}),
+        );
+        assert_eq!(result, Some(false));
+    }
+
+    #[test]
+    fn is_same_datavalue_string_mismatch() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        let result = c.is_same_datavalue(
+            &wikibase::DataValue::new(
+                wikibase::DataValueType::StringType,
+                wikibase::Value::StringValue("hello".to_string()),
+            ),
+            &json!({"type":"string","value":"world"}),
+        );
+        assert_eq!(result, Some(false));
+    }
+
+    #[test]
+    fn is_same_datavalue_entity_mismatch() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        let result = c.is_same_datavalue(
+            &wikibase::DataValue::new(
+                wikibase::DataValueType::EntityId,
+                wikibase::Value::Entity(wikibase::EntityValue::new(
+                    wikibase::EntityType::Item,
+                    "Q1",
+                )),
+            ),
+            &json!({"type":"wikibase-entityid","value":{"id":"Q2"}}),
+        );
+        assert_eq!(result, Some(false));
+    }
+
+    #[test]
+    fn is_same_datavalue_quantity_mismatch() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        let result = c.is_same_datavalue(
+            &wikibase::DataValue::new(
+                wikibase::DataValueType::Quantity,
+                wikibase::Value::Quantity(wikibase::QuantityValue::new(42.0, None, "1", None)),
+            ),
+            &json!({"type":"quantity","value":{"amount":"99"}}),
+        );
+        assert_eq!(result, Some(false));
+    }
+
+    #[test]
+    fn is_same_datavalue_time_different_calendar() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        let calendarmodel = "http://www.wikidata.org/entity/Q1985727";
+        let other_calendar = "http://www.wikidata.org/entity/Q1985786";
+        let result = c.is_same_datavalue(
+            &wikibase::DataValue::new(
+                wikibase::DataValueType::Time,
+                wikibase::Value::Time(wikibase::TimeValue::new(
+                    0,
+                    0,
+                    calendarmodel,
+                    11,
+                    "+2019-06-06T00:00:00Z",
+                    0,
+                )),
+            ),
+            &json!({"type":"time","value":{"time":"+2019-06-06T00:00:00Z","calendarmodel":other_calendar}}),
+        );
+        assert_eq!(result, Some(false));
+    }
+
+    #[test]
+    fn is_same_datavalue_coordinate_mismatch() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        let globe = "http://www.wikidata.org/entity/Q2";
+        let result = c.is_same_datavalue(
+            &wikibase::DataValue::new(
+                wikibase::DataValueType::GlobeCoordinate,
+                wikibase::Value::Coordinate(wikibase::Coordinate::new(
+                    None,
+                    globe.to_string(),
+                    1.0,
+                    2.0,
+                    None,
+                )),
+            ),
+            &json!({"type":"globecoordinate","value":{"globe":globe,"latitude":3.0,"longitude":4.0}}),
+        );
+        assert_eq!(result, Some(false));
+    }
+
+    #[test]
+    fn is_same_datavalue_monolingual_mismatch() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        let result = c.is_same_datavalue(
+            &wikibase::DataValue::new(
+                wikibase::DataValueType::MonoLingualText,
+                wikibase::Value::MonoLingual(wikibase::MonoLingualText::new("hello", "en")),
+            ),
+            &json!({"type":"monolingualtext","value":{"language":"en","text":"world"}}),
+        );
+        assert_eq!(result, Some(false));
+    }
+
+    #[test]
+    fn get_prefixed_id() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert_eq!(c.get_prefixed_id("Q42"), "Q42".to_string());
+        assert_eq!(c.get_prefixed_id("P123"), "P123".to_string());
+    }
+
+    #[test]
+    fn get_statement_id_from_json_id() {
+        let c = QuickStatementsCommand::new_from_json(&json!({"id":"Q42$some-guid-here"}));
+        let result = c.get_statement_id(&empty_test_item());
+        assert_eq!(result, Ok(Some("Q42$some-guid-here".to_string())));
+    }
+
+    #[test]
+    fn get_statement_id_no_property() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        let result = c.get_statement_id(&empty_test_item());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_statement_id_no_match() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "property":"P31",
+            "datavalue":{"type":"wikibase-entityid","value":{"entity-type":"item","id":"Q42"}}
+        }));
+        let result = c.get_statement_id(&empty_test_item());
+        assert_eq!(result, Ok(None));
+    }
+
+    #[test]
+    fn action_add_alias_missing_language() {
+        let c = QuickStatementsCommand::new_from_json(&json!({"value":"Test"}));
+        assert!(c.action_add_alias(&empty_test_item()).is_err());
+    }
+
+    #[test]
+    fn action_add_alias_missing_value() {
+        let c = QuickStatementsCommand::new_from_json(&json!({"language":"en"}));
+        assert!(c.action_add_alias(&empty_test_item()).is_err());
+    }
+
+    #[test]
+    fn action_remove_statement_from_entity() {
+        let mut c = QuickStatementsCommand::new_from_json(&json!({
+            "action":"remove",
+            "what":"statement",
+            "property":"P31",
+            "datavalue":{"type":"wikibase-entityid","value":{"entity-type":"item","id":"Q42"}}
+        }));
+        // No matching statement on the empty item
+        let result = c.remove_from_entity(&Some(empty_test_item()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn action_remove_bad_what() {
+        let mut c =
+            QuickStatementsCommand::new_from_json(&json!({"action":"remove","what":"label"}));
+        let result = c.remove_from_entity(&Some(empty_test_item()));
+        assert!(result.is_err());
+    }
 }

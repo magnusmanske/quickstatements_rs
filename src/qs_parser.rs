@@ -1299,7 +1299,558 @@ mod tests {
         assert_eq!(qsp.item, Some(expected));
     }
 
-    // TODO add label/alias/desc/sitelink
-    // TODO sources
-    // TODO qualifiers
+    #[tokio::test]
+    async fn parse_set_label() {
+        let command = "Q123\tLen\t\"test label\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::SetLabel);
+        assert_eq!(qsp.item, Some(item1()));
+        assert_eq!(
+            qsp.locale_string,
+            Some(LocaleString::new("en", "test label"))
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_set_description() {
+        let command = "Q123\tDde\t\"test description\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::SetDescription);
+        assert_eq!(qsp.item, Some(item1()));
+        assert_eq!(
+            qsp.locale_string,
+            Some(LocaleString::new("de", "test description"))
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_set_alias() {
+        let command = "Q123\tAit\t\"test alias\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::SetAlias);
+        assert_eq!(qsp.item, Some(item1()));
+        assert_eq!(
+            qsp.locale_string,
+            Some(LocaleString::new("it", "test alias"))
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_set_sitelink() {
+        let command = "Q123\tSenwiki\t\"Test Page\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::SetSitelink);
+        assert_eq!(qsp.item, Some(item1()));
+        assert_eq!(
+            qsp.sitelink,
+            Some(SiteLink::new("enwiki", "Test Page", vec![]))
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_edit_statement_simple() {
+        let command = "Q123\tP456\tQ789";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::EditStatement);
+        assert_eq!(qsp.item, Some(item1()));
+        assert_eq!(
+            qsp.property,
+            Some(EntityValue::new(EntityType::Property, "P456"))
+        );
+        assert_eq!(
+            qsp.value,
+            Some(Value::Entity(EntityID::Id(EntityValue::new(
+                EntityType::Item,
+                "Q789"
+            ))))
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_edit_statement_with_qualifier() {
+        let command = "Q123\tP456\tQ789\tP321\tQ654";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::EditStatement);
+        assert_eq!(qsp.qualifiers.len(), 1);
+        assert_eq!(
+            qsp.qualifiers[0].property,
+            EntityValue::new(EntityType::Property, "P321")
+        );
+        assert_eq!(
+            qsp.qualifiers[0].value,
+            Value::Entity(EntityID::Id(EntityValue::new(EntityType::Item, "Q654")))
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_edit_statement_with_reference() {
+        let command = "Q123\tP456\tQ789\tS321\tQ654";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::EditStatement);
+        assert_eq!(qsp.references.len(), 1);
+        assert_eq!(
+            qsp.references[0].property,
+            EntityValue::new(EntityType::Property, "P321")
+        );
+        assert_eq!(
+            qsp.references[0].value,
+            Value::Entity(EntityID::Id(EntityValue::new(EntityType::Item, "Q654")))
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_edit_statement_with_qualifier_and_reference() {
+        let command = "Q123\tP456\tQ789\tP321\tQ654\tS143\tQ999";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.qualifiers.len(), 1);
+        assert_eq!(qsp.references.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn parse_remove_statement() {
+        let command = "-Q123\tP456\tQ789";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::EditStatement);
+        assert_eq!(qsp.modifier, Some(CommandModifier::Remove));
+        assert_eq!(qsp.item, Some(item1()));
+    }
+
+    #[tokio::test]
+    async fn parse_remove_label() {
+        let command = "-Q123\tLen\t\"test label\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::SetLabel);
+        assert_eq!(qsp.modifier, Some(CommandModifier::Remove));
+    }
+
+    #[tokio::test]
+    async fn parse_pipe_separator() {
+        let command = "Q123||P456||Q789";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::EditStatement);
+        assert_eq!(qsp.item, Some(item1()));
+    }
+
+    #[tokio::test]
+    async fn parse_empty_line() {
+        let result = QuickStatementsParser::new_from_line("", None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn parse_too_few_parts() {
+        let result = QuickStatementsParser::new_from_line("Q123\tP456", None).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_value_string() {
+        assert_eq!(
+            QuickStatementsParser::parse_value("\"hello world\"".to_string()),
+            Some(Value::String("hello world".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_value_monolingual_string() {
+        assert_eq!(
+            QuickStatementsParser::parse_value("en:\"hello world\"".to_string()),
+            Some(Value::MonoLingualText(MonoLingualText::new(
+                "hello world",
+                "en"
+            )))
+        );
+    }
+
+    #[test]
+    fn parse_value_entity() {
+        assert_eq!(
+            QuickStatementsParser::parse_value("Q42".to_string()),
+            Some(Value::Entity(EntityID::Id(EntityValue::new(
+                EntityType::Item,
+                "Q42"
+            ))))
+        );
+    }
+
+    #[test]
+    fn parse_value_last() {
+        assert_eq!(
+            QuickStatementsParser::parse_value("LAST".to_string()),
+            Some(Value::Entity(EntityID::Last))
+        );
+    }
+
+    #[test]
+    fn parse_no_comment() {
+        assert_eq!(
+            QuickStatementsParser::parse_comment("Q123\tP456\tQ789"),
+            ("Q123\tP456\tQ789".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn value_display_entity() {
+        let v = Value::Entity(EntityID::Id(EntityValue::new(EntityType::Item, "Q42")));
+        assert_eq!(v.to_string(), "Q42");
+    }
+
+    #[test]
+    fn value_display_last() {
+        let v = Value::Entity(EntityID::Last);
+        assert_eq!(v.to_string(), "LAST");
+    }
+
+    #[test]
+    fn value_display_string() {
+        let v = Value::String("hello".to_string());
+        assert_eq!(v.to_string(), "\"hello\"");
+    }
+
+    #[test]
+    fn value_display_coordinate() {
+        let v = Value::GlobeCoordinate(Coordinate::new(
+            None,
+            GLOBE_EARTH.to_string(),
+            1.5,
+            -2.5,
+            None,
+        ));
+        assert_eq!(v.to_string(), "@1.5/-2.5");
+    }
+
+    #[test]
+    fn value_display_monolingual() {
+        let v = Value::MonoLingualText(MonoLingualText::new("test", "en"));
+        assert_eq!(v.to_string(), "en:\"test\"");
+    }
+
+    #[tokio::test]
+    async fn generate_qs_line_create() {
+        let qsp = QuickStatementsParser::new_from_line("CREATE", None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.generate_qs_line(), Some("CREATE".to_string()));
+    }
+
+    #[tokio::test]
+    async fn generate_qs_line_merge() {
+        let qsp = QuickStatementsParser::new_from_line("MERGE\tQ123\tQ456", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            qsp.generate_qs_line(),
+            Some("MERGE\tQ123\tQ456".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_qs_line_label() {
+        let qsp = QuickStatementsParser::new_from_line("Q123\tLen\t\"test\"", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            qsp.generate_qs_line(),
+            Some("Q123\tLen\t\"test\"".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn to_json_create() {
+        let qsp = QuickStatementsParser::new_from_line("CREATE", None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j.len(), 1);
+        assert_eq!(j[0]["action"], "create");
+        assert_eq!(j[0]["type"], "item");
+    }
+
+    #[tokio::test]
+    async fn to_json_merge() {
+        let qsp = QuickStatementsParser::new_from_line("MERGE\tQ123\tQ456", None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j.len(), 1);
+        assert_eq!(j[0]["action"], "merge");
+        assert_eq!(j[0]["item1"], "Q456");
+        assert_eq!(j[0]["item2"], "Q123");
+    }
+
+    #[tokio::test]
+    async fn to_json_label() {
+        let qsp = QuickStatementsParser::new_from_line("Q123\tLen\t\"test label\"", None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j.len(), 1);
+        assert_eq!(j[0]["action"], "add");
+        assert_eq!(j[0]["what"], "label");
+        assert_eq!(j[0]["language"], "en");
+        assert_eq!(j[0]["value"], "test label");
+    }
+
+    #[tokio::test]
+    async fn to_json_description() {
+        let qsp = QuickStatementsParser::new_from_line("Q123\tDde\t\"test desc\"", None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j[0]["what"], "description");
+    }
+
+    #[tokio::test]
+    async fn to_json_alias() {
+        let qsp = QuickStatementsParser::new_from_line("Q123\tAit\t\"test alias\"", None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j[0]["what"], "alias");
+    }
+
+    #[tokio::test]
+    async fn to_json_sitelink() {
+        let qsp = QuickStatementsParser::new_from_line("Q123\tSenwiki\t\"Test\"", None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j[0]["what"], "sitelink");
+        assert_eq!(j[0]["site"], "enwiki");
+        assert_eq!(j[0]["value"], "Test");
+    }
+
+    #[tokio::test]
+    async fn to_json_statement_with_qualifier_and_reference() {
+        let command = "Q123\tP456\tQ789\tP321\tQ654\tS143\tQ999";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        // statement + qualifier + sources = 3 commands
+        assert_eq!(j.len(), 3);
+        assert_eq!(j[0]["what"], "statement");
+        assert_eq!(j[1]["what"], "qualifier");
+        assert_eq!(j[2]["what"], "sources");
+    }
+
+    #[tokio::test]
+    async fn to_json_remove_statement() {
+        let command = "-Q123\tP456\tQ789";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j.len(), 1);
+        assert_eq!(j[0]["action"], "remove");
+    }
+
+    #[tokio::test]
+    async fn compress_create_with_label() {
+        let mut commands = vec![
+            QuickStatementsParser::new_from_line("CREATE", None)
+                .await
+                .unwrap(),
+            QuickStatementsParser::new_from_line("LAST\tLen\t\"test\"", None)
+                .await
+                .unwrap(),
+        ];
+        QuickStatementsParser::compress(&mut commands);
+        assert_eq!(commands.len(), 1);
+        assert!(commands[0].create_data.is_some());
+        let data = commands[0].create_data.as_ref().unwrap();
+        assert!(data["labels"]["en"].is_object());
+    }
+
+    #[tokio::test]
+    async fn compress_create_with_description() {
+        let mut commands = vec![
+            QuickStatementsParser::new_from_line("CREATE", None)
+                .await
+                .unwrap(),
+            QuickStatementsParser::new_from_line("LAST\tDde\t\"desc\"", None)
+                .await
+                .unwrap(),
+        ];
+        QuickStatementsParser::compress(&mut commands);
+        assert_eq!(commands.len(), 1);
+        let data = commands[0].create_data.as_ref().unwrap();
+        assert!(data["descriptions"]["de"].is_object());
+    }
+
+    #[tokio::test]
+    async fn compress_create_with_sitelink() {
+        let mut commands = vec![
+            QuickStatementsParser::new_from_line("CREATE", None)
+                .await
+                .unwrap(),
+            QuickStatementsParser::new_from_line("LAST\tSenwiki\t\"Page\"", None)
+                .await
+                .unwrap(),
+        ];
+        QuickStatementsParser::compress(&mut commands);
+        assert_eq!(commands.len(), 1);
+        let data = commands[0].create_data.as_ref().unwrap();
+        assert_eq!(data["sitelinks"]["enwiki"]["title"], "Page");
+    }
+
+    #[tokio::test]
+    async fn compress_create_with_statement() {
+        let mut commands = vec![
+            QuickStatementsParser::new_from_line("CREATE", None)
+                .await
+                .unwrap(),
+            QuickStatementsParser::new_from_line("LAST\tP31\tQ5", None)
+                .await
+                .unwrap(),
+        ];
+        QuickStatementsParser::compress(&mut commands);
+        assert_eq!(commands.len(), 1);
+        let data = commands[0].create_data.as_ref().unwrap();
+        assert!(data["claims"].is_array());
+        assert_eq!(data["claims"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn compress_does_not_merge_non_last() {
+        let mut commands = vec![
+            QuickStatementsParser::new_from_line("CREATE", None)
+                .await
+                .unwrap(),
+            QuickStatementsParser::new_from_line("Q123\tLen\t\"test\"", None)
+                .await
+                .unwrap(),
+        ];
+        QuickStatementsParser::compress(&mut commands);
+        assert_eq!(commands.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn to_json_with_comment() {
+        let command = "Q123\tP456\tQ789/* my comment */";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j[0]["summary"], "my comment");
+    }
+
+    #[test]
+    fn property_value_to_string_tuple() {
+        let pv = PropertyValue::new(
+            EntityValue::new(EntityType::Property, "P123"),
+            Value::Entity(EntityID::Id(EntityValue::new(EntityType::Item, "Q456"))),
+        );
+        assert_eq!(
+            pv.to_string_tuple(),
+            ("P123".to_string(), "Q456".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_time_no_match() {
+        assert_eq!(QuickStatementsParser::parse_time("not-a-time"), None);
+    }
+
+    #[test]
+    fn parse_quantity_no_match() {
+        assert_eq!(
+            QuickStatementsParser::parse_quantity("not-a-quantity"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_value_none_for_bad_input() {
+        assert_eq!(
+            QuickStatementsParser::parse_value("!!!invalid!!!".to_string()),
+            None
+        );
+    }
+
+    #[test]
+    fn entity_id_display() {
+        let eid = EntityID::Id(EntityValue::new(EntityType::Item, "Q42"));
+        assert_eq!(format!("{}", eid), "Q42");
+        assert_eq!(format!("{}", EntityID::Last), "LAST");
+    }
+
+    #[test]
+    fn new_blank_is_unknown() {
+        let blank = QuickStatementsParser::new_blank();
+        assert_eq!(blank.command, CommandType::Unknown);
+        assert_eq!(blank.item, None);
+        assert_eq!(blank.generate_qs_line(), None);
+    }
+
+    #[test]
+    fn to_json_unknown_errors() {
+        let blank = QuickStatementsParser::new_blank();
+        assert!(blank.to_json().is_err());
+    }
+
+    #[test]
+    fn get_action_add_and_remove() {
+        let mut qsp = QuickStatementsParser::new_blank();
+        assert_eq!(qsp.get_action(), "add");
+        qsp.modifier = Some(CommandModifier::Remove);
+        assert_eq!(qsp.get_action(), "remove");
+    }
+
+    #[test]
+    fn parse_command_modifier_empty_string() {
+        let mut s = String::new();
+        assert_eq!(QuickStatementsParser::parse_command_modifier(&mut s), None);
+    }
+
+    #[test]
+    fn parse_item_id_none() {
+        assert!(QuickStatementsParser::parse_item_id(None).is_err());
+    }
+
+    #[test]
+    fn parse_item_id_last() {
+        assert_eq!(
+            QuickStatementsParser::parse_item_id(Some("LAST")),
+            Ok(EntityID::Last)
+        );
+    }
+
+    #[test]
+    fn parse_item_id_case_insensitive() {
+        assert_eq!(
+            QuickStatementsParser::parse_item_id(Some("q42")),
+            Ok(EntityID::Id(EntityValue::new(EntityType::Item, "Q42")))
+        );
+    }
+
+    #[test]
+    fn parse_item_id_property() {
+        assert_eq!(
+            QuickStatementsParser::parse_item_id(Some("P123")),
+            Ok(EntityID::Id(EntityValue::new(EntityType::Property, "P123")))
+        );
+    }
 }
