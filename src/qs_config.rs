@@ -370,11 +370,7 @@ impl QuickStatements {
         batch_id: i64,
         last_item: &Option<String>,
     ) -> Option<()> {
-        let last_item = match last_item {
-            Some(q) => q.to_string(),
-            None => "".to_string(),
-        };
-
+        let last_item = last_item.as_deref().unwrap_or("");
         let ts = self.timestamp();
         let sql = r#"UPDATE `batch` SET `ts_last_change`=:ts,`last_item`=:last_item WHERE `id`=:batch_id"#;
         self.pool
