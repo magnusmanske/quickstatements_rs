@@ -32,9 +32,9 @@ impl QuickStatementsCommand {
             batch_id: -1,
             num: -1,
             json: json.clone(),
-            status: "".to_string(),
-            message: "".to_string(),
-            ts_change: "".to_string(),
+            status: String::new(),
+            message: String::new(),
+            ts_change: String::new(),
         }
     }
 

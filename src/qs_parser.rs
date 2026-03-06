@@ -291,7 +291,7 @@ impl QuickStatementsParser {
         let mut parts = v.split('-');
         let mut year = parts.next()?.to_string();
 
-        let mut leading_zeros = "".to_string();
+        let mut leading_zeros = String::new();
         while PHP_COMPATIBILITY && year.starts_with('0') && year != "0" {
             leading_zeros += "0";
             year = year[1..].to_string();
@@ -549,7 +549,7 @@ impl QuickStatementsParser {
     }
 
     fn quote(s: &str) -> String {
-        "\"".to_string() + s + "\""
+        format!("\"{}\"", s)
     }
 
     pub fn generate_qs_line(&self) -> Option<String> {
