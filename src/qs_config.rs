@@ -24,8 +24,7 @@ pub struct QuickStatements {
 impl QuickStatements {
     pub fn new_from_config_json(filename: &str) -> Option<Self> {
         let file = File::open(filename).ok()?;
-        let params: Value = serde_json::from_reader(file).ok()?;
-        let mut params = params.clone();
+        let mut params: Value = serde_json::from_reader(file).ok()?;
 
         // Load the PHP/JS config into params as ["config"], or create empty object
         params["config"] = match params["config_file"].as_str() {
@@ -37,8 +36,8 @@ impl QuickStatements {
         };
 
         let ret = Self {
-            params: params.clone(),
             pool: Self::create_mysql_pool(&params).ok()?,
+            params,
             running_batch_ids: Arc::new(RwLock::new(HashSet::new())),
             user_counter: Arc::new(RwLock::new(HashMap::new())),
             max_batches_per_user: 2,
