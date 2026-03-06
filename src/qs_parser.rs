@@ -224,7 +224,10 @@ impl QuickStatementsParser {
                 None => break,
             };
             let value = match i.next() {
-                Some(v) => QuickStatementsParser::parse_value(v.to_string()).unwrap(),
+                Some(v) => match QuickStatementsParser::parse_value(v.to_string()) {
+                    Some(value) => value,
+                    None => return Err(format!("Cannot parse qualifier/reference value: '{}'", v)),
+                },
                 None => {
                     return Err(format!(
                         "Qualifier/Reference key without value: '{:?}'",
