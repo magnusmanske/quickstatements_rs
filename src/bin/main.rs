@@ -1,7 +1,4 @@
-#[macro_use]
-extern crate serde_json;
-extern crate config;
-extern crate wikibase;
+use serde_json::json;
 
 use clap::Parser;
 use log::{error, info};
