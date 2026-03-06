@@ -1728,6 +1728,16 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn parse_bad_qualifier_value() {
+        let command = "Q123\tP456\tQ789\tP321\t!!!invalid!!!";
+        let result = QuickStatementsParser::new_from_line(command, None).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Cannot parse qualifier/reference value"));
+    }
+
     #[test]
     fn parse_time_no_match() {
         assert_eq!(QuickStatementsParser::parse_time("not-a-time"), None);
