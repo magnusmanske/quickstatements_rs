@@ -9,21 +9,21 @@ edition = "2021"
 #wikibase = { path = "../wikibase_rs" }
 wikibase = { git = "https://gitlab.com/tobias47n9e/wikibase_rs" }
 
-mysql_async = "*"
+mysql_async = "0.36"
 serde_json = "1"
-config = "*"
+config = "0.14"
 regex = "1"
 lazy_static = "1"
-chrono = "*"
+chrono = "0.4"
 clap = { version = "4", features = ["derive", "cargo"] }
-log = "*"
-simple_logger = "*"
-num_cpus = "*"
-tokio = { version = "^1", features = ["full", "rt-multi-thread"] }
-futures = "*"
-async-recursion = "^1"
-anyhow = "*"
-rand = "*"
+log = "0.4"
+simple_logger = "5"
+num_cpus = "1"
+tokio = { version = "1", features = ["full", "rt-multi-thread"] }
+futures = "0.3"
+async-recursion = "1"
+anyhow = "1"
+rand = "0.8"
 
 [dev-dependencies]
 wiremock = "0.6"
