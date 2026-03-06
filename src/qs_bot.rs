@@ -191,7 +191,7 @@ impl QuickStatementsBot {
             .iter()
             .filter(|er| er.0 == entity_id)
             .map(|er| er.1)
-            .nth(0);
+            .next();
 
         match self
             .entities

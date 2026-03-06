@@ -600,7 +600,7 @@ impl QuickStatementsParser {
                 Some(o) => o
                     .iter()
                     .map(|(page_id, _page_data)| format!("M{}", &page_id))
-                    .nth(0),
+                    .next(),
                 None => None,
             },
             _ => None,
@@ -622,7 +622,7 @@ impl QuickStatementsParser {
                         page_data["pageprops"]["wikibase_item"].as_str()
                     })
                     .map(|s| s.to_string())
-                    .nth(0),
+                    .next(),
                 None => None,
             },
             _ => None,
