@@ -263,15 +263,14 @@ impl QuickStatementsCommand {
                     };
                     let prop = self.check_prop(prop)?;
                     let snaktype = self.get_snak_type_for_datavalue(source)?;
-                    let snaktype = snaktype.to_owned();
                     let snak = match snaktype.as_str() {
                         "value" => json!({
-                            "property":prop.to_owned(),
+                            "property":&prop,
                             "snaktype":"value",
                             "datavalue":source["value"],
                         }),
                         other => json!({
-                            "property":prop.to_owned(),
+                            "property":&prop,
                             "snaktype":other,
                         }),
                     };
