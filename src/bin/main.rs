@@ -119,7 +119,7 @@ async fn get_php_commands(
 
 async fn get_commands(
     api: &wikibase::mediawiki::api::Api,
-    lines: &Vec<String>,
+    lines: &[String],
 ) -> Vec<QuickStatementsParser> {
     let mut ret: Vec<QuickStatementsParser> = vec![];
     for line in lines {

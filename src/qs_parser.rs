@@ -155,7 +155,7 @@ pub struct QuickStatementsParser {
 impl QuickStatementsParser {
     /// Translates a line into a QuickStatementsParser object.
     /// Uses api to translate page titles into entity IDs, if given
-    pub async fn new_from_line(line: &String, api: Option<&Api>) -> Result<Self, String> {
+    pub async fn new_from_line(line: &str, api: Option<&Api>) -> Result<Self, String> {
         lazy_static! {
             static ref RE_META: Regex = Regex::new(r#"^ *([LDAS]) *([a-z_-]+) *$"#).unwrap();
         }
@@ -173,7 +173,13 @@ impl QuickStatementsParser {
 
         match parts[0].to_uppercase().as_str() {
             "CREATE" => return Self::new_create(comment),
-            "MERGE" => return Self::new_merge(parts.get(1), parts.get(2), comment),
+            "MERGE" => {
+                return Self::new_merge(
+                    parts.get(1).map(|s| s.as_str()),
+                    parts.get(2).map(|s| s.as_str()),
+                    comment,
+                )
+            }
             _ => {}
         }
 
@@ -195,7 +201,7 @@ impl QuickStatementsParser {
             let mut ret = Self::new_blank_with_comment(comment.clone());
             let mut first = parts[0].clone();
             ret.modifier = Self::parse_command_modifier(&mut first);
-            ret.item = Some(Self::parse_item_id(&Some(&first))?);
+            ret.item = Some(Self::parse_item_id(Some(first.as_str()))?);
             match caps.get(1).unwrap().as_str() {
                 "L" => {
                     ret.command = CommandType::SetLabel;
@@ -251,14 +257,14 @@ impl QuickStatementsParser {
     }
 
     fn new_merge(
-        i1: Option<&String>,
-        i2: Option<&String>,
+        i1: Option<&str>,
+        i2: Option<&str>,
         comment: Option<String>,
     ) -> Result<Self, String> {
         let mut ret = Self::new_blank_with_comment(comment);
         ret.command = CommandType::Merge;
-        ret.item = Some(Self::parse_item_id(&i1)?);
-        ret.target_item = Some(Self::parse_item_id(&i2)?);
+        ret.item = Some(Self::parse_item_id(i1)?);
+        ret.target_item = Some(Self::parse_item_id(i2)?);
         if ret.item.is_none() || ret.target_item.is_none() {
             return Err("MERGE requires two parameters".to_string());
         }
@@ -280,7 +286,7 @@ impl QuickStatementsParser {
             None => return Err(format!("Missing column 1 in {:?}", &parts)),
         };
         ret.modifier = Self::parse_command_modifier(&mut first);
-        ret.item = Some(Self::parse_item_id(&Some(&first))?);
+        ret.item = Some(Self::parse_item_id(Some(first.as_str()))?);
 
         let second = match parts.get(1) {
             Some(s) => s.trim().to_string(),
@@ -351,8 +357,8 @@ impl QuickStatementsParser {
         Ok(())
     }
 
-    fn parse_property_id(&self, prop: &String) -> Result<EntityValue, String> {
-        let id = Self::parse_item_id(&Some(prop))?;
+    fn parse_property_id(&self, prop: &str) -> Result<EntityValue, String> {
+        let id = Self::parse_item_id(Some(prop))?;
         let ev = match id {
             EntityID::Id(ev) => ev,
             EntityID::Last => return Err("LAST is not a valid property".to_string()),
@@ -541,7 +547,7 @@ impl QuickStatementsParser {
             return Some(Value::String(caps.get(1)?.as_str().to_string()));
         }
 
-        if let Ok(id) = Self::parse_item_id(&Some(&value.to_string())) {
+        if let Ok(id) = Self::parse_item_id(Some(value)) {
             return Some(Value::Entity(id));
         }
 
@@ -560,7 +566,7 @@ impl QuickStatementsParser {
         None
     }
 
-    fn parse_item_id(id: &Option<&String>) -> Result<EntityID, String> {
+    fn parse_item_id(id: Option<&str>) -> Result<EntityID, String> {
         lazy_static! {
             static ref RE_ENTITY_ID: Regex = Regex::new(r#"^[A-Z]\d+$"#)
                 .expect("QuickStatementsParser::parse_item_id:RE_ENTITY_ID does not compile");
@@ -640,12 +646,12 @@ impl QuickStatementsParser {
         }
     }
 
-    fn parse_comment(line: &String) -> (String, Option<String>) {
+    fn parse_comment(line: &str) -> (String, Option<String>) {
         lazy_static! {
             static ref RE_COMMENT: Regex = Regex::new(r#"^(.*)/\*\s*(.*?)\s*\*/(.*)$"#)
                 .expect("QuickStatementsParser::parse_comment:RE_COMMENT does not compile");
         }
-        match RE_COMMENT.captures(&line.to_string()) {
+        match RE_COMMENT.captures(line) {
             Some(caps) => (
                 String::from(caps.get(1).unwrap().as_str()) + caps.get(3).unwrap().as_str(),
                 Some(caps.get(2).unwrap().as_str().to_string()),
@@ -1032,7 +1038,7 @@ mod tests {
         let mut expected = QuickStatementsParser::new_blank();
         expected.command = CommandType::Create;
         assert_eq!(
-            QuickStatementsParser::new_from_line(&command.to_string(), None)
+            QuickStatementsParser::new_from_line(command, None)
                 .await
                 .unwrap(),
             expected
@@ -1047,7 +1053,7 @@ mod tests {
         expected.item = Some(item1());
         expected.target_item = Some(target_item());
         assert_eq!(
-            QuickStatementsParser::new_from_line(&command.to_string(), None)
+            QuickStatementsParser::new_from_line(command, None)
                 .await
                 .unwrap(),
             expected
@@ -1058,7 +1064,7 @@ mod tests {
     #[should_panic(expected = "MERGE does not allow LAST")]
     async fn merge_item1_last() {
         let command = "MERGE\tLAST\tQ456";
-        QuickStatementsParser::new_from_line(&command.to_string(), None)
+        QuickStatementsParser::new_from_line(command, None)
             .await
             .unwrap();
     }
@@ -1067,7 +1073,7 @@ mod tests {
     #[should_panic(expected = "MERGE does not allow LAST")]
     async fn merge_item2_last() {
         let command = "MERGE\tQ123\tLAST";
-        QuickStatementsParser::new_from_line(&command.to_string(), None)
+        QuickStatementsParser::new_from_line(command, None)
             .await
             .unwrap();
     }
@@ -1076,7 +1082,7 @@ mod tests {
     #[should_panic(expected = "Not a valid entity ID: BlAH")]
     async fn merge_item1_bad() {
         let command = "MERGE\tBlAH\tQ456";
-        QuickStatementsParser::new_from_line(&command.to_string(), None)
+        QuickStatementsParser::new_from_line(command, None)
             .await
             .unwrap();
     }
@@ -1085,7 +1091,7 @@ mod tests {
     #[should_panic(expected = "Missing value")]
     async fn merge_only_item1() {
         let command = "MERGE\tQ123";
-        QuickStatementsParser::new_from_line(&command.to_string(), None)
+        QuickStatementsParser::new_from_line(command, None)
             .await
             .unwrap();
     }
@@ -1094,7 +1100,7 @@ mod tests {
     #[should_panic(expected = "Not a valid entity ID: ")]
     async fn merge_only_item2() {
         let command = "MERGE\t\tQ456";
-        QuickStatementsParser::new_from_line(&command.to_string(), None)
+        QuickStatementsParser::new_from_line(command, None)
             .await
             .unwrap();
     }
@@ -1119,7 +1125,7 @@ mod tests {
     #[test]
     fn parse_comment_start() {
         assert_eq!(
-            QuickStatementsParser::parse_comment(&"/* 1234  */\tbar\t".to_string()),
+            QuickStatementsParser::parse_comment("/* 1234  */\tbar\t"),
             ("\tbar\t".to_string(), Some("1234".to_string()))
         );
     }
@@ -1127,7 +1133,7 @@ mod tests {
     #[test]
     fn parse_comment_end() {
         assert_eq!(
-            QuickStatementsParser::parse_comment(&"\tfoo/* 1234  */".to_string()),
+            QuickStatementsParser::parse_comment("\tfoo/* 1234  */"),
             ("\tfoo".to_string(), Some("1234".to_string()))
         );
     }
@@ -1135,7 +1141,7 @@ mod tests {
     #[test]
     fn parse_comment_mid() {
         assert_eq!(
-            QuickStatementsParser::parse_comment(&"\tfoo/* 1234  */\tbar\t".to_string()),
+            QuickStatementsParser::parse_comment("\tfoo/* 1234  */\tbar\t"),
             ("\tfoo\tbar\t".to_string(), Some("1234".to_string()))
         );
     }
@@ -1143,7 +1149,7 @@ mod tests {
     #[test]
     fn parse_comment_tight() {
         assert_eq!(
-            QuickStatementsParser::parse_comment(&"\tfoo/*1234*/\tbar\t".to_string()),
+            QuickStatementsParser::parse_comment("\tfoo/*1234*/\tbar\t"),
             ("\tfoo\tbar\t".to_string(), Some("1234".to_string()))
         );
     }
@@ -1278,12 +1284,10 @@ mod tests {
             .await
             .unwrap();
         let expected = EntityID::Id(EntityValue::new(EntityType::Item, "Q13520818"));
-        assert!(
-            QuickStatementsParser::new_from_line(&command.to_string(), None)
-                .await
-                .is_err()
-        );
-        let qsp = QuickStatementsParser::new_from_line(&command.to_string(), Some(&api))
+        assert!(QuickStatementsParser::new_from_line(command, None)
+            .await
+            .is_err());
+        let qsp = QuickStatementsParser::new_from_line(command, Some(&api))
             .await
             .unwrap();
         assert_eq!(qsp.item, Some(expected));
@@ -1297,12 +1301,10 @@ mod tests {
             .await
             .unwrap();
         let expected = EntityID::Id(EntityValue::new(EntityType::MediaInfo, "M82397052"));
-        assert!(
-            QuickStatementsParser::new_from_line(&command.to_string(), None)
-                .await
-                .is_err()
-        );
-        let qsp = QuickStatementsParser::new_from_line(&command.to_string(), Some(&api))
+        assert!(QuickStatementsParser::new_from_line(command, None)
+            .await
+            .is_err());
+        let qsp = QuickStatementsParser::new_from_line(command, Some(&api))
             .await
             .unwrap();
         assert_eq!(qsp.item, Some(expected));
