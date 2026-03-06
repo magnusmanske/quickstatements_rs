@@ -1,0 +1,15 @@
+{
+	"batchcomplete": "",
+	"query": {
+		"pages": {
+			"1234567": {
+				"pageid": 1234567,
+				"ns": 0,
+				"title": "Magnus Manske",
+				"pageprops": {
+					"wikibase_item": "Q13520818"
+				}
+			}
+		}
+	}
+}

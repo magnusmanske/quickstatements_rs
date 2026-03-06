@@ -1,0 +1,11 @@
+{
+	"batchcomplete": "",
+	"query": {
+		"users": [
+			{
+				"userid": 12345,
+				"name": "Magnus Manske"
+			}
+		]
+	}
+}

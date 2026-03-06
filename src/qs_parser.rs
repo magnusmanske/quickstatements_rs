@@ -987,6 +987,22 @@ impl QuickStatementsParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{method, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    async fn mock_enwiki_api(server: &MockServer) -> Api {
+        let siteinfo: serde_json::Value =
+            serde_json::from_str(include_str!("../test_data/siteinfo_enwiki.json")).unwrap();
+        Mock::given(method("GET"))
+            .and(query_param("action", "query"))
+            .and(query_param("meta", "siteinfo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&siteinfo))
+            .mount(server)
+            .await;
+        Api::new(&format!("{}/w/api.php", server.uri()))
+            .await
+            .unwrap()
+    }
 
     fn item1() -> EntityID {
         EntityID::Id(EntityValue::new(EntityType::Item, "Q123"))
@@ -1268,10 +1284,19 @@ mod tests {
 
     #[tokio::test]
     async fn title2item() {
+        let server = MockServer::start().await;
+        let api = mock_enwiki_api(&server).await;
+
+        let title_response: serde_json::Value =
+            serde_json::from_str(include_str!("../test_data/title_to_item.json")).unwrap();
+        Mock::given(method("GET"))
+            .and(query_param("action", "query"))
+            .and(query_param("prop", "pageprops"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&title_response))
+            .mount(&server)
+            .await;
+
         let command = "Magnus Manske\tP123\tQ456";
-        let api = wikibase::mediawiki::api::Api::new("https://en.wikipedia.org/w/api.php")
-            .await
-            .unwrap();
         let expected = EntityID::Id(EntityValue::new(EntityType::Item, "Q13520818"));
         assert!(QuickStatementsParser::new_from_line(command, None)
             .await
@@ -1280,6 +1305,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(qsp.item, Some(expected));
+    }
+
+    #[tokio::test]
+    async fn title2item_no_match() {
+        let server = MockServer::start().await;
+        let api = mock_enwiki_api(&server).await;
+
+        let empty_response = serde_json::json!({
+            "batchcomplete": "",
+            "query": {
+                "pages": {
+                    "-1": {
+                        "ns": 0,
+                        "title": "Nonexistent Page 12345",
+                        "missing": ""
+                    }
+                }
+            }
+        });
+        Mock::given(method("GET"))
+            .and(query_param("action", "query"))
+            .and(query_param("prop", "pageprops"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&empty_response))
+            .mount(&server)
+            .await;
+
+        let command = "Nonexistent Page 12345\tP123\tQ456";
+        // No wikibase_item in pageprops, so title won't resolve and parsing should fail
+        assert!(QuickStatementsParser::new_from_line(command, Some(&api))
+            .await
+            .is_err());
     }
 
     #[tokio::test]

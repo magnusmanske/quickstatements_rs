@@ -1,0 +1,17 @@
+{
+	"batchcomplete": "",
+	"query": {
+		"users": [
+			{
+				"userid": 67890,
+				"name": "Yves Schneider",
+				"blockid": 123456,
+				"blockedby": "SomeAdmin",
+				"blockedbyid": 11111,
+				"blockedtimestamp": "2020-01-01T00:00:00Z",
+				"blockreason": "Blocked for testing",
+				"blockexpiry": "infinity"
+			}
+		]
+	}
+}

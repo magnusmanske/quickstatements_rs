@@ -479,16 +479,52 @@ impl QuickStatements {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    async fn mock_api(server: &MockServer) -> Api {
+        // Mount siteinfo response for Api::new
+        let siteinfo: serde_json::Value =
+            serde_json::from_str(include_str!("../test_data/siteinfo_wikidata.json")).unwrap();
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&siteinfo))
+            .mount(server)
+            .await;
+        Api::new(&format!("{}/w/api.php", server.uri()))
+            .await
+            .unwrap()
+    }
 
     #[tokio::test]
-    async fn test_is_user_blocked() {
-        let mut mw_api = Api::new("https://www.wikidata.org/w/api.php")
-            .await
-            .unwrap();
-        let result1 = QuickStatements::is_user_blocked(&mut mw_api, "Magnus Manske").await;
-        let result2 = QuickStatements::is_user_blocked(&mut mw_api, "Yves Schneider").await;
-        assert_eq!(result1, Ok(false));
-        assert_eq!(result2, Ok(true));
+    async fn test_is_user_blocked_false() {
+        let server = MockServer::start().await;
+        let mut mw_api = mock_api(&server).await;
+
+        let not_blocked: serde_json::Value =
+            serde_json::from_str(include_str!("../test_data/user_not_blocked.json")).unwrap();
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&not_blocked))
+            .mount(&server)
+            .await;
+
+        let result = QuickStatements::is_user_blocked(&mut mw_api, "Magnus Manske").await;
+        assert_eq!(result, Ok(false));
+    }
+
+    #[tokio::test]
+    async fn test_is_user_blocked_true() {
+        let server = MockServer::start().await;
+        let mut mw_api = mock_api(&server).await;
+
+        let blocked: serde_json::Value =
+            serde_json::from_str(include_str!("../test_data/user_blocked.json")).unwrap();
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&blocked))
+            .mount(&server)
+            .await;
+
+        let result = QuickStatements::is_user_blocked(&mut mw_api, "Yves Schneider").await;
+        assert_eq!(result, Ok(true));
     }
 
     #[test]
