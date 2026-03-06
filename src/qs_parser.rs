@@ -43,42 +43,31 @@ pub enum Value {
     Time(TimeValue),
 }
 
-impl Value {
-    pub fn to_string(&self) -> Option<String> {
-        lazy_static! {
-            static ref RE_UNIT: Regex = Regex::new(r#"/Q(\d+)$"#).unwrap();
-        }
-
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Self::Entity(v) => Some(v.to_string()),
-            Self::GlobeCoordinate(v) => Some(
-                [
-                    "@".to_string(),
-                    v.latitude().to_string(),
-                    "/".to_string(),
-                    v.longitude().to_string(),
-                ]
-                .join("")
-                .to_string(),
-            ),
-            Self::MonoLingualText(v) => Some(format!("{}:\"{}\"", v.language(), v.text())),
+            Self::Entity(v) => write!(f, "{}", v),
+            Self::GlobeCoordinate(v) => {
+                write!(f, "@{}/{}", v.latitude(), v.longitude())
+            }
+            Self::MonoLingualText(v) => write!(f, "{}:\"{}\"", v.language(), v.text()),
             Self::Quantity(v) => {
-                let mut ret = vec![v.amount().to_string()];
+                write!(f, "{}", v.amount())?;
                 if let (Some(lower), Some(upper)) = (v.lower_bound(), v.upper_bound()) {
-                    ret.push(format!("[{lower},{upper}]"));
+                    write!(f, "[{lower},{upper}]")?;
                 }
                 if v.unit() != "1" {
-                    let unit = v.unit().to_string();
-                    // TODO captures
-                    ret.push(unit);
+                    write!(f, "{}", v.unit())?;
                 }
-                Some(ret.join("").to_string())
+                Ok(())
             }
-            Self::String(v) => Some("\"".to_string() + v + "\""),
-            Self::Time(v) => Some(v.time().to_string() + "/" + &v.precision().to_string()),
+            Self::String(v) => write!(f, "\"{}\"", v),
+            Self::Time(v) => write!(f, "{}/{}", v.time(), v.precision()),
         }
     }
+}
 
+impl Value {
     /// Returns the datavalue
     pub fn to_json(&self) -> Result<serde_json::Value, String> {
         Ok(match self {
@@ -114,8 +103,8 @@ impl PropertyValue {
         Self { property, value }
     }
 
-    pub fn to_string_tuple(&self) -> Option<(String, String)> {
-        Some((self.property.id().to_string(), self.value.to_string()?))
+    pub fn to_string_tuple(&self) -> (String, String) {
+        (self.property.id().to_string(), self.value.to_string())
     }
 }
 
@@ -676,15 +665,15 @@ impl QuickStatementsParser {
                 let mut ret = vec![
                     self.item.clone()?.to_string(),
                     self.property.clone()?.id().to_string(),
-                    self.value.clone()?.to_string()?,
+                    self.value.clone()?.to_string(),
                 ];
                 for qualifier in &self.qualifiers {
-                    let res = qualifier.to_string_tuple()?;
+                    let res = qualifier.to_string_tuple();
                     ret.push(res.0);
                     ret.push(res.1);
                 }
                 for reference in &self.references {
-                    let mut res = reference.to_string_tuple()?;
+                    let mut res = reference.to_string_tuple();
                     res.0.replace_range(0..1, "S");
                     ret.push(res.0);
                     ret.push(res.1);
