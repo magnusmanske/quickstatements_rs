@@ -340,18 +340,12 @@ impl QuickStatements {
         new_status: &str,
         new_message: Option<String>,
     ) -> Option<()> {
-        command.json["meta"]["status"] = json!(new_status.to_string().trim().to_uppercase());
+        command.json["meta"]["status"] = json!(new_status.trim().to_uppercase());
 
-        let message: String = match &new_message {
-            Some(s) => s.to_string(),
-            None => "".to_string(),
-        };
+        let message = new_message.as_deref().unwrap_or("");
         command.json["meta"]["message"] = json!(message);
 
-        let json = match serde_json::to_string(&command.json) {
-            Ok(s) => s,
-            _ => "{}".to_string(),
-        };
+        let json = serde_json::to_string(&command.json).unwrap_or_else(|_| "{}".to_string());
 
         let command_id = command.id;
         let ts = self.timestamp();
