@@ -1,10 +1,13 @@
 use regex::Regex;
-use std::fmt;
 use wikibase::mediawiki::api::Api;
 use wikibase::{
-    Coordinate, EntityType, EntityValue, LocaleString, MonoLingualText, QuantityValue, SiteLink,
-    TimeValue,
+    Coordinate, EntityType, EntityValue, LocaleString, MonoLingualText, SiteLink, TimeValue,
 };
+
+use crate::command_type::{CommandModifier, CommandType};
+use crate::entity_id::EntityID;
+use crate::property_value::PropertyValue;
+use crate::value::Value;
 
 pub const COMMONS_API: &str = "https://commons.wikimedia.org/w/api.php";
 const GREGORIAN_CALENDAR: &str = "http://www.wikidata.org/entity/Q1985727";
@@ -19,126 +22,19 @@ Senses in the form Lxxx-Syy.
 */
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum EntityID {
-    Id(EntityValue),
-    Last,
-}
-
-impl fmt::Display for EntityID {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            EntityID::Id(e) => write!(f, "{}", e.id()),
-            EntityID::Last => write!(f, "LAST"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Value {
-    Entity(EntityID),
-    GlobeCoordinate(Coordinate),
-    MonoLingualText(MonoLingualText),
-    Quantity(QuantityValue),
-    String(String),
-    Time(TimeValue),
-}
-
-impl fmt::Display for Value {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Self::Entity(v) => write!(f, "{}", v),
-            Self::GlobeCoordinate(v) => {
-                write!(f, "@{}/{}", v.latitude(), v.longitude())
-            }
-            Self::MonoLingualText(v) => write!(f, "{}:\"{}\"", v.language(), v.text()),
-            Self::Quantity(v) => {
-                write!(f, "{}", v.amount())?;
-                if let (Some(lower), Some(upper)) = (v.lower_bound(), v.upper_bound()) {
-                    write!(f, "[{lower},{upper}]")?;
-                }
-                if v.unit() != "1" {
-                    write!(f, "{}", v.unit())?;
-                }
-                Ok(())
-            }
-            Self::String(v) => write!(f, "\"{}\"", v),
-            Self::Time(v) => write!(f, "{}/{}", v.time(), v.precision()),
-        }
-    }
-}
-
-impl Value {
-    /// Returns the datavalue
-    pub fn to_json(&self) -> Result<serde_json::Value, String> {
-        Ok(match self {
-            Self::Entity(id) => json!({
-                "type" : "wikibase-entityid",
-                "value" : { "entity-type": "item", "id":id.to_string() }
-            }),
-            Self::String(v) => json!({"type":"string","value":v.to_string()}),
-            Self::Time(v) => json!({"value":v,"type":"time"}),
-            Self::GlobeCoordinate(v) => json!({"value":{
-                "globe":v.globe(),
-                "latitude":v.latitude(),
-                "longitude":v.longitude(),
-                "precision":1e-6,
-            },"type":"globecoordinate"}),
-            Self::MonoLingualText(v) => json!({"value":v,"type":"monolingualtext"}),
-            Self::Quantity(v) => json!({"value":{
-                "amount":format!("{}",v.amount()),
-                "unit":v.unit(),
-            },"type":"quantity"}),
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct PropertyValue {
-    property: EntityValue,
-    value: Value,
-}
-
-impl PropertyValue {
-    pub fn new(property: EntityValue, value: Value) -> Self {
-        Self { property, value }
-    }
-
-    pub fn to_string_tuple(&self) -> (String, String) {
-        (self.property.id().to_string(), self.value.to_string())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum CommandType {
-    Create,
-    Merge,
-    EditStatement,
-    SetLabel,
-    SetDescription,
-    SetAlias,
-    SetSitelink,
-    Unknown,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum CommandModifier {
-    Remove,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct QuickStatementsParser {
-    command: CommandType,
-    item: Option<EntityID>,
-    target_item: Option<EntityID>, // For MERGE
-    property: Option<EntityValue>,
-    value: Option<Value>,
-    modifier: Option<CommandModifier>,
-    references: Vec<PropertyValue>,
-    qualifiers: Vec<PropertyValue>,
-    sitelink: Option<SiteLink>,
-    locale_string: Option<LocaleString>,
-    comment: Option<String>,
-    create_data: Option<serde_json::Value>,
+    pub command: CommandType,
+    pub item: Option<EntityID>,
+    pub target_item: Option<EntityID>, // For MERGE
+    pub property: Option<EntityValue>,
+    pub value: Option<Value>,
+    pub modifier: Option<CommandModifier>,
+    pub references: Vec<PropertyValue>,
+    pub qualifiers: Vec<PropertyValue>,
+    pub sitelink: Option<SiteLink>,
+    pub locale_string: Option<LocaleString>,
+    pub comment: Option<String>,
+    pub create_data: Option<serde_json::Value>,
 }
 
 impl QuickStatementsParser {
@@ -987,6 +883,10 @@ impl QuickStatementsParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command_type::{CommandModifier, CommandType};
+    use crate::entity_id::EntityID;
+    use crate::property_value::PropertyValue;
+    use crate::value::Value;
     use wiremock::matchers::{method, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
