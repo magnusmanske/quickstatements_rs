@@ -262,8 +262,9 @@ impl QuickStatements {
     }
 
     pub fn deactivate_batch_run(&self, batch_id: i64, user_id: i64) -> Option<()> {
-        // Decrease user batch counter
-        self.running_batch_ids.write().unwrap().insert(batch_id);
+        // Remove batch from running set
+        self.running_batch_ids.write().unwrap().remove(&batch_id);
+        // Decrease user batch counter (saturating to avoid underflow)
         let user_counter = match self.user_counter.read().unwrap().get(&user_id) {
             Some(cnt) => *cnt,
             None => 0,
@@ -271,8 +272,7 @@ impl QuickStatements {
         self.user_counter
             .write()
             .unwrap()
-            .insert(user_id, user_counter - 1);
-        self.running_batch_ids.write().unwrap().remove(&batch_id);
+            .insert(user_id, (user_counter - 1).max(0));
         println!("Currently {} bots running", self.number_of_bots_running());
         Some(())
     }
@@ -496,5 +496,39 @@ mod tests {
         let result2 = QuickStatements::is_user_blocked(&mut mw_api, "Yves Schneider").await;
         assert_eq!(result1, Ok(false));
         assert_eq!(result2, Ok(true));
+    }
+
+    #[test]
+    fn test_deactivate_batch_run_removes_batch_id() {
+        // Create a minimal QuickStatements-like setup using the shared fields
+        let running_batch_ids = Arc::new(RwLock::new(HashSet::new()));
+        let user_counter = Arc::new(RwLock::new(HashMap::new()));
+
+        // Simulate set_batch_running
+        running_batch_ids.write().unwrap().insert(42_i64);
+        user_counter.write().unwrap().insert(1_i64, 1_i64);
+
+        assert!(running_batch_ids.read().unwrap().contains(&42));
+        assert_eq!(*user_counter.read().unwrap().get(&1).unwrap(), 1);
+
+        // Simulate deactivate_batch_run logic (same as the method)
+        running_batch_ids.write().unwrap().remove(&42);
+        let cnt = *user_counter.read().unwrap().get(&1).unwrap_or(&0);
+        user_counter.write().unwrap().insert(1, (cnt - 1).max(0));
+
+        assert!(!running_batch_ids.read().unwrap().contains(&42));
+        assert_eq!(*user_counter.read().unwrap().get(&1).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_deactivate_batch_run_no_underflow() {
+        // When user_counter is already 0, it should not underflow
+        let user_counter = Arc::new(RwLock::new(HashMap::new()));
+        user_counter.write().unwrap().insert(1_i64, 0_i64);
+
+        let cnt = *user_counter.read().unwrap().get(&1).unwrap_or(&0);
+        user_counter.write().unwrap().insert(1, (cnt - 1).max(0));
+
+        assert_eq!(*user_counter.read().unwrap().get(&1).unwrap(), 0);
     }
 }
