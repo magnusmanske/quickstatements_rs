@@ -297,6 +297,116 @@ impl QuickStatementsCommand {
         }))
     }
 
+    fn action_add_form(&self) -> Result<Value, String> {
+        let item = self.json["item"].as_str().ok_or("ADD_FORM: item not set")?;
+        let data = serde_json::to_string(&self.json["data"])
+            .map_err(|e| format!("ADD_FORM: {:?}", e))?;
+        Ok(json!({
+            "action": "wbladdform",
+            "lexemeId": item,
+            "data": data,
+        }))
+    }
+
+    fn action_add_sense(&self) -> Result<Value, String> {
+        let item = self.json["item"].as_str().ok_or("ADD_SENSE: item not set")?;
+        let data = serde_json::to_string(&self.json["data"])
+            .map_err(|e| format!("ADD_SENSE: {:?}", e))?;
+        Ok(json!({
+            "action": "wbladdsense",
+            "lexemeId": item,
+            "data": data,
+        }))
+    }
+
+    fn action_set_lemma(&self) -> Result<Value, String> {
+        let item = self.json["item"].as_str().ok_or("SetLemma: item not set")?;
+        let language = self.json["language"].as_str().ok_or("SetLemma: language not set")?;
+        let value = self.json["value"].as_str().ok_or("SetLemma: value not set")?;
+        let data = serde_json::to_string(&json!({
+            "lemmas": {
+                language: {"language": language, "value": value}
+            }
+        })).map_err(|e| format!("SetLemma: {:?}", e))?;
+        Ok(json!({
+            "action": "wbeditentity",
+            "id": item,
+            "data": data,
+        }))
+    }
+
+    fn action_set_lexical_category(&self) -> Result<Value, String> {
+        let item = self.json["item"].as_str().ok_or("SetLexicalCategory: item not set")?;
+        let value = self.json["value"].as_str().ok_or("SetLexicalCategory: value not set")?;
+        let data = serde_json::to_string(&json!({
+            "lexicalCategory": value
+        })).map_err(|e| format!("SetLexicalCategory: {:?}", e))?;
+        Ok(json!({
+            "action": "wbeditentity",
+            "id": item,
+            "data": data,
+        }))
+    }
+
+    fn action_set_language(&self) -> Result<Value, String> {
+        let item = self.json["item"].as_str().ok_or("SetLanguage: item not set")?;
+        let value = self.json["value"].as_str().ok_or("SetLanguage: value not set")?;
+        let data = serde_json::to_string(&json!({
+            "language": value
+        })).map_err(|e| format!("SetLanguage: {:?}", e))?;
+        Ok(json!({
+            "action": "wbeditentity",
+            "id": item,
+            "data": data,
+        }))
+    }
+
+    fn action_set_form_representation(&self) -> Result<Value, String> {
+        let item = self.json["item"].as_str().ok_or("SetFormRepresentation: item not set")?;
+        let language = self.json["language"].as_str().ok_or("SetFormRepresentation: language not set")?;
+        let value = self.json["value"].as_str().ok_or("SetFormRepresentation: value not set")?;
+        let data = serde_json::to_string(&json!({
+            "representations": {
+                language: {"language": language, "value": value}
+            }
+        })).map_err(|e| format!("SetFormRepresentation: {:?}", e))?;
+        Ok(json!({
+            "action": "wbleditformelements",
+            "formId": item,
+            "data": data,
+        }))
+    }
+
+    fn action_set_grammatical_feature(&self) -> Result<Value, String> {
+        let item = self.json["item"].as_str().ok_or("SetGrammaticalFeature: item not set")?;
+        let features = &self.json["value"];
+        let features_arr = features.as_array().ok_or("SetGrammaticalFeature: value not an array")?;
+        let data = serde_json::to_string(&json!({
+            "grammaticalFeatures": features_arr
+        })).map_err(|e| format!("SetGrammaticalFeature: {:?}", e))?;
+        Ok(json!({
+            "action": "wbleditformelements",
+            "formId": item,
+            "data": data,
+        }))
+    }
+
+    fn action_set_sense_gloss(&self) -> Result<Value, String> {
+        let item = self.json["item"].as_str().ok_or("SetSenseGloss: item not set")?;
+        let language = self.json["language"].as_str().ok_or("SetSenseGloss: language not set")?;
+        let value = self.json["value"].as_str().ok_or("SetSenseGloss: value not set")?;
+        let data = serde_json::to_string(&json!({
+            "glosses": {
+                language: {"language": language, "value": value}
+            }
+        })).map_err(|e| format!("SetSenseGloss: {:?}", e))?;
+        Ok(json!({
+            "action": "wbleditsenseelements",
+            "senseId": item,
+            "data": data,
+        }))
+    }
+
     fn action_create_entity(&self) -> Result<Value, String> {
         let data = match &self.json["data"].as_object() {
             Some(_) => match serde_json::to_string(&self.json["data"]) {
@@ -336,6 +446,19 @@ impl QuickStatementsCommand {
     }
 
     fn add_to_entity(&mut self, item: &Option<wikibase::Entity>) -> Result<Value, String> {
+        // Lexeme commands that don't require loading an entity
+        match self.json["what"].as_str() {
+            Some("form") => return self.action_add_form(),
+            Some("sense") => return self.action_add_sense(),
+            Some("lemma") => return self.action_set_lemma(),
+            Some("lexical_category") => return self.action_set_lexical_category(),
+            Some("language") => return self.action_set_language(),
+            Some("representation") => return self.action_set_form_representation(),
+            Some("grammatical_feature") => return self.action_set_grammatical_feature(),
+            Some("gloss") => return self.action_set_sense_gloss(),
+            _ => {}
+        }
+
         let item = item
             .to_owned()
             .expect("QuickStatementsCommand::add_to_entity: item is None");
@@ -1439,5 +1562,172 @@ mod tests {
             QuickStatementsCommand::new_from_json(&json!({"action":"remove","what":"label"}));
         let result = c.remove_from_entity(&Some(empty_test_item()));
         assert!(result.is_err());
+    }
+
+    // ========== Lexeme command action tests ==========
+
+    #[test]
+    fn action_add_form() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "add",
+            "what": "form",
+            "item": "L123",
+            "data": {
+                "representations": {"en": {"language": "en", "value": "running"}},
+                "grammaticalFeatures": ["Q146786"]
+            }
+        }));
+        let result = c.action_add_form().unwrap();
+        assert_eq!(result["action"], "wbladdform");
+        assert_eq!(result["lexemeId"], "L123");
+        assert!(result["data"].as_str().is_some());
+    }
+
+    #[test]
+    fn action_add_sense() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "add",
+            "what": "sense",
+            "item": "L123",
+            "data": {
+                "glosses": {"en": {"language": "en", "value": "transparent liquid"}}
+            }
+        }));
+        let result = c.action_add_sense().unwrap();
+        assert_eq!(result["action"], "wbladdsense");
+        assert_eq!(result["lexemeId"], "L123");
+    }
+
+    #[test]
+    fn action_set_lemma() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "add",
+            "what": "lemma",
+            "item": "L123",
+            "language": "en",
+            "value": "water"
+        }));
+        let result = c.action_set_lemma().unwrap();
+        assert_eq!(result["action"], "wbeditentity");
+        assert_eq!(result["id"], "L123");
+        let data: serde_json::Value = serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data["lemmas"]["en"]["value"], "water");
+    }
+
+    #[test]
+    fn action_set_lexical_category() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "add",
+            "what": "lexical_category",
+            "item": "L123",
+            "value": "Q1084"
+        }));
+        let result = c.action_set_lexical_category().unwrap();
+        assert_eq!(result["action"], "wbeditentity");
+        assert_eq!(result["id"], "L123");
+        let data: serde_json::Value = serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data["lexicalCategory"], "Q1084");
+    }
+
+    #[test]
+    fn action_set_language() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "add",
+            "what": "language",
+            "item": "L123",
+            "value": "Q7725"
+        }));
+        let result = c.action_set_language().unwrap();
+        assert_eq!(result["action"], "wbeditentity");
+        assert_eq!(result["id"], "L123");
+        let data: serde_json::Value = serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data["language"], "Q7725");
+    }
+
+    #[test]
+    fn action_set_form_representation() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "add",
+            "what": "representation",
+            "item": "L123-F1",
+            "language": "en",
+            "value": "running"
+        }));
+        let result = c.action_set_form_representation().unwrap();
+        assert_eq!(result["action"], "wbleditformelements");
+        assert_eq!(result["formId"], "L123-F1");
+        let data: serde_json::Value = serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data["representations"]["en"]["value"], "running");
+    }
+
+    #[test]
+    fn action_set_grammatical_feature() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "add",
+            "what": "grammatical_feature",
+            "item": "L123-F1",
+            "value": ["Q1", "Q2", "Q3"]
+        }));
+        let result = c.action_set_grammatical_feature().unwrap();
+        assert_eq!(result["action"], "wbleditformelements");
+        assert_eq!(result["formId"], "L123-F1");
+        let data: serde_json::Value = serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data["grammaticalFeatures"], json!(["Q1", "Q2", "Q3"]));
+    }
+
+    #[test]
+    fn action_set_sense_gloss() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "add",
+            "what": "gloss",
+            "item": "L123-S1",
+            "language": "en",
+            "value": "act of running"
+        }));
+        let result = c.action_set_sense_gloss().unwrap();
+        assert_eq!(result["action"], "wbleditsenseelements");
+        assert_eq!(result["senseId"], "L123-S1");
+        let data: serde_json::Value = serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data["glosses"]["en"]["value"], "act of running");
+    }
+
+    #[test]
+    fn action_to_execute_add_form() {
+        let mut c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "add",
+            "what": "form",
+            "item": "L123",
+            "data": {"representations": {"en": {"language": "en", "value": "running"}}}
+        }));
+        let result = c.action_to_execute(&None).unwrap();
+        assert_eq!(result["action"], "wbladdform");
+    }
+
+    #[test]
+    fn action_to_execute_add_sense() {
+        let mut c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "add",
+            "what": "sense",
+            "item": "L123",
+            "data": {"glosses": {"en": {"language": "en", "value": "liquid"}}}
+        }));
+        let result = c.action_to_execute(&None).unwrap();
+        assert_eq!(result["action"], "wbladdsense");
+    }
+
+    #[test]
+    fn action_create_lexeme() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "create",
+            "type": "lexeme",
+            "data": {
+                "language": "Q7725",
+                "lexicalCategory": "Q1084",
+                "lemmas": {"en": {"language": "en", "value": "water"}}
+            }
+        }));
+        let result = c.action_create_entity().unwrap();
+        assert_eq!(result["action"], "wbeditentity");
+        assert_eq!(result["new"], "lexeme");
     }
 }

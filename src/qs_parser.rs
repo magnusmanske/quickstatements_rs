@@ -14,13 +14,6 @@ const GREGORIAN_CALENDAR: &str = "http://www.wikidata.org/entity/Q1985727";
 const GLOBE_EARTH: &str = "http://www.wikidata.org/entity/Q2";
 const PHP_COMPATIBILITY: bool = true; // TODO
 
-/*
-TODO:
-Lexemes in the form Lxxx.
-Forms in the form Lxxx-Fyy.
-Senses in the form Lxxx-Syy.
-*/
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct QuickStatementsParser {
     pub command: CommandType,
@@ -35,6 +28,13 @@ pub struct QuickStatementsParser {
     pub locale_string: Option<LocaleString>,
     pub comment: Option<String>,
     pub create_data: Option<serde_json::Value>,
+    // Lexeme-specific fields
+    pub lexeme_language: Option<String>,         // Q-id for language
+    pub lexeme_category: Option<String>,         // Q-id for lexical category
+    pub lemmas: Vec<MonoLingualText>,            // Lemmas (lang:"text" pairs)
+    pub representations: Vec<MonoLingualText>,   // Form representations
+    pub glosses: Vec<MonoLingualText>,           // Sense glosses
+    pub grammatical_features: Vec<String>,       // Q-ids for grammatical features
 }
 
 impl QuickStatementsParser {
@@ -58,6 +58,7 @@ impl QuickStatementsParser {
 
         match parts[0].to_uppercase().as_str() {
             "CREATE" => return Self::new_create(comment),
+            "CREATE_LEXEME" => return Self::new_create_lexeme(&parts[1..], comment),
             "MERGE" => {
                 return Self::new_merge(
                     parts.get(1).map(|s| s.as_str()),
@@ -75,6 +76,40 @@ impl QuickStatementsParser {
         // Try to convert a page title into an entity ID
         if let Some(id) = Self::get_entity_id_from_title(&parts[0], api).await {
             parts[0] = id
+        }
+
+        // Check for lexeme sub-entity commands (second column)
+        match parts[1].to_uppercase().as_str() {
+            "ADD_FORM" => return Self::new_add_form(&parts, comment),
+            "ADD_SENSE" => return Self::new_add_sense(&parts, comment),
+            "LEXICAL_CATEGORY" => return Self::new_set_lexical_category(&parts, comment),
+            "LANGUAGE" => return Self::new_set_language(&parts, comment),
+            _ => {}
+        }
+
+        // Check for Lemma_xx, Rep_xx, Gloss_xx patterns
+        {
+            lazy_static! {
+                static ref RE_LEMMA: Regex = Regex::new(r#"(?i)^Lemma_([a-z_-]+)$"#).unwrap();
+                static ref RE_REP: Regex = Regex::new(r#"(?i)^Rep_([a-z_-]+)$"#).unwrap();
+                static ref RE_GLOSS: Regex = Regex::new(r#"(?i)^Gloss_([a-z_-]+)$"#).unwrap();
+                static ref RE_GRAMMATICAL_FEATURE: Regex = Regex::new(r#"(?i)^GRAMMATICAL_FEATURE$"#).unwrap();
+            }
+            if let Some(caps) = RE_LEMMA.captures(&parts[1]) {
+                let lang = caps.get(1).unwrap().as_str().to_lowercase();
+                return Self::new_set_lemma(&parts[0], &lang, &parts[2], comment);
+            }
+            if let Some(caps) = RE_REP.captures(&parts[1]) {
+                let lang = caps.get(1).unwrap().as_str().to_lowercase();
+                return Self::new_set_form_representation(&parts[0], &lang, &parts[2], comment);
+            }
+            if let Some(caps) = RE_GLOSS.captures(&parts[1]) {
+                let lang = caps.get(1).unwrap().as_str().to_lowercase();
+                return Self::new_set_sense_gloss(&parts[0], &lang, &parts[2], comment);
+            }
+            if RE_GRAMMATICAL_FEATURE.is_match(&parts[1]) {
+                return Self::new_set_grammatical_feature(&parts[0], &parts[2], comment);
+            }
         }
 
         if let Some(caps) = RE_META.captures(&parts[1]) {
@@ -126,6 +161,12 @@ impl QuickStatementsParser {
             locale_string: None,
             comment: None,
             create_data: None,
+            lexeme_language: None,
+            lexeme_category: None,
+            lemmas: vec![],
+            representations: vec![],
+            glosses: vec![],
+            grammatical_features: vec![],
         }
     }
 
@@ -458,12 +499,22 @@ impl QuickStatementsParser {
         lazy_static! {
             static ref RE_ENTITY_ID: Regex = Regex::new(r#"^[A-Z]\d+$"#)
                 .expect("QuickStatementsParser::parse_item_id:RE_ENTITY_ID does not compile");
+            static ref RE_FORM_ID: Regex = Regex::new(r#"^L\d+-F\d+$"#)
+                .expect("QuickStatementsParser::parse_item_id:RE_FORM_ID does not compile");
+            static ref RE_SENSE_ID: Regex = Regex::new(r#"^L\d+-S\d+$"#)
+                .expect("QuickStatementsParser::parse_item_id:RE_SENSE_ID does not compile");
         }
         match id {
             Some(orig_id) => {
                 let id = orig_id.trim().to_uppercase();
                 if id == "LAST" {
                     return Ok(EntityID::Last);
+                }
+                // Support L123-F1 (form) and L123-S1 (sense) sub-entity IDs
+                if RE_FORM_ID.is_match(&id) || RE_SENSE_ID.is_match(&id) {
+                    // Use Lexeme entity type for the base lexeme, store full sub-entity ID
+                    let ev = EntityValue::new(EntityType::Lexeme, id);
+                    return Ok(EntityID::Id(ev));
                 }
                 if RE_ENTITY_ID.is_match(&id) {
                     let et = match EntityType::new_from_id(&id) {
@@ -534,6 +585,213 @@ impl QuickStatementsParser {
         }
     }
 
+    /// Parses monolingual text values and Q-ids from a slice of parts.
+    /// Returns (monolingual_texts, q_ids).
+    fn parse_lexeme_args(parts: &[String]) -> Result<(Vec<MonoLingualText>, Vec<String>), String> {
+        lazy_static! {
+            static ref RE_MONO: Regex = Regex::new(r#"^([a-z][a-z0-9_-]*):"(.*)"$"#).unwrap();
+            static ref RE_QID: Regex = Regex::new(r#"^Q\d+$"#).unwrap();
+            static ref RE_QIDS_COMMA: Regex = Regex::new(r#"^Q\d+(,Q\d+)*$"#).unwrap();
+        }
+        let mut texts = vec![];
+        let mut qids = vec![];
+        for part in parts {
+            let trimmed = part.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Some(caps) = RE_MONO.captures(trimmed) {
+                let lang = caps.get(1).unwrap().as_str();
+                let text = caps.get(2).unwrap().as_str();
+                texts.push(MonoLingualText::new(text, lang));
+            } else if RE_QIDS_COMMA.is_match(&trimmed.to_uppercase()) {
+                for qid in trimmed.to_uppercase().split(',') {
+                    qids.push(qid.to_string());
+                }
+            } else {
+                return Err(format!("Cannot parse lexeme argument: '{}'", trimmed));
+            }
+        }
+        Ok((texts, qids))
+    }
+
+    fn new_create_lexeme(parts: &[String], comment: Option<String>) -> Result<Self, String> {
+        if parts.len() < 3 {
+            return Err("CREATE_LEXEME requires at least language, lexical category, and one lemma".to_string());
+        }
+        let mut ret = Self::new_blank_with_comment(comment);
+        ret.command = CommandType::CreateLexeme;
+
+        // First two args must be Q-ids (language and lexical category)
+        let lang_id = parts[0].trim().to_uppercase();
+        let cat_id = parts[1].trim().to_uppercase();
+        lazy_static! {
+            static ref RE_QID: Regex = Regex::new(r#"^Q\d+$"#).unwrap();
+        }
+        if !RE_QID.is_match(&lang_id) {
+            return Err(format!("CREATE_LEXEME: invalid language item '{}'", &parts[0]));
+        }
+        if !RE_QID.is_match(&cat_id) {
+            return Err(format!("CREATE_LEXEME: invalid lexical category item '{}'", &parts[1]));
+        }
+        ret.lexeme_language = Some(lang_id);
+        ret.lexeme_category = Some(cat_id);
+
+        // Remaining args are lemmas (lang:"text")
+        let (lemmas, _) = Self::parse_lexeme_args(&parts[2..])?;
+        if lemmas.is_empty() {
+            return Err("CREATE_LEXEME requires at least one lemma".to_string());
+        }
+        ret.lemmas = lemmas;
+        Ok(ret)
+    }
+
+    fn new_add_form(parts: &[String], comment: Option<String>) -> Result<Self, String> {
+        // parts[0] = entity (L123 or LAST), parts[1] = ADD_FORM, parts[2..] = representations and grammatical features
+        if parts.len() < 3 {
+            return Err("ADD_FORM requires at least one representation".to_string());
+        }
+        let mut ret = Self::new_blank_with_comment(comment);
+        ret.command = CommandType::AddForm;
+        let first = parts[0].trim().to_uppercase();
+        ret.item = Some(Self::parse_item_id(Some(&first))?);
+
+        let (representations, features) = Self::parse_lexeme_args(&parts[2..])?;
+        if representations.is_empty() {
+            return Err("ADD_FORM requires at least one representation".to_string());
+        }
+        ret.representations = representations;
+        ret.grammatical_features = features;
+        Ok(ret)
+    }
+
+    fn new_add_sense(parts: &[String], comment: Option<String>) -> Result<Self, String> {
+        // parts[0] = entity (L123 or LAST), parts[1] = ADD_SENSE, parts[2..] = glosses
+        if parts.len() < 3 {
+            return Err("ADD_SENSE requires at least one gloss".to_string());
+        }
+        let mut ret = Self::new_blank_with_comment(comment);
+        ret.command = CommandType::AddSense;
+        let first = parts[0].trim().to_uppercase();
+        ret.item = Some(Self::parse_item_id(Some(&first))?);
+
+        let (glosses, _) = Self::parse_lexeme_args(&parts[2..])?;
+        if glosses.is_empty() {
+            return Err("ADD_SENSE requires at least one gloss".to_string());
+        }
+        ret.glosses = glosses;
+        Ok(ret)
+    }
+
+    fn new_set_lemma(
+        entity: &str,
+        lang: &str,
+        value: &str,
+        comment: Option<String>,
+    ) -> Result<Self, String> {
+        let value = match Self::parse_value(value.to_string()) {
+            Some(Value::String(s)) => s,
+            _ => return Err(format!("Bad lemma value: '{}'", value)),
+        };
+        let mut ret = Self::new_blank_with_comment(comment);
+        ret.command = CommandType::SetLemma;
+        ret.item = Some(Self::parse_item_id(Some(&entity.trim().to_uppercase()))?);
+        ret.locale_string = Some(LocaleString::new(lang, &value));
+        Ok(ret)
+    }
+
+    fn new_set_lexical_category(
+        parts: &[String],
+        comment: Option<String>,
+    ) -> Result<Self, String> {
+        if parts.len() < 3 {
+            return Err("LEXICAL_CATEGORY requires a Q-id value".to_string());
+        }
+        let mut ret = Self::new_blank_with_comment(comment);
+        ret.command = CommandType::SetLexicalCategory;
+        ret.item = Some(Self::parse_item_id(Some(&parts[0].trim().to_uppercase()))?);
+        let qid = parts[2].trim().to_uppercase();
+        lazy_static! {
+            static ref RE_QID: Regex = Regex::new(r#"^Q\d+$"#).unwrap();
+        }
+        if !RE_QID.is_match(&qid) {
+            return Err(format!("LEXICAL_CATEGORY: invalid Q-id '{}'", &parts[2]));
+        }
+        ret.lexeme_category = Some(qid);
+        Ok(ret)
+    }
+
+    fn new_set_language(parts: &[String], comment: Option<String>) -> Result<Self, String> {
+        if parts.len() < 3 {
+            return Err("LANGUAGE requires a Q-id value".to_string());
+        }
+        let mut ret = Self::new_blank_with_comment(comment);
+        ret.command = CommandType::SetLanguage;
+        ret.item = Some(Self::parse_item_id(Some(&parts[0].trim().to_uppercase()))?);
+        let qid = parts[2].trim().to_uppercase();
+        lazy_static! {
+            static ref RE_QID: Regex = Regex::new(r#"^Q\d+$"#).unwrap();
+        }
+        if !RE_QID.is_match(&qid) {
+            return Err(format!("LANGUAGE: invalid Q-id '{}'", &parts[2]));
+        }
+        ret.lexeme_language = Some(qid);
+        Ok(ret)
+    }
+
+    fn new_set_form_representation(
+        entity: &str,
+        lang: &str,
+        value: &str,
+        comment: Option<String>,
+    ) -> Result<Self, String> {
+        let value = match Self::parse_value(value.to_string()) {
+            Some(Value::String(s)) => s,
+            _ => return Err(format!("Bad representation value: '{}'", value)),
+        };
+        let mut ret = Self::new_blank_with_comment(comment);
+        ret.command = CommandType::SetFormRepresentation;
+        ret.item = Some(Self::parse_item_id(Some(&entity.trim().to_uppercase()))?);
+        ret.locale_string = Some(LocaleString::new(lang, &value));
+        Ok(ret)
+    }
+
+    fn new_set_grammatical_feature(
+        entity: &str,
+        value: &str,
+        comment: Option<String>,
+    ) -> Result<Self, String> {
+        let mut ret = Self::new_blank_with_comment(comment);
+        ret.command = CommandType::SetGrammaticalFeature;
+        ret.item = Some(Self::parse_item_id(Some(&entity.trim().to_uppercase()))?);
+        lazy_static! {
+            static ref RE_QIDS_COMMA: Regex = Regex::new(r#"^Q\d+(,Q\d+)*$"#).unwrap();
+        }
+        let val = value.trim().to_uppercase();
+        if !RE_QIDS_COMMA.is_match(&val) {
+            return Err(format!("GRAMMATICAL_FEATURE: invalid Q-id list '{}'", value));
+        }
+        ret.grammatical_features = val.split(',').map(|s| s.to_string()).collect();
+        Ok(ret)
+    }
+
+    fn new_set_sense_gloss(
+        entity: &str,
+        lang: &str,
+        value: &str,
+        comment: Option<String>,
+    ) -> Result<Self, String> {
+        let value = match Self::parse_value(value.to_string()) {
+            Some(Value::String(s)) => s,
+            _ => return Err(format!("Bad gloss value: '{}'", value)),
+        };
+        let mut ret = Self::new_blank_with_comment(comment);
+        ret.command = CommandType::SetSenseGloss;
+        ret.item = Some(Self::parse_item_id(Some(&entity.trim().to_uppercase()))?);
+        ret.locale_string = Some(LocaleString::new(lang, &value));
+        Ok(ret)
+    }
+
     fn parse_comment(line: &str) -> (String, Option<String>) {
         lazy_static! {
             static ref RE_COMMENT: Regex = Regex::new(r#"^(.*)/\*\s*(.*?)\s*\*/(.*)$"#)
@@ -598,6 +856,70 @@ impl QuickStatementsParser {
                 self.item.clone()?.to_string(),
                 "S".to_string() + self.sitelink.clone()?.site(),
                 Self::quote(self.sitelink.clone()?.title()),
+            ],
+            CommandType::CreateLexeme => {
+                let mut ret = vec![
+                    "CREATE_LEXEME".to_string(),
+                    self.lexeme_language.clone()?,
+                    self.lexeme_category.clone()?,
+                ];
+                for lemma in &self.lemmas {
+                    ret.push(format!("{}:\"{}\"", lemma.language(), lemma.text()));
+                }
+                ret
+            }
+            CommandType::AddForm => {
+                let mut ret = vec![
+                    self.item.clone()?.to_string(),
+                    "ADD_FORM".to_string(),
+                ];
+                for rep in &self.representations {
+                    ret.push(format!("{}:\"{}\"", rep.language(), rep.text()));
+                }
+                for feat in &self.grammatical_features {
+                    ret.push(feat.clone());
+                }
+                ret
+            }
+            CommandType::AddSense => {
+                let mut ret = vec![
+                    self.item.clone()?.to_string(),
+                    "ADD_SENSE".to_string(),
+                ];
+                for gloss in &self.glosses {
+                    ret.push(format!("{}:\"{}\"", gloss.language(), gloss.text()));
+                }
+                ret
+            }
+            CommandType::SetLemma => vec![
+                self.item.clone()?.to_string(),
+                format!("Lemma_{}", self.locale_string.clone()?.language()),
+                Self::quote(self.locale_string.clone()?.value()),
+            ],
+            CommandType::SetLexicalCategory => vec![
+                self.item.clone()?.to_string(),
+                "LEXICAL_CATEGORY".to_string(),
+                self.lexeme_category.clone()?,
+            ],
+            CommandType::SetLanguage => vec![
+                self.item.clone()?.to_string(),
+                "LANGUAGE".to_string(),
+                self.lexeme_language.clone()?,
+            ],
+            CommandType::SetFormRepresentation => vec![
+                self.item.clone()?.to_string(),
+                format!("Rep_{}", self.locale_string.clone()?.language()),
+                Self::quote(self.locale_string.clone()?.value()),
+            ],
+            CommandType::SetGrammaticalFeature => vec![
+                self.item.clone()?.to_string(),
+                "GRAMMATICAL_FEATURE".to_string(),
+                self.grammatical_features.join(","),
+            ],
+            CommandType::SetSenseGloss => vec![
+                self.item.clone()?.to_string(),
+                format!("Gloss_{}", self.locale_string.clone()?.language()),
+                Self::quote(self.locale_string.clone()?.value()),
             ],
             CommandType::Unknown => vec![],
         };
@@ -719,6 +1041,114 @@ impl QuickStatementsParser {
                 ]),
                 _ => Err("Sitelink issue".to_string()),
             },
+            CommandType::CreateLexeme => {
+                let lang = self.lexeme_language.as_ref().ok_or("No language set for CREATE_LEXEME")?;
+                let cat = self.lexeme_category.as_ref().ok_or("No lexical category set for CREATE_LEXEME")?;
+                let mut lemmas_json = json!({});
+                for lemma in &self.lemmas {
+                    lemmas_json[lemma.language()] = json!({"language": lemma.language(), "value": lemma.text()});
+                }
+                let mut data = json!({
+                    "lemmas": lemmas_json,
+                    "language": lang,
+                    "lexicalCategory": cat,
+                });
+                if let Some(cd) = &self.create_data {
+                    // Merge any compressed create data
+                    if let Some(obj) = cd.as_object() {
+                        for (k, v) in obj {
+                            data[k] = v.clone();
+                        }
+                    }
+                }
+                let mut ret = json!({"action":"create","type":"lexeme","data":data});
+                if let Some(comment) = &self.comment {
+                    ret["summary"] = json!(comment);
+                }
+                Ok(vec![ret])
+            }
+            CommandType::AddForm => {
+                let mut representations = json!({});
+                for rep in &self.representations {
+                    representations[rep.language()] = json!({"language": rep.language(), "value": rep.text()});
+                }
+                let mut data = json!({"representations": representations});
+                if !self.grammatical_features.is_empty() {
+                    data["grammaticalFeatures"] = json!(self.grammatical_features);
+                }
+                let item_str = self.item.as_ref().ok_or("No item set for ADD_FORM")?.to_string();
+                let mut ret = json!({"action":"add","what":"form","item":item_str,"data":data});
+                if let Some(comment) = &self.comment {
+                    ret["summary"] = json!(comment);
+                }
+                Ok(vec![ret])
+            }
+            CommandType::AddSense => {
+                let mut glosses_json = json!({});
+                for gloss in &self.glosses {
+                    glosses_json[gloss.language()] = json!({"language": gloss.language(), "value": gloss.text()});
+                }
+                let data = json!({"glosses": glosses_json});
+                let item_str = self.item.as_ref().ok_or("No item set for ADD_SENSE")?.to_string();
+                let mut ret = json!({"action":"add","what":"sense","item":item_str,"data":data});
+                if let Some(comment) = &self.comment {
+                    ret["summary"] = json!(comment);
+                }
+                Ok(vec![ret])
+            }
+            CommandType::SetLemma => {
+                let ls = self.locale_string.as_ref().ok_or("No locale string for SetLemma")?;
+                let item_str = self.item.as_ref().ok_or("No item set for SetLemma")?.to_string();
+                let mut ret = json!({"action":"add","what":"lemma","item":item_str,"language":ls.language(),"value":ls.value()});
+                if let Some(comment) = &self.comment {
+                    ret["summary"] = json!(comment);
+                }
+                Ok(vec![ret])
+            }
+            CommandType::SetLexicalCategory => {
+                let cat = self.lexeme_category.as_ref().ok_or("No category for SetLexicalCategory")?;
+                let item_str = self.item.as_ref().ok_or("No item set for SetLexicalCategory")?.to_string();
+                let mut ret = json!({"action":"add","what":"lexical_category","item":item_str,"value":cat});
+                if let Some(comment) = &self.comment {
+                    ret["summary"] = json!(comment);
+                }
+                Ok(vec![ret])
+            }
+            CommandType::SetLanguage => {
+                let lang = self.lexeme_language.as_ref().ok_or("No language for SetLanguage")?;
+                let item_str = self.item.as_ref().ok_or("No item set for SetLanguage")?.to_string();
+                let mut ret = json!({"action":"add","what":"language","item":item_str,"value":lang});
+                if let Some(comment) = &self.comment {
+                    ret["summary"] = json!(comment);
+                }
+                Ok(vec![ret])
+            }
+            CommandType::SetFormRepresentation => {
+                let ls = self.locale_string.as_ref().ok_or("No locale string for SetFormRepresentation")?;
+                let item_str = self.item.as_ref().ok_or("No item set for SetFormRepresentation")?.to_string();
+                let mut ret = json!({"action":"add","what":"representation","item":item_str,"language":ls.language(),"value":ls.value()});
+                if let Some(comment) = &self.comment {
+                    ret["summary"] = json!(comment);
+                }
+                Ok(vec![ret])
+            }
+            CommandType::SetGrammaticalFeature => {
+                let item_str = self.item.as_ref().ok_or("No item set for SetGrammaticalFeature")?.to_string();
+                let mut ret = json!({"action":"add","what":"grammatical_feature","item":item_str,"value":self.grammatical_features.clone()});
+                if let Some(comment) = &self.comment {
+                    ret["summary"] = json!(comment);
+                }
+                Ok(vec![ret])
+            }
+            CommandType::SetSenseGloss => {
+                let ls = self.locale_string.as_ref().ok_or("No locale string for SetSenseGloss")?;
+                let item_str = self.item.as_ref().ok_or("No item set for SetSenseGloss")?.to_string();
+                let mut ret = json!({"action":"add","what":"gloss","item":item_str,"language":ls.language(),"value":ls.value()});
+                if let Some(comment) = &self.comment {
+                    ret["summary"] = json!(comment);
+                }
+                Ok(vec![ret])
+            }
             CommandType::Unknown => {
                 Err("QuickStatementsParser::to_json:Unknown command is not supported".to_string())
             }
@@ -739,7 +1169,9 @@ impl QuickStatementsParser {
                 continue;
             }
             let create_id = id_to_merge - 1;
-            if commands[create_id].command != CommandType::Create {
+            if commands[create_id].command != CommandType::Create
+                && commands[create_id].command != CommandType::CreateLexeme
+            {
                 id_to_merge += 1;
                 continue;
             }
@@ -874,6 +1306,13 @@ impl QuickStatementsParser {
             CommandType::SetSitelink => match &merge_command.sitelink {
                 Some(s) => {
                     cd["sitelinks"][s.site()] = json!({"site":s.site(),"title":s.title()});
+                    Some(cd)
+                }
+                None => None,
+            },
+            CommandType::SetLemma => match &merge_command.locale_string {
+                Some(s) => {
+                    cd["lemmas"][s.language()] = json!({"language": s.language(), "value": s.value()});
                     Some(cd)
                 }
                 None => None,
@@ -1821,5 +2260,554 @@ mod tests {
             QuickStatementsParser::parse_item_id(Some("P123")),
             Ok(EntityID::Id(EntityValue::new(EntityType::Property, "P123")))
         );
+    }
+
+    // ========== Lexeme syntax tests ==========
+
+    #[test]
+    fn parse_item_id_lexeme() {
+        assert_eq!(
+            QuickStatementsParser::parse_item_id(Some("L123")),
+            Ok(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123")))
+        );
+    }
+
+    #[test]
+    fn parse_item_id_form() {
+        assert_eq!(
+            QuickStatementsParser::parse_item_id(Some("L123-F1")),
+            Ok(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123-F1")))
+        );
+    }
+
+    #[test]
+    fn parse_item_id_sense() {
+        assert_eq!(
+            QuickStatementsParser::parse_item_id(Some("L123-S1")),
+            Ok(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123-S1")))
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_create_lexeme() {
+        let command = "CREATE_LEXEME\tQ7725\tQ1084\ten:\"water\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::CreateLexeme);
+        assert_eq!(qsp.lexeme_language, Some("Q7725".to_string()));
+        assert_eq!(qsp.lexeme_category, Some("Q1084".to_string()));
+        assert_eq!(qsp.lemmas.len(), 1);
+        assert_eq!(qsp.lemmas[0].language(), "en");
+        assert_eq!(qsp.lemmas[0].text(), "water");
+    }
+
+    #[tokio::test]
+    async fn parse_create_lexeme_multiple_lemmas() {
+        let command = "CREATE_LEXEME\tQ7725\tQ1084\ten:\"water\"\tfr:\"eau\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::CreateLexeme);
+        assert_eq!(qsp.lemmas.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn parse_create_lexeme_too_few_args() {
+        let result = QuickStatementsParser::new_from_line("CREATE_LEXEME\tQ7725", None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn parse_create_lexeme_no_lemma() {
+        let result =
+            QuickStatementsParser::new_from_line("CREATE_LEXEME\tQ7725\tQ1084", None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn parse_create_lexeme_bad_language() {
+        let result = QuickStatementsParser::new_from_line(
+            "CREATE_LEXEME\tBAD\tQ1084\ten:\"water\"",
+            None,
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn parse_add_form() {
+        let command = "L123\tADD_FORM\ten:\"running\"\tQ146786";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::AddForm);
+        assert_eq!(
+            qsp.item,
+            Some(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123")))
+        );
+        assert_eq!(qsp.representations.len(), 1);
+        assert_eq!(qsp.representations[0].language(), "en");
+        assert_eq!(qsp.representations[0].text(), "running");
+        assert_eq!(qsp.grammatical_features, vec!["Q146786"]);
+    }
+
+    #[tokio::test]
+    async fn parse_add_form_multiple_reps_and_features() {
+        let command = "L123\tADD_FORM\ten:\"color\"\ten-gb:\"colour\"\tQ2\tQ3";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.representations.len(), 2);
+        assert_eq!(qsp.grammatical_features, vec!["Q2", "Q3"]);
+    }
+
+    #[tokio::test]
+    async fn parse_add_form_with_last() {
+        let command = "LAST\tADD_FORM\ten:\"waters\"\tQ146786";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::AddForm);
+        assert_eq!(qsp.item, Some(EntityID::Last));
+    }
+
+    #[tokio::test]
+    async fn parse_add_sense() {
+        let command = "L123\tADD_SENSE\ten:\"transparent liquid\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::AddSense);
+        assert_eq!(qsp.glosses.len(), 1);
+        assert_eq!(qsp.glosses[0].language(), "en");
+        assert_eq!(qsp.glosses[0].text(), "transparent liquid");
+    }
+
+    #[tokio::test]
+    async fn parse_add_sense_multiple_glosses() {
+        let command = "L123\tADD_SENSE\ten:\"transparent liquid\"\tfr:\"liquide transparent\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.glosses.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn parse_set_lemma() {
+        let command = "L123\tLemma_en\t\"water\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::SetLemma);
+        assert_eq!(
+            qsp.item,
+            Some(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123")))
+        );
+        assert_eq!(
+            qsp.locale_string,
+            Some(LocaleString::new("en", "water"))
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_set_lemma_with_last() {
+        let command = "LAST\tLemma_fr\t\"eau\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::SetLemma);
+        assert_eq!(qsp.item, Some(EntityID::Last));
+        assert_eq!(
+            qsp.locale_string,
+            Some(LocaleString::new("fr", "eau"))
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_set_lexical_category() {
+        let command = "L123\tLEXICAL_CATEGORY\tQ1084";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::SetLexicalCategory);
+        assert_eq!(qsp.lexeme_category, Some("Q1084".to_string()));
+    }
+
+    #[tokio::test]
+    async fn parse_set_language() {
+        let command = "L123\tLANGUAGE\tQ7725";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::SetLanguage);
+        assert_eq!(qsp.lexeme_language, Some("Q7725".to_string()));
+    }
+
+    #[tokio::test]
+    async fn parse_set_form_representation() {
+        let command = "L123-F1\tRep_en\t\"running\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::SetFormRepresentation);
+        assert_eq!(
+            qsp.item,
+            Some(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123-F1")))
+        );
+        assert_eq!(
+            qsp.locale_string,
+            Some(LocaleString::new("en", "running"))
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_set_grammatical_feature() {
+        let command = "L123-F1\tGRAMMATICAL_FEATURE\tQ1,Q2,Q3";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::SetGrammaticalFeature);
+        assert_eq!(qsp.grammatical_features, vec!["Q1", "Q2", "Q3"]);
+    }
+
+    #[tokio::test]
+    async fn parse_set_sense_gloss() {
+        let command = "L123-S1\tGloss_en\t\"act of running\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::SetSenseGloss);
+        assert_eq!(
+            qsp.item,
+            Some(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123-S1")))
+        );
+        assert_eq!(
+            qsp.locale_string,
+            Some(LocaleString::new("en", "act of running"))
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_lexeme_statement() {
+        let command = "L123\tP31\tQ5";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::EditStatement);
+        assert_eq!(
+            qsp.item,
+            Some(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123")))
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_form_statement() {
+        let command = "L123-F1\tP31\tQ5";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::EditStatement);
+        assert_eq!(
+            qsp.item,
+            Some(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123-F1")))
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_sense_statement() {
+        let command = "L123-S1\tP31\tQ5";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::EditStatement);
+        assert_eq!(
+            qsp.item,
+            Some(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123-S1")))
+        );
+    }
+
+    // ========== Lexeme to_json tests ==========
+
+    #[tokio::test]
+    async fn to_json_create_lexeme() {
+        let command = "CREATE_LEXEME\tQ7725\tQ1084\ten:\"water\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j.len(), 1);
+        assert_eq!(j[0]["action"], "create");
+        assert_eq!(j[0]["type"], "lexeme");
+        assert_eq!(j[0]["data"]["language"], "Q7725");
+        assert_eq!(j[0]["data"]["lexicalCategory"], "Q1084");
+        assert_eq!(j[0]["data"]["lemmas"]["en"]["value"], "water");
+    }
+
+    #[tokio::test]
+    async fn to_json_add_form() {
+        let command = "L123\tADD_FORM\ten:\"running\"\tQ146786";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j.len(), 1);
+        assert_eq!(j[0]["action"], "add");
+        assert_eq!(j[0]["what"], "form");
+        assert_eq!(j[0]["item"], "L123");
+        assert_eq!(j[0]["data"]["representations"]["en"]["value"], "running");
+        assert_eq!(j[0]["data"]["grammaticalFeatures"][0], "Q146786");
+    }
+
+    #[tokio::test]
+    async fn to_json_add_sense() {
+        let command = "L123\tADD_SENSE\ten:\"transparent liquid\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j.len(), 1);
+        assert_eq!(j[0]["action"], "add");
+        assert_eq!(j[0]["what"], "sense");
+        assert_eq!(j[0]["data"]["glosses"]["en"]["value"], "transparent liquid");
+    }
+
+    #[tokio::test]
+    async fn to_json_set_lemma() {
+        let command = "L123\tLemma_en\t\"water\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j.len(), 1);
+        assert_eq!(j[0]["action"], "add");
+        assert_eq!(j[0]["what"], "lemma");
+        assert_eq!(j[0]["language"], "en");
+        assert_eq!(j[0]["value"], "water");
+    }
+
+    #[tokio::test]
+    async fn to_json_set_lexical_category() {
+        let command = "L123\tLEXICAL_CATEGORY\tQ1084";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j[0]["what"], "lexical_category");
+        assert_eq!(j[0]["value"], "Q1084");
+    }
+
+    #[tokio::test]
+    async fn to_json_set_language() {
+        let command = "L123\tLANGUAGE\tQ7725";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j[0]["what"], "language");
+        assert_eq!(j[0]["value"], "Q7725");
+    }
+
+    #[tokio::test]
+    async fn to_json_set_form_representation() {
+        let command = "L123-F1\tRep_en\t\"running\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j[0]["what"], "representation");
+        assert_eq!(j[0]["language"], "en");
+        assert_eq!(j[0]["value"], "running");
+    }
+
+    #[tokio::test]
+    async fn to_json_set_grammatical_feature() {
+        let command = "L123-F1\tGRAMMATICAL_FEATURE\tQ1,Q2,Q3";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j[0]["what"], "grammatical_feature");
+        assert_eq!(j[0]["value"], json!(["Q1", "Q2", "Q3"]));
+    }
+
+    #[tokio::test]
+    async fn to_json_set_sense_gloss() {
+        let command = "L123-S1\tGloss_en\t\"act of running\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j[0]["what"], "gloss");
+        assert_eq!(j[0]["language"], "en");
+        assert_eq!(j[0]["value"], "act of running");
+    }
+
+    // ========== Lexeme generate_qs_line tests ==========
+
+    #[tokio::test]
+    async fn generate_qs_line_create_lexeme() {
+        let command = "CREATE_LEXEME\tQ7725\tQ1084\ten:\"water\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            qsp.generate_qs_line(),
+            Some("CREATE_LEXEME\tQ7725\tQ1084\ten:\"water\"".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_qs_line_add_form() {
+        let command = "L123\tADD_FORM\ten:\"running\"\tQ146786";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            qsp.generate_qs_line(),
+            Some("L123\tADD_FORM\ten:\"running\"\tQ146786".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_qs_line_add_sense() {
+        let command = "L123\tADD_SENSE\ten:\"transparent liquid\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            qsp.generate_qs_line(),
+            Some("L123\tADD_SENSE\ten:\"transparent liquid\"".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_qs_line_set_lemma() {
+        let command = "L123\tLemma_en\t\"water\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            qsp.generate_qs_line(),
+            Some("L123\tLemma_en\t\"water\"".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_qs_line_set_lexical_category() {
+        let command = "L123\tLEXICAL_CATEGORY\tQ1084";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            qsp.generate_qs_line(),
+            Some("L123\tLEXICAL_CATEGORY\tQ1084".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_qs_line_set_language() {
+        let command = "L123\tLANGUAGE\tQ7725";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            qsp.generate_qs_line(),
+            Some("L123\tLANGUAGE\tQ7725".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_qs_line_set_form_representation() {
+        let command = "L123-F1\tRep_en\t\"running\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            qsp.generate_qs_line(),
+            Some("L123-F1\tRep_en\t\"running\"".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_qs_line_set_grammatical_feature() {
+        let command = "L123-F1\tGRAMMATICAL_FEATURE\tQ1,Q2,Q3";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            qsp.generate_qs_line(),
+            Some("L123-F1\tGRAMMATICAL_FEATURE\tQ1,Q2,Q3".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_qs_line_set_sense_gloss() {
+        let command = "L123-S1\tGloss_en\t\"act of running\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            qsp.generate_qs_line(),
+            Some("L123-S1\tGloss_en\t\"act of running\"".to_string())
+        );
+    }
+
+    // ========== Lexeme command with comment ==========
+
+    #[tokio::test]
+    async fn parse_create_lexeme_with_comment() {
+        let command = "CREATE_LEXEME\tQ7725\tQ1084\ten:\"water\" /* importing English nouns */";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::CreateLexeme);
+        assert_eq!(qsp.comment, Some("importing English nouns".to_string()));
+    }
+
+    #[tokio::test]
+    async fn parse_set_lemma_with_comment() {
+        let command = "L123\tLemma_de\t\"Wasser\" /* adding German lemma */";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::SetLemma);
+        assert_eq!(qsp.comment, Some("adding German lemma".to_string()));
+    }
+
+    // ========== Lexeme compression tests ==========
+
+    #[tokio::test]
+    async fn compress_create_lexeme_with_lemma() {
+        let mut commands = vec![
+            QuickStatementsParser::new_from_line("CREATE_LEXEME\tQ7725\tQ1084\ten:\"water\"", None)
+                .await
+                .unwrap(),
+            QuickStatementsParser::new_from_line("LAST\tLemma_fr\t\"eau\"", None)
+                .await
+                .unwrap(),
+        ];
+        QuickStatementsParser::compress(&mut commands);
+        assert_eq!(commands.len(), 1);
+        assert!(commands[0].create_data.is_some());
+    }
+
+    // ========== Full example from documentation ==========
+
+    #[tokio::test]
+    async fn parse_full_lexeme_example() {
+        // All commands from the full example in the spec
+        let commands = vec![
+            "CREATE_LEXEME\tQ7725\tQ1084\ten:\"water\"",
+            "LAST\tLemma_fr\t\"eau\"",
+            "LAST\tADD_FORM\ten:\"water\"\tQ110786",
+            "LAST\tADD_FORM\ten:\"waters\"\tQ146786",
+            "LAST\tADD_SENSE\ten:\"transparent liquid that forms rivers and rain\"",
+            "LAST\tP5137\tQ3024658\tS248\tQ328",
+        ];
+        for cmd in &commands {
+            let result = QuickStatementsParser::new_from_line(cmd, None).await;
+            assert!(result.is_ok(), "Failed to parse: {}", cmd);
+        }
     }
 }

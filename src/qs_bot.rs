@@ -140,6 +140,17 @@ impl QuickStatementsBot {
         }
     }
 
+    /// Returns true if this command type operates on lexeme sub-entities
+    /// and does not require loading the main entity from the API.
+    fn is_lexeme_subentity_command(command: &QuickStatementsCommand) -> bool {
+        matches!(
+            command.json["what"].as_str(),
+            Some("form") | Some("sense") | Some("lemma") | Some("lexical_category")
+            | Some("language") | Some("representation") | Some("grammatical_feature")
+            | Some("gloss")
+        )
+    }
+
     async fn prepare_to_execute(
         &mut self,
         command: &QuickStatementsCommand,
@@ -151,6 +162,14 @@ impl QuickStatementsBot {
             // Reset
             self.current_property_id = command.get_entity_id_option(&command.json["property"]);
             self.current_entity_id = command.get_entity_id_option(&command.json["item"]);
+
+            // Lexeme sub-entity commands don't need to load the entity
+            if Self::is_lexeme_subentity_command(command) {
+                if self.current_entity_id == Some("LAST".to_string()) {
+                    self.current_entity_id = self.last_entity_id.clone();
+                }
+                return Ok(None);
+            }
 
             // Special case
             if let Some(what) = command.json["what"].as_str() {

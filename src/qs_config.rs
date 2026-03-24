@@ -178,7 +178,7 @@ impl QuickStatements {
 
         //sql += " AND id=13324"; // TESTING: Specific batch only
         //sql += " AND user=4420"; // TESTING: [[User:Magnus Manske]] only
-        sql += r#" AND NOT EXISTS (SELECT * FROM command WHERE batch_id=batch.id AND json rlike '"item":"L\\d')"#; // TESTING: Available batches that do NOT use lexemes
+        // Lexeme batches are now supported
 
         // Find users that are already running the maximum of simultaneous jobs
         // This is to prevent MW API "too many edits" errors
