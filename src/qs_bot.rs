@@ -447,13 +447,13 @@ impl QuickStatementsBot {
             let res = match mw_api.post_query_api_json_mut(&params).await {
                 Ok(x) => x,
                 Err(wikibase::mediawiki::MediaWikiError::Serde(_)) if invalid_json_retries > 0 => {
-                    // API returned non-JSON (e.g. HTML error page) — retry after a brief delay
+                    // API returned non-JSON (e.g. HTML rate-limit page from CDN) — retry after delay
                     invalid_json_retries -= 1;
                     self.log(format!(
                         "[run_action] Non-JSON API response, retrying ({} retries left)",
                         invalid_json_retries
                     ));
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    tokio::time::sleep(Duration::from_secs(30)).await;
                     continue;
                 }
                 Err(e) => return Err(format!("Wiki editing failed: {:?}", e)),
@@ -495,10 +495,21 @@ impl QuickStatementsBot {
                 }
             }
             None => {
+                // Check for rate limiting / throttle — handle both old and new Wikimedia error formats
+                let error_code = res["error"]["code"].as_str().unwrap_or("");
+                if matches!(error_code, "ratelimited" | "actionthrottled") {
+                    println!(
+                        "Batch #{}: Rate limited by API (code: {}), sleeping {}ms",
+                        self.batch_id.unwrap_or(0),
+                        error_code,
+                        self.throttled_delay_ms
+                    );
+                    return Ok(true);
+                }
                 if let Some(arr) = res["error"]["messages"].as_array() {
                     for a in arr {
                         if let Some(s) = a["name"].as_str() {
-                            if s == "actionthrottledtext" {
+                            if matches!(s, "actionthrottledtext" | "ratelimited") {
                                 // Throttled, try again
                                 println!(
                                     "Batch #{}: Throttled by API, sleeping {}ms",
