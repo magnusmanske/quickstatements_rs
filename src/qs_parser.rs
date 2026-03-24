@@ -265,7 +265,9 @@ impl QuickStatementsParser {
         if ret.item.is_none() || ret.target_item.is_none() {
             return Err("MERGE requires two parameters".to_string());
         }
-        if ret.item == Some(EntityID::Last) || ret.target_item == Some(EntityID::Last) {
+        if matches!(ret.item.as_ref(), Some(EntityID::Last | EntityID::LastForm | EntityID::LastSense))
+            || matches!(ret.target_item.as_ref(), Some(EntityID::Last | EntityID::LastForm | EntityID::LastSense))
+        {
             return Err("MERGE does not allow LAST".to_string());
         }
         Ok(ret)
@@ -368,7 +370,9 @@ impl QuickStatementsParser {
         let id = Self::parse_item_id(Some(prop))?;
         let ev = match id {
             EntityID::Id(ev) => ev,
-            EntityID::Last => return Err("LAST is not a valid property".to_string()),
+            EntityID::Last | EntityID::LastForm | EntityID::LastSense => {
+                return Err("LAST is not a valid property".to_string())
+            }
         };
         if *ev.entity_type() != EntityType::Property {
             return Err(format!("{} is not a property", &prop));
@@ -608,6 +612,12 @@ impl QuickStatementsParser {
                 let id = orig_id.trim().to_uppercase();
                 if id == "LAST" {
                     return Ok(EntityID::Last);
+                }
+                if id == "LAST_FORM" {
+                    return Ok(EntityID::LastForm);
+                }
+                if id == "LAST_SENSE" {
+                    return Ok(EntityID::LastSense);
                 }
                 // Support L123-F1 (form) and L123-S1 (sense) sub-entity IDs
                 if RE_FORM_ID.is_match(&id) || RE_SENSE_ID.is_match(&id) {
@@ -2029,6 +2039,46 @@ mod tests {
     }
 
     #[test]
+    fn parse_value_last_form() {
+        assert_eq!(
+            QuickStatementsParser::parse_value("LAST_FORM".to_string()),
+            Some(Value::Entity(EntityID::LastForm))
+        );
+    }
+
+    #[test]
+    fn parse_value_last_sense() {
+        assert_eq!(
+            QuickStatementsParser::parse_value("LAST_SENSE".to_string()),
+            Some(Value::Entity(EntityID::LastSense))
+        );
+    }
+
+    #[test]
+    fn parse_item_id_last_form() {
+        assert_eq!(
+            QuickStatementsParser::parse_item_id(Some("LAST_FORM")),
+            Ok(EntityID::LastForm)
+        );
+    }
+
+    #[test]
+    fn parse_item_id_last_sense() {
+        assert_eq!(
+            QuickStatementsParser::parse_item_id(Some("LAST_SENSE")),
+            Ok(EntityID::LastSense)
+        );
+    }
+
+    #[test]
+    fn parse_item_id_last_form_case_insensitive() {
+        assert_eq!(
+            QuickStatementsParser::parse_item_id(Some("last_form")),
+            Ok(EntityID::LastForm)
+        );
+    }
+
+    #[test]
     fn parse_no_comment() {
         assert_eq!(
             QuickStatementsParser::parse_comment("Q123\tP456\tQ789"),
@@ -2046,6 +2096,18 @@ mod tests {
     fn value_display_last() {
         let v = Value::Entity(EntityID::Last);
         assert_eq!(v.to_string(), "LAST");
+    }
+
+    #[test]
+    fn value_display_last_form() {
+        let v = Value::Entity(EntityID::LastForm);
+        assert_eq!(v.to_string(), "LAST_FORM");
+    }
+
+    #[test]
+    fn value_display_last_sense() {
+        let v = Value::Entity(EntityID::LastSense);
+        assert_eq!(v.to_string(), "LAST_SENSE");
     }
 
     #[test]
@@ -2330,6 +2392,8 @@ mod tests {
         let eid = EntityID::Id(EntityValue::new(EntityType::Item, "Q42"));
         assert_eq!(format!("{}", eid), "Q42");
         assert_eq!(format!("{}", EntityID::Last), "LAST");
+        assert_eq!(format!("{}", EntityID::LastForm), "LAST_FORM");
+        assert_eq!(format!("{}", EntityID::LastSense), "LAST_SENSE");
     }
 
     #[test]
@@ -2970,6 +3034,100 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn parse_full_lexeme_example_with_last_form_and_last_sense() {
+        // Full example from LEXEME_SYNTAX.md with LAST_FORM and LAST_SENSE
+        let commands = vec![
+            "CREATE_LEXEME\tQ12107\tQ147276\tbr:\"Montroulez\"",
+            "LAST\tP12846\t\"m/montroulez/\"",
+            "LAST\tADD_FORM\tbr:\"Montroulez\"\tQ110786",
+            "LAST_FORM\tRep_fr\t\"Morlaix\"",
+            "LAST_FORM\tP31\tQ5",
+            "LAST\tADD_FORM\ten:\"waters\"\tQ146786",
+            "LAST_FORM\tGRAMMATICAL_FEATURE\tQ146786",
+            "LAST\tADD_SENSE\tfr:\"commune française\"",
+            "LAST_SENSE\tGloss_en\t\"commune in Brittany, France\"",
+            "LAST_SENSE\tP5137\tQ202368",
+            "LAST\tP5137\tQ202368",
+        ];
+        for cmd in &commands {
+            let result = QuickStatementsParser::new_from_line(cmd, None).await;
+            assert!(result.is_ok(), "Failed to parse: {}", cmd);
+        }
+    }
+
+    #[tokio::test]
+    async fn parse_last_form_rep() {
+        let command = "LAST_FORM\tRep_fr\t\"Morlaix\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::SetFormRepresentation);
+        assert_eq!(qsp.item, Some(EntityID::LastForm));
+    }
+
+    #[tokio::test]
+    async fn parse_last_sense_gloss() {
+        let command = "LAST_SENSE\tGloss_en\t\"commune in Brittany\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::SetSenseGloss);
+        assert_eq!(qsp.item, Some(EntityID::LastSense));
+    }
+
+    #[tokio::test]
+    async fn parse_last_form_statement() {
+        let command = "LAST_FORM\tP31\tQ5";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::EditStatement);
+        assert_eq!(qsp.item, Some(EntityID::LastForm));
+    }
+
+    #[tokio::test]
+    async fn parse_last_sense_statement() {
+        let command = "LAST_SENSE\tP5137\tQ202368";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::EditStatement);
+        assert_eq!(qsp.item, Some(EntityID::LastSense));
+    }
+
+    #[tokio::test]
+    async fn parse_last_form_grammatical_feature() {
+        let command = "LAST_FORM\tGRAMMATICAL_FEATURE\tQ146786";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::SetGrammaticalFeature);
+        assert_eq!(qsp.item, Some(EntityID::LastForm));
+    }
+
+    #[tokio::test]
+    async fn to_json_last_form_statement() {
+        let command = "LAST_FORM\tP31\tQ5";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j[0]["item"], "LAST_FORM");
+        assert_eq!(j[0]["property"], "P31");
+    }
+
+    #[tokio::test]
+    async fn to_json_last_sense_statement() {
+        let command = "LAST_SENSE\tP5137\tQ202368";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j[0]["item"], "LAST_SENSE");
+        assert_eq!(j[0]["property"], "P5137");
+    }
+
     // ========== novalue / somevalue tests ==========
 
     #[test]
@@ -3077,6 +3235,22 @@ mod tests {
         let j = v.to_json().unwrap();
         assert_eq!(j["value"]["entity-type"], "item");
         assert_eq!(j["value"]["id"], "LAST");
+    }
+
+    #[test]
+    fn entity_to_json_last_form() {
+        let v = Value::Entity(EntityID::LastForm);
+        let j = v.to_json().unwrap();
+        assert_eq!(j["value"]["entity-type"], "form");
+        assert_eq!(j["value"]["id"], "LAST_FORM");
+    }
+
+    #[test]
+    fn entity_to_json_last_sense() {
+        let v = Value::Entity(EntityID::LastSense);
+        let j = v.to_json().unwrap();
+        assert_eq!(j["value"]["entity-type"], "sense");
+        assert_eq!(j["value"]["id"], "LAST_SENSE");
     }
 
     // ========== Julian calendar tests ==========

@@ -188,6 +188,15 @@ impl QuickStatements {
             .cloned()
     }
 
+    /// Decode the raw DB value into a LastEntityState. Uses pipe-delimited format
+    /// when LAST_FORM / LAST_SENSE are present, plain value otherwise (backward compatible).
+    pub async fn get_last_state_from_batch(&self, batch_id: i64) -> crate::qs_command::LastEntityState {
+        match self.get_last_item_from_batch(batch_id).await {
+            Some(stored) => crate::qs_command::LastEntityState::decode(&stored),
+            None => crate::qs_command::LastEntityState::default(),
+        }
+    }
+
     pub async fn get_next_batch(&self) -> Option<(i64, i64)> {
         let mut sql: String = "SELECT id,user FROM batch WHERE `status` IN (".to_string();
         sql += "'INIT','RUN'";
@@ -391,6 +400,16 @@ impl QuickStatements {
             .exec_drop(sql, params! {ts,last_item,batch_id})
             .await
             .ok()
+    }
+
+    /// Persist a full LastEntityState (LAST + LAST_FORM + LAST_SENSE) to the DB.
+    pub async fn set_last_state_for_batch(
+        &self,
+        batch_id: i64,
+        state: &crate::qs_command::LastEntityState,
+    ) -> Option<()> {
+        let encoded = state.encode();
+        self.set_last_item_for_batch(batch_id, &Some(encoded)).await
     }
 
     pub async fn get_user_name(&self, user_id: i64) -> Option<String> {

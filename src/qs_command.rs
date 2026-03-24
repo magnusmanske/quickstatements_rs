@@ -2,6 +2,57 @@ use regex::Regex;
 use serde_json::{json, Value};
 use wikibase::*;
 
+/// Holds the current LAST / LAST_FORM / LAST_SENSE entity IDs.
+/// Mirrors the PHP fields last_item / last_form / last_sense.
+#[derive(Debug, Clone, Default)]
+pub struct LastEntityState {
+    pub last: Option<String>,
+    pub last_form: Option<String>,
+    pub last_sense: Option<String>,
+}
+
+impl LastEntityState {
+    /// Encode into a single string for DB storage (pipe-delimited, backward compatible).
+    pub fn encode(&self) -> String {
+        let last = self.last.as_deref().unwrap_or("");
+        let form = self.last_form.as_deref().unwrap_or("");
+        let sense = self.last_sense.as_deref().unwrap_or("");
+        if form.is_empty() && sense.is_empty() {
+            last.to_string()
+        } else {
+            format!("{}|{}|{}", last, form, sense)
+        }
+    }
+
+    /// Decode from a DB-stored string (pipe-delimited, backward compatible).
+    pub fn decode(stored: &str) -> Self {
+        if stored.contains('|') {
+            let parts: Vec<&str> = stored.splitn(3, '|').collect();
+            Self {
+                last: Some(parts[0].to_string()).filter(|s| !s.is_empty()),
+                last_form: parts.get(1).map(|s| s.to_string()).filter(|s| !s.is_empty()),
+                last_sense: parts.get(2).map(|s| s.to_string()).filter(|s| !s.is_empty()),
+            }
+        } else {
+            Self {
+                last: Some(stored.to_string()).filter(|s| !s.is_empty()),
+                last_form: None,
+                last_sense: None,
+            }
+        }
+    }
+
+    /// Resolve a keyword (LAST, LAST_FORM, LAST_SENSE) to its current value.
+    pub fn resolve(&self, keyword: &str) -> Option<&String> {
+        match keyword {
+            "LAST" => self.last.as_ref(),
+            "LAST_FORM" => self.last_form.as_ref(),
+            "LAST_SENSE" => self.last_sense.as_ref(),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct QuickStatementsCommand {
     pub id: i64,
@@ -148,12 +199,9 @@ impl QuickStatementsCommand {
     fn replace_last_item(
         &self,
         v: &mut Value,
-        last_entity_id: &Option<String>,
+        state: &LastEntityState,
     ) -> Result<(), String> {
         if !v.is_object() {
-            return Ok(());
-        }
-        if last_entity_id.is_none() {
             return Ok(());
         }
         match &v["type"].as_str() {
@@ -162,11 +210,9 @@ impl QuickStatementsCommand {
         }
         match &v["value"]["id"].as_str() {
             Some(id) => {
-                if &QuickStatementsCommand::fix_entity_id(id.to_string()) == "LAST" {
-                    let id = last_entity_id.clone().expect(
-                        "QuickStatementsCommand::replace_last_item: can't clone last_entity_id",
-                    );
-                    v["value"]["id"] = json!(id);
+                let fixed = QuickStatementsCommand::fix_entity_id(id.to_string());
+                if let Some(resolved) = state.resolve(&fixed) {
+                    v["value"]["id"] = json!(resolved);
                 }
                 Ok(())
             }
@@ -174,25 +220,24 @@ impl QuickStatementsCommand {
         }
     }
 
-    /// Replaces LAST in the command with the last item, or fails
-    /// This method is called propagateLastItem in the PHP version
+    /// Replaces LAST / LAST_FORM / LAST_SENSE in the command with the tracked IDs.
+    /// This method is called propagateLastItem in the PHP version.
     pub fn insert_last_item_into_sources_and_qualifiers(
         &mut self,
-        last_entity_id: &Option<String>,
+        state: &LastEntityState,
     ) -> Result<(), String> {
-        if last_entity_id.is_none() {
-            return Ok(());
-        }
-        let q = last_entity_id.clone().unwrap();
         let mut json = self.json.clone();
-        if let Some("LAST") = self.json["item"].as_str() {
-            json["item"] = json!(q)
+        if let Some(item_str) = self.json["item"].as_str() {
+            let upper = item_str.trim().to_uppercase();
+            if let Some(resolved) = state.resolve(&upper) {
+                json["item"] = json!(resolved);
+            }
         }
-        self.replace_last_item(&mut json["datavalue"], last_entity_id)?;
-        self.replace_last_item(&mut json["qualifier"]["value"], last_entity_id)?;
+        self.replace_last_item(&mut json["datavalue"], state)?;
+        self.replace_last_item(&mut json["qualifier"]["value"], state)?;
         if let Some(arr) = json["sources"].as_array_mut() {
             for v in arr {
-                self.replace_last_item(v, last_entity_id)?
+                self.replace_last_item(v, state)?
             }
         }
         self.json = json;
@@ -1264,15 +1309,25 @@ mod tests {
         );
     }
 
+    fn state_with_last(last: &str) -> LastEntityState {
+        LastEntityState {
+            last: Some(last.to_string()),
+            last_form: None,
+            last_sense: None,
+        }
+    }
+
     #[test]
     fn insert_last_item_none_is_noop() {
         let mut c = QuickStatementsCommand::new_from_json(
             &json!({"item":"Q123","datavalue":{"type":"string","value":"test"}}),
         );
-        let original_json = c.json.clone();
-        c.insert_last_item_into_sources_and_qualifiers(&None)
+        c.insert_last_item_into_sources_and_qualifiers(&LastEntityState::default())
             .unwrap();
-        assert_eq!(c.json, original_json);
+        // Item and datavalue are unchanged
+        assert_eq!(c.json["item"], "Q123");
+        assert_eq!(c.json["datavalue"]["type"], "string");
+        assert_eq!(c.json["datavalue"]["value"], "test");
     }
 
     #[test]
@@ -1280,7 +1335,7 @@ mod tests {
         let mut c = QuickStatementsCommand::new_from_json(
             &json!({"item":"LAST","datavalue":{"type":"string","value":"test"}}),
         );
-        c.insert_last_item_into_sources_and_qualifiers(&Some("Q999".to_string()))
+        c.insert_last_item_into_sources_and_qualifiers(&state_with_last("Q999"))
             .unwrap();
         assert_eq!(c.json["item"], "Q999");
     }
@@ -1291,7 +1346,7 @@ mod tests {
             "item":"Q123",
             "datavalue":{"type":"wikibase-entityid","value":{"id":"LAST"}}
         }));
-        c.insert_last_item_into_sources_and_qualifiers(&Some("Q999".to_string()))
+        c.insert_last_item_into_sources_and_qualifiers(&state_with_last("Q999"))
             .unwrap();
         assert_eq!(c.json["datavalue"]["value"]["id"], "Q999");
     }
@@ -1302,7 +1357,7 @@ mod tests {
             "item":"Q123",
             "qualifier":{"value":{"type":"wikibase-entityid","value":{"id":"LAST"}}}
         }));
-        c.insert_last_item_into_sources_and_qualifiers(&Some("Q999".to_string()))
+        c.insert_last_item_into_sources_and_qualifiers(&state_with_last("Q999"))
             .unwrap();
         assert_eq!(c.json["qualifier"]["value"]["value"]["id"], "Q999");
     }
@@ -1313,7 +1368,7 @@ mod tests {
             "item":"Q123",
             "sources":[{"type":"wikibase-entityid","value":{"id":"LAST"}}]
         }));
-        c.insert_last_item_into_sources_and_qualifiers(&Some("Q999".to_string()))
+        c.insert_last_item_into_sources_and_qualifiers(&state_with_last("Q999"))
             .unwrap();
         assert_eq!(c.json["sources"][0]["value"]["id"], "Q999");
     }
@@ -1324,15 +1379,11 @@ mod tests {
             "item":"Q123",
             "datavalue":{"type":"wikibase-entityid","value":{"id":"Q456"}}
         }));
-        c.insert_last_item_into_sources_and_qualifiers(&Some("Q999".to_string()))
+        c.insert_last_item_into_sources_and_qualifiers(&state_with_last("Q999"))
             .unwrap();
         assert_eq!(c.json["datavalue"]["value"]["id"], "Q456");
     }
 
-    // For ADD_FORM / ADD_SENSE commands, LAST in item must be replaced with the lexeme ID.
-    // This is the mechanism that keeps LAST pointing at the lexeme (not the new form/sense ID)
-    // after execution — reset_entities sees the lexeme ID in command.json["item"] and returns
-    // early, never overwriting last_entity_id with the form/sense ID from res["entity"].
     #[test]
     fn insert_last_item_replaces_last_for_add_form() {
         let mut c = QuickStatementsCommand::new_from_json(&json!({
@@ -1341,7 +1392,7 @@ mod tests {
             "item": "LAST",
             "data": {"representations":{"en":{"value":"waters","language":"en"}},"grammaticalFeatures":["Q146786"]}
         }));
-        c.insert_last_item_into_sources_and_qualifiers(&Some("L123".to_string()))
+        c.insert_last_item_into_sources_and_qualifiers(&state_with_last("L123"))
             .unwrap();
         assert_eq!(c.json["item"], "L123");
     }
@@ -1354,9 +1405,140 @@ mod tests {
             "item": "LAST",
             "data": {"glosses":{"en":{"value":"transparent liquid","language":"en"}}}
         }));
-        c.insert_last_item_into_sources_and_qualifiers(&Some("L123".to_string()))
+        c.insert_last_item_into_sources_and_qualifiers(&state_with_last("L123"))
             .unwrap();
         assert_eq!(c.json["item"], "L123");
+    }
+
+    // ========== LastEntityState tests ==========
+
+    #[test]
+    fn last_entity_state_encode_backward_compatible() {
+        let s = LastEntityState { last: Some("Q123".into()), last_form: None, last_sense: None };
+        assert_eq!(s.encode(), "Q123");
+    }
+
+    #[test]
+    fn last_entity_state_encode_with_form_and_sense() {
+        let s = LastEntityState {
+            last: Some("L100".into()),
+            last_form: Some("L100-F1".into()),
+            last_sense: Some("L100-S1".into()),
+        };
+        assert_eq!(s.encode(), "L100|L100-F1|L100-S1");
+    }
+
+    #[test]
+    fn last_entity_state_encode_form_only() {
+        let s = LastEntityState {
+            last: Some("L100".into()),
+            last_form: Some("L100-F1".into()),
+            last_sense: None,
+        };
+        assert_eq!(s.encode(), "L100|L100-F1|");
+    }
+
+    #[test]
+    fn last_entity_state_decode_plain() {
+        let s = LastEntityState::decode("Q123");
+        assert_eq!(s.last, Some("Q123".into()));
+        assert_eq!(s.last_form, None);
+        assert_eq!(s.last_sense, None);
+    }
+
+    #[test]
+    fn last_entity_state_decode_pipe_delimited() {
+        let s = LastEntityState::decode("L100|L100-F2|L100-S1");
+        assert_eq!(s.last, Some("L100".into()));
+        assert_eq!(s.last_form, Some("L100-F2".into()));
+        assert_eq!(s.last_sense, Some("L100-S1".into()));
+    }
+
+    #[test]
+    fn last_entity_state_decode_pipe_empty_parts() {
+        let s = LastEntityState::decode("L100||L100-S1");
+        assert_eq!(s.last, Some("L100".into()));
+        assert_eq!(s.last_form, None);
+        assert_eq!(s.last_sense, Some("L100-S1".into()));
+    }
+
+    #[test]
+    fn last_entity_state_roundtrip() {
+        let original = LastEntityState {
+            last: Some("L200".into()),
+            last_form: Some("L200-F3".into()),
+            last_sense: Some("L200-S2".into()),
+        };
+        let decoded = LastEntityState::decode(&original.encode());
+        assert_eq!(original.last, decoded.last);
+        assert_eq!(original.last_form, decoded.last_form);
+        assert_eq!(original.last_sense, decoded.last_sense);
+    }
+
+    #[test]
+    fn last_entity_state_resolve() {
+        let s = LastEntityState {
+            last: Some("L100".into()),
+            last_form: Some("L100-F1".into()),
+            last_sense: Some("L100-S1".into()),
+        };
+        assert_eq!(s.resolve("LAST"), Some(&"L100".to_string()));
+        assert_eq!(s.resolve("LAST_FORM"), Some(&"L100-F1".to_string()));
+        assert_eq!(s.resolve("LAST_SENSE"), Some(&"L100-S1".to_string()));
+        assert_eq!(s.resolve("Q123"), None);
+    }
+
+    // ========== LAST_FORM / LAST_SENSE resolution in insert_last_item ==========
+
+    #[test]
+    fn insert_last_form_replaces_item() {
+        let mut c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "add",
+            "what": "statement",
+            "item": "LAST_FORM",
+            "property": "P31",
+            "datavalue": {"type":"wikibase-entityid","value":{"entity-type":"item","id":"Q5"}}
+        }));
+        let state = LastEntityState {
+            last: Some("L100".into()),
+            last_form: Some("L100-F1".into()),
+            last_sense: None,
+        };
+        c.insert_last_item_into_sources_and_qualifiers(&state).unwrap();
+        assert_eq!(c.json["item"], "L100-F1");
+    }
+
+    #[test]
+    fn insert_last_sense_replaces_item() {
+        let mut c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "add",
+            "what": "gloss",
+            "item": "LAST_SENSE",
+            "language": "fr",
+            "value": "liquide"
+        }));
+        let state = LastEntityState {
+            last: Some("L100".into()),
+            last_form: None,
+            last_sense: Some("L100-S1".into()),
+        };
+        c.insert_last_item_into_sources_and_qualifiers(&state).unwrap();
+        assert_eq!(c.json["item"], "L100-S1");
+    }
+
+    #[test]
+    fn insert_last_form_replaces_datavalue() {
+        let mut c = QuickStatementsCommand::new_from_json(&json!({
+            "item": "Q123",
+            "datavalue": {"type":"wikibase-entityid","value":{"id":"LAST_FORM"}}
+        }));
+        let state = LastEntityState {
+            last: Some("L100".into()),
+            last_form: Some("L100-F2".into()),
+            last_sense: None,
+        };
+        c.insert_last_item_into_sources_and_qualifiers(&state).unwrap();
+        assert_eq!(c.json["datavalue"]["value"]["id"], "L100-F2");
     }
 
     #[test]

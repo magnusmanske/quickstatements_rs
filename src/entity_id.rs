@@ -5,6 +5,8 @@ use wikibase::EntityValue;
 pub enum EntityID {
     Id(EntityValue),
     Last,
+    LastForm,
+    LastSense,
 }
 
 impl fmt::Display for EntityID {
@@ -12,6 +14,8 @@ impl fmt::Display for EntityID {
         match self {
             EntityID::Id(e) => write!(f, "{}", e.id()),
             EntityID::Last => write!(f, "LAST"),
+            EntityID::LastForm => write!(f, "LAST_FORM"),
+            EntityID::LastSense => write!(f, "LAST_SENSE"),
         }
     }
 }

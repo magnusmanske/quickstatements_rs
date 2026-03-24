@@ -1,4 +1,4 @@
-use crate::qs_command::QuickStatementsCommand;
+use crate::qs_command::{LastEntityState, QuickStatementsCommand};
 use crate::qs_config::QuickStatements;
 use crate::qs_parser::COMMONS_API;
 use chrono::Local;
@@ -16,7 +16,7 @@ pub struct QuickStatementsBot {
     config: Arc<QuickStatements>,
     mw_api: Option<wikibase::mediawiki::api::Api>,
     pub entities: wikibase::entity_container::EntityContainer,
-    last_entity_id: Option<String>,
+    last_state: LastEntityState,
     current_entity_id: Option<String>,
     current_property_id: Option<String>,
     throttled_delay_ms: u64,
@@ -31,7 +31,7 @@ impl QuickStatementsBot {
             config,
             mw_api: None,
             entities: wikibase::entity_container::EntityContainer::new(),
-            last_entity_id: None,
+            last_state: LastEntityState::default(),
             current_entity_id: None,
             current_property_id: None,
             throttled_delay_ms: 5000,
@@ -47,7 +47,7 @@ impl QuickStatementsBot {
                     .restart_batch(batch_id)
                     .await
                     .ok_or("Can't (re)start batch".to_string())?;
-                self.last_entity_id = config.get_last_item_from_batch(batch_id).await;
+                self.last_state = config.get_last_state_from_batch(batch_id).await;
                 match config.get_api_url(batch_id).await {
                     Some(url) => {
                         let mut mw_api = wikibase::mediawiki::api::Api::new(url)
@@ -151,6 +151,16 @@ impl QuickStatementsBot {
         )
     }
 
+    /// Resolve LAST / LAST_FORM / LAST_SENSE in current_entity_id using last_state.
+    fn resolve_current_entity_id(&mut self) {
+        if let Some(ref id) = self.current_entity_id {
+            let upper = id.to_uppercase();
+            if let Some(resolved) = self.last_state.resolve(&upper) {
+                self.current_entity_id = Some(resolved.clone());
+            }
+        }
+    }
+
     async fn prepare_to_execute(
         &mut self,
         command: &QuickStatementsCommand,
@@ -162,9 +172,7 @@ impl QuickStatementsBot {
             if let Some(entity_type) = command.json["type"].as_str() {
                 if entity_type == "form" || entity_type == "sense" {
                     self.current_entity_id = command.get_entity_id_option(&command.json["item"]);
-                    if self.current_entity_id == Some("LAST".to_string()) {
-                        self.current_entity_id = self.last_entity_id.clone();
-                    }
+                    self.resolve_current_entity_id();
                     return Ok(None);
                 }
             }
@@ -178,9 +186,7 @@ impl QuickStatementsBot {
 
             // Lexeme sub-entity commands don't need to load the entity
             if Self::is_lexeme_subentity_command(command) {
-                if self.current_entity_id == Some("LAST".to_string()) {
-                    self.current_entity_id = self.last_entity_id.clone();
-                }
+                self.resolve_current_entity_id();
                 return Ok(None);
             }
 
@@ -197,9 +203,7 @@ impl QuickStatementsBot {
                 }
             }
 
-            if self.current_entity_id == Some("LAST".to_string()) {
-                self.current_entity_id = self.last_entity_id.clone();
-            }
+            self.resolve_current_entity_id();
             let q = match &self.current_entity_id {
                 Some(q) => q.to_string(),
                 None => return Err("No (last) item available".to_string()),
@@ -331,7 +335,7 @@ impl QuickStatementsBot {
         self.current_entity_id = None;
 
         self.log("[execute_command] Prep".to_string());
-        command.insert_last_item_into_sources_and_qualifiers(&self.last_entity_id)?;
+        command.insert_last_item_into_sources_and_qualifiers(&self.last_state)?;
         let main_item = self.prepare_to_execute(command).await?;
         let action = command.action_to_execute(&main_item);
 
@@ -353,10 +357,32 @@ impl QuickStatementsBot {
 
     fn reset_entities(&mut self, res: &Value, command: &QuickStatementsCommand) {
         self.log("[reset_entities] Init".to_string());
+
+        // Extract the command type to determine LAST_FORM / LAST_SENSE tracking
+        let command_type = command.json["type"].as_str().unwrap_or("");
+        let command_action = command.json["action"].as_str().unwrap_or("");
+
+        // For ADD_FORM: extract new form ID from the API response
+        if command_type == "form" && command_action == "create" {
+            if let Some(form_id) = res["form"]["id"].as_str() {
+                self.last_state.last_form = Some(form_id.to_string());
+                self.log(format!("[reset_entities] LAST_FORM = {}", form_id));
+            }
+        }
+
+        // For ADD_SENSE: extract new sense ID from the API response
+        if command_type == "sense" && command_action == "create" {
+            if let Some(sense_id) = res["sense"]["id"].as_str() {
+                self.last_state.last_sense = Some(sense_id.to_string());
+                self.log(format!("[reset_entities] LAST_SENSE = {}", sense_id));
+            }
+        }
+
         if let Some(q) = command.json["item"].as_str() {
-            if q.to_uppercase() != "LAST" {
+            let upper = q.to_uppercase();
+            if !matches!(upper.as_str(), "LAST" | "LAST_FORM" | "LAST_SENSE") {
                 self.log("[reset_entities] Start".to_string());
-                self.last_entity_id = Some(q.to_string());
+                self.last_state.last = Some(q.to_string());
                 self.entities.remove_entity(q);
                 if let Some(revision_id) = res["pageinfo"]["lastrevid"].as_u64() {
                     self.entity_revision.retain(|er| er.0 != q);
@@ -373,7 +399,14 @@ impl QuickStatementsBot {
             serde_json::Value::Null => {}
             entity_json => {
                 if let Some(q) = wikibase::entity_diff::EntityDiff::get_entity_id(entity_json) {
-                    self.last_entity_id = Some(q.to_owned());
+                    self.last_state.last = Some(q.to_owned());
+                    // CREATE / CREATE_LEXEME: clear LAST_FORM and LAST_SENSE
+                    if command_action == "create"
+                        && !matches!(command_type, "form" | "sense")
+                    {
+                        self.last_state.last_form = None;
+                        self.last_state.last_sense = None;
+                    }
                     self.entities
                         .set_entity_from_json(entity_json)
                         .expect("Setting entity from JSON failed");
@@ -545,7 +578,7 @@ impl QuickStatementsBot {
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
         if status == "DONE" {
-            self.last_entity_id = self.current_entity_id.clone();
+            self.last_state.last = self.current_entity_id.clone();
         }
         if self.batch_id.is_none() {
             return Ok(());
@@ -559,10 +592,10 @@ impl QuickStatementsBot {
                 self.batch_id.unwrap() //Safe
             ))?;
         self.config
-            .set_last_item_for_batch(self.batch_id.unwrap(), &self.last_entity_id) // unwrap safe
+            .set_last_state_for_batch(self.batch_id.unwrap(), &self.last_state) // unwrap safe
             .await
             .ok_or(format!(
-                "Can't config.set_command_status for batch #{}",
+                "Can't config.set_last_state_for_batch for batch #{}",
                 self.batch_id.unwrap() //Safe
             ))?;
 

@@ -63,6 +63,8 @@ impl Value {
                 _ => "item",
             },
             EntityID::Last => "item",
+            EntityID::LastForm => "form",
+            EntityID::LastSense => "sense",
         }
     }
 
