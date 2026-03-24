@@ -28,10 +28,13 @@ impl QuickStatements {
 
         // Load the PHP/JS config into params as ["config"], or create empty object
         params["config"] = match params["config_file"].as_str() {
-            Some(filename) => {
-                let file = File::open(filename).ok()?;
-                serde_json::from_reader(file).ok()?
-            }
+            Some(filename) => match File::open(filename) {
+                Ok(file) => serde_json::from_reader(file).unwrap_or(json!({})),
+                Err(_) => {
+                    eprintln!("Warning: could not open config_file '{}', using empty config", filename);
+                    json!({})
+                }
+            },
             None => json!({}),
         };
 
@@ -56,6 +59,21 @@ impl QuickStatements {
 
     pub fn get_api_for_site(&self, site: &str) -> Option<&str> {
         self.params["config"]["sites"][site]["api"].as_str()
+    }
+
+    /// Returns the default site name from the config
+    pub fn default_site(&self) -> Option<&str> {
+        self.params["config"]["site"].as_str()
+    }
+
+    /// Returns the full config JSON (for serving config.json to the frontend)
+    pub fn frontend_config(&self) -> &Value {
+        &self.params["config"]
+    }
+
+    /// Get a database connection from the pool
+    pub async fn get_db_conn(&self) -> Result<my::Conn, mysql_async::Error> {
+        self.pool.get_conn().await
     }
 
     pub fn edit_delay_ms(&self) -> Option<u64> {

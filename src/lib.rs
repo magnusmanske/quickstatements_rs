@@ -10,4 +10,5 @@ pub mod qs_bot;
 pub mod qs_command;
 pub mod qs_config;
 pub mod qs_parser;
+pub mod qs_server;
 pub mod value;

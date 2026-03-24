@@ -1,0 +1,169 @@
+<style>
+div.position_button_bar {
+	display:flex;
+	flex-direction:row;
+}
+div.position_button_bar > div {
+	padding:2px;
+}
+</style>
+
+<template id='batch-commands-template'>
+<div>
+<div v-if='typeof batch!="undefined" && typeof batch.data!="undefined" && typeof batch.data.commands!="undefined"'>
+	<div style='display:flex;flex-direction:column;'>
+		<command v-for='command_id in current_command_ids' :command='batch.data.commands[command_id]' :site='batch.site||""'></command>
+	</div>
+	<div style='display:flex;'>
+		<div class='position_button_bar'>
+			<div class="btn-toolbar" role="toolbar" aria-label="Toolbar with button groups">
+				<div class="btn-group mr-2" role="group">
+					<button type="button" class="btn btn-outline-secondary" v-if='view.position>0' @click.prevent='setViewPosition(0)' tt='bc_start'></button>
+					<button type="button" class="btn btn-outline-secondary" disabled v-else tt='bc_start'></button>
+					<button type="button" class="btn btn-outline-secondary" v-if='view.position>0 && view.filter==""' @click.prevent='setViewPosition(view.position-view.batch_size)'  tt='bc_previous'></button>
+				</div>
+				<div class="btn-group mr-1" role="group">
+					<span tt='page' style='margin-top:0.4rem;margin-right:0.2rem;'></span>
+					<input v-model='view.wanted_page' @keyup='onChangeWantedPage' class='form-control' type='number' style='width:5rem;' />
+				</div>
+				<div class="btn-group mr-2" role="group">
+					<button type="button" class="btn btn-outline-secondary" v-if='current_command_ids.length==view.batch_size' @click.prevent='setViewPosition(current_command_ids[view.batch_size-1]+1)' tt='bc_next'></button>
+					<button type="button" class="btn btn-outline-secondary" v-if='current_command_ids.length==view.batch_size' @click.prevent='setViewPosition(batch.total_commands-view.batch_size)' tt='bc_end'></button>
+					<button type="button" class="btn btn-outline-secondary" disabled v-else tt='bc_end'></button>
+				</div>
+			</div>
+		</div>
+		<div style='display:flex;flex-grow:1;'>
+		</div>
+		<div style='display:inherit'>
+			<div style='margin-top:0.3rem;margin-right:0.2rem'>
+				<label><input type='radio' v-model='view.filter' value='' @change='onFilterChange'> All</label>
+				<label><input type='radio' v-model='view.filter' value='ERROR' @change='onFilterChange'> <span tt='errors'></span></label>
+				<label><input type='radio' v-model='view.filter' value='INIT' @change='onFilterChange'> Init</label>
+			</div>
+		</div>
+		<div style='display:inherit'>
+			<select class='form-control' v-model='view.batch_size' @change='setCurrentViewCommandIDs'>
+				<option value='10'>10</option>
+				<option value='25'>25</option>
+				<option value='50'>50</option>
+				<option value='100'>100</option>
+				<option value='500'>500</option>
+			</select>
+		</div>
+	</div>
+</div>
+</div>
+</template>
+
+<script>
+'use strict';
+
+Vue.component ( 'batch-commands' , {
+	props : [ 'batch' ] ,
+	mixins : [ batch_helper_mixin ] ,
+	data : function () { return { current_command_ids:[] , view:{is_loaded:false,load_partially:false,position:0,batch_size:10,filter:'',wanted_page:1} , status:[] , working:false } } ,
+    created : function () {} ,
+    updated : function () { tt.updateInterface(this.$el) ; } ,
+    mounted : function () {
+    	var me = this ;
+    	me.reset() ;
+    	if ( me.batch.id > 0 ) me.view.load_partially = true ;
+    	me.setCurrentViewCommandIDs() ;
+    	tt.updateInterface(this.$el) ;
+    } ,
+    methods : {
+    	reset : function () {
+    		var me = this ;
+    		me.view.wanted_page = 1 ;
+    		me.view.load_partially = false ;
+    		me.status = [] ;
+    		me.current_command_ids = [] ;
+    	} ,
+    	loadCommandsFromBatch : function ( start ) {
+    		var me = this ;
+			return new Promise(function(resolve, reject) {
+				$.get ( './api.php' , {
+					action:'get_commands_from_batch',
+					start:start,
+					limit:me.view.batch_size,
+					filter:me.view.filter,
+					batch:me.batch.id
+				} , function ( d ) {
+					if ( d.status != 'OK' ) return reject() ;
+					me.precacheLabels ( d.data )
+					. then ( function () { 
+						$.each ( d.data , function ( k , v ) {
+							v.json.meta = { message:v.message , status:v.status , id:v.num*1 } ;
+							me.$emit('load-command',v) ;
+							me.status[v.num*1] = v.status ;
+						} ) ;
+						resolve() ;
+					}) ;
+				} , 'json' ) ;
+			} ) ;
+    	} ,
+    	getDirectCommandIDs : function () {
+    		var me = this ;
+    		let ret = [] ;
+			let p = me.view.position ;
+//			console.log(JSON.parse(JSON.stringify(me.batch.data.commands))) ;
+			while ( p < me.batch.total_commands && ret.length < me.view.batch_size ) {
+				if ( typeof me.batch.data.commands[p] != 'undefined' ) {
+					if ( me.doesCommandPassFilters ( p ) ) {
+						ret.push ( p ) ;
+					}
+				}
+				p++ ;
+			}
+			return ret ;
+    	} ,
+    	onChangeWantedPage : function () {
+    		let new_position = ((1*this.view.wanted_page)-1)*this.view.batch_size ;
+    		if ( new_position == this.view.position ) return ;
+    		this.setViewPosition ( new_position ) ;
+    	} ,
+		setCurrentViewCommandIDs : function () {
+			var me = this ;
+			if ( typeof me.batch.data == 'undefined' ) me.batch.data = {} ;
+			if ( typeof me.batch.data.commands == 'undefined' ) me.batch.data.commands = [] ;
+			if ( me.view.load_partially ) {
+				me.working = true ;
+				$('#working').show() ;
+				me.loadCommandsFromBatch ( me.view.position )
+				. then ( function () {
+					me.working = false ;
+					$('#working').hide() ;
+					me.current_command_ids = me.getDirectCommandIDs() ;
+				} ) ;
+			} else {
+				let ids = me.getDirectCommandIDs() ;
+				let data = [] ;
+				$.each ( ids , function ( dummy , command_id ) {
+					data.push ( me.batch.data.commands[command_id] ) ;
+				} ) ;
+				me.precacheLabels ( data )
+				. then ( () => me.current_command_ids = ids ) ;
+			}
+		} ,
+		doesCommandPassFilters : function ( command_id ) {
+			let me = this ;
+			if ( me.view.filter == '' ) return true ;
+			if ( typeof me.batch.data.commands[command_id] == 'undefined' ) return false ;
+			if ( me.batch.data.commands[command_id].meta.status == me.view.filter ) return true ;
+			return false ;
+		} ,
+		onFilterChange : function () {
+			this.view.position = 0 ;
+			this.setCurrentViewCommandIDs() ;
+		} ,
+		setViewPosition : function ( new_position ) {
+			if ( new_position < 0 ) new_position = 0 ;
+			this.view.position = new_position ;
+			this.setCurrentViewCommandIDs() ;
+		}
+    } ,
+    template : '#batch-commands-template'
+} ) ;
+
+</script>

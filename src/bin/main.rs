@@ -6,6 +6,7 @@ use quickstatements::qs_bot::QuickStatementsBot;
 use quickstatements::qs_command::QuickStatementsCommand;
 use quickstatements::qs_config::QuickStatements;
 use quickstatements::qs_parser::QuickStatementsParser;
+use quickstatements::qs_server;
 use std::io;
 use std::io::prelude::*;
 use std::sync::{Arc, Mutex};
@@ -185,6 +186,19 @@ async fn command_validate() {
     }
 }
 
+async fn command_server(config_file: &str, port: u16) {
+    let config = match QuickStatements::new_from_config_json(config_file) {
+        Some(qs) => Arc::new(qs),
+        None => panic!("Could not create QuickStatements from config file"),
+    };
+
+    let app = qs_server::build_router(config);
+    let addr = format!("0.0.0.0:{}", port);
+    println!("QuickStatements server listening on http://{}", &addr);
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+
 async fn command_run(site: &str) {
     // Initialize config
     let config = match QuickStatements::new_from_config_json("config_rs.json") {
@@ -253,13 +267,17 @@ struct Args {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Command [bot|parse|validate|run]
+    /// Command [bot|parse|validate|run|server]
     #[arg(long)]
     command: String,
 
     /// Configuration file (JSON)
     #[arg(long, default_value_t=format!("config_rs.json"))]
     config_file: String,
+
+    /// Port for the web server (server command)
+    #[arg(short, long, default_value_t = 8080)]
+    port: u16,
 }
 
 #[tokio::main]
@@ -271,11 +289,13 @@ async fn main() {
         "parse" => command_parse().await,
         "validate" => command_validate().await,
         "run" => command_run(&args.site).await,
+        "server" => command_server(&args.config_file, args.port).await,
         x => panic!("Not a valid command: {}", x),
     }
 }
 
 /*
+ssh magnus@login.toolforge.org -L 3308:tools-db:3306 -N &
 cd ~/rust/quickstatements_rs/ && git pull && ./build.sh && \
 toolforge jobs delete bot ; rm ~/bot.out ~/bot.err ; \
 toolforge jobs run --image golang1.11 --continuous --mem 1500Mi --command '/data/project/quickstatements/rust/quickstatements_rs/target/release/main --command bot' bot
