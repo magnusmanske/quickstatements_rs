@@ -1329,6 +1329,36 @@ mod tests {
         assert_eq!(c.json["datavalue"]["value"]["id"], "Q456");
     }
 
+    // For ADD_FORM / ADD_SENSE commands, LAST in item must be replaced with the lexeme ID.
+    // This is the mechanism that keeps LAST pointing at the lexeme (not the new form/sense ID)
+    // after execution — reset_entities sees the lexeme ID in command.json["item"] and returns
+    // early, never overwriting last_entity_id with the form/sense ID from res["entity"].
+    #[test]
+    fn insert_last_item_replaces_last_for_add_form() {
+        let mut c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "create",
+            "type": "form",
+            "item": "LAST",
+            "data": {"representations":{"en":{"value":"waters","language":"en"}},"grammaticalFeatures":["Q146786"]}
+        }));
+        c.insert_last_item_into_sources_and_qualifiers(&Some("L123".to_string()))
+            .unwrap();
+        assert_eq!(c.json["item"], "L123");
+    }
+
+    #[test]
+    fn insert_last_item_replaces_last_for_add_sense() {
+        let mut c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "create",
+            "type": "sense",
+            "item": "LAST",
+            "data": {"glosses":{"en":{"value":"transparent liquid","language":"en"}}}
+        }));
+        c.insert_last_item_into_sources_and_qualifiers(&Some("L123".to_string()))
+            .unwrap();
+        assert_eq!(c.json["item"], "L123");
+    }
+
     #[test]
     fn action_add_statement_no_property() {
         let c = QuickStatementsCommand::new_from_json(&json!({

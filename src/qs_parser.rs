@@ -2686,6 +2686,23 @@ mod tests {
         assert_eq!(j[0]["data"]["grammaticalFeatures"][0], "Q146786");
     }
 
+    // LAST ADD_FORM: item must remain "LAST" in the JSON (resolved at execution time, not parse time)
+    // This is key to multi-line lexeme batches: LAST stays on the lexeme after ADD_FORM
+    #[tokio::test]
+    async fn to_json_add_form_with_last() {
+        let command = "LAST\tADD_FORM\ten:\"waters\"\tQ146786";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j.len(), 1);
+        assert_eq!(j[0]["action"], "create");
+        assert_eq!(j[0]["type"], "form");
+        assert_eq!(j[0]["item"], "LAST");
+        assert_eq!(j[0]["data"]["representations"]["en"]["value"], "waters");
+        assert_eq!(j[0]["data"]["grammaticalFeatures"][0], "Q146786");
+    }
+
     #[tokio::test]
     async fn to_json_add_sense() {
         let command = "L123\tADD_SENSE\ten:\"transparent liquid\"";
@@ -2696,6 +2713,21 @@ mod tests {
         assert_eq!(j.len(), 1);
         assert_eq!(j[0]["action"], "create");
         assert_eq!(j[0]["type"], "sense");
+        assert_eq!(j[0]["data"]["glosses"]["en"]["value"], "transparent liquid");
+    }
+
+    // LAST ADD_SENSE: item must remain "LAST" in the JSON (resolved at execution time, not parse time)
+    #[tokio::test]
+    async fn to_json_add_sense_with_last() {
+        let command = "LAST\tADD_SENSE\ten:\"transparent liquid\"";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j.len(), 1);
+        assert_eq!(j[0]["action"], "create");
+        assert_eq!(j[0]["type"], "sense");
+        assert_eq!(j[0]["item"], "LAST");
         assert_eq!(j[0]["data"]["glosses"]["en"]["value"], "transparent liquid");
     }
 
