@@ -434,6 +434,7 @@ impl QuickStatementsBot {
             "QuickStatementsBot::run_action batch #{} has no mw_api",
             self.batch_id.unwrap_or(0)
         ))?;
+        let mut invalid_json_retries = 3usize;
         loop {
             params.insert(
                 "token".to_string(),
@@ -445,6 +446,16 @@ impl QuickStatementsBot {
             self.log("[run_action] Pre  post_query_api_json_mut".to_string());
             let res = match mw_api.post_query_api_json_mut(&params).await {
                 Ok(x) => x,
+                Err(wikibase::mediawiki::MediaWikiError::Serde(_)) if invalid_json_retries > 0 => {
+                    // API returned non-JSON (e.g. HTML error page) — retry after a brief delay
+                    invalid_json_retries -= 1;
+                    self.log(format!(
+                        "[run_action] Non-JSON API response, retrying ({} retries left)",
+                        invalid_json_retries
+                    ));
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    continue;
+                }
                 Err(e) => return Err(format!("Wiki editing failed: {:?}", e)),
             };
             self.log("[run_action] Post post_query_api_json_mut".to_string());
