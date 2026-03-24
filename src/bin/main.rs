@@ -12,21 +12,10 @@ use std::io::prelude::*;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const SLEEP_BETWEEN_BOT_RUNS_MS: u64 = 1000;
+const SLEEP_BETWEEN_BOT_RUNS_MS: u64 = 500;
 const MAX_INACTIVITY_BEFORE_SEPPUKU_SEC: u64 = 60;
 
-async fn run_bot(config: Arc<QuickStatements>) {
-    //println!("BOT!");
-    let batch_id: i64;
-    let user_id: i64;
-    {
-        let tuple = match config.get_next_batch().await {
-            Some(n) => n,
-            None => return, // Nothing to do
-        };
-        batch_id = tuple.0;
-        user_id = tuple.1;
-    }
+async fn start_batch(config: Arc<QuickStatements>, batch_id: i64, user_id: i64) {
     println!("Starting batch {} for user {}", &batch_id, &user_id);
     let mut bot = QuickStatementsBot::new(config.clone(), Some(batch_id), user_id);
 
@@ -39,9 +28,18 @@ async fn run_bot(config: Arc<QuickStatements>) {
                 "Error when starting bot for batch #{}: '{}'",
                 &batch_id, &error
             );
-            // TODO mark this as problematic so it doesn't get run again next time?
         }
     }
+}
+
+/// Start all available batches in one go, returning the number started.
+async fn run_bot(config: Arc<QuickStatements>) -> usize {
+    let batches = config.get_next_batches().await;
+    let count = batches.len();
+    for (batch_id, user_id) in batches {
+        start_batch(config.clone(), batch_id, user_id).await;
+    }
+    count
 }
 
 async fn command_bot(verbose: bool, config_file: &str) {
@@ -65,8 +63,10 @@ async fn command_bot(verbose: bool, config_file: &str) {
 
     // Run bot
     loop {
-        run_bot(config.clone()).await;
-        *last_bot_run.lock().unwrap() = Instant::now();
+        let started = run_bot(config.clone()).await;
+        if started > 0 {
+            *last_bot_run.lock().unwrap() = Instant::now();
+        }
         tokio::time::sleep(Duration::from_millis(SLEEP_BETWEEN_BOT_RUNS_MS)).await;
     }
 }

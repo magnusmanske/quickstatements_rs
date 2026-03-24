@@ -38,12 +38,13 @@ impl QuickStatements {
             None => json!({}),
         };
 
+        let max_batches_per_user = params["max_batches_per_user"].as_i64().unwrap_or(2);
         let ret = Self {
             pool: Self::create_mysql_pool(&params).ok()?,
             params,
             running_batch_ids: Arc::new(RwLock::new(HashSet::new())),
             user_counter: Arc::new(RwLock::new(HashMap::new())),
-            max_batches_per_user: 2,
+            max_batches_per_user,
             verbose: false,
         };
         Some(ret)
@@ -245,6 +246,60 @@ impl QuickStatements {
             .iter()
             .find(|(id, _)| !self.running_batch_ids.read().unwrap().contains(id))
             .copied()
+    }
+
+    /// Returns all batches that can be started right now, respecting per-user limits.
+    pub async fn get_next_batches(&self) -> Vec<(i64, i64)> {
+        let mut sql: String = "SELECT id,user FROM batch WHERE `status` IN (".to_string();
+        sql += "'INIT','RUN'";
+        sql += ")";
+
+        let bad_users: Vec<String> = self
+            .user_counter
+            .read()
+            .unwrap()
+            .iter()
+            .filter_map(|(user_id, cnt)| {
+                if *cnt >= self.max_batches_per_user {
+                    Some(user_id.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !bad_users.is_empty() {
+            sql += " AND user NOT IN (";
+            sql += &bad_users.join(",");
+            sql += ")";
+        }
+        sql += " ORDER BY `ts_last_change`";
+
+        let results = match self.pool.get_conn().await {
+            Ok(mut conn) => match conn.exec_iter(sql, ()).await {
+                Ok(result) => result
+                    .map_and_drop(from_row::<(i64, i64)>)
+                    .await
+                    .unwrap_or_default(),
+                Err(_) => return vec![],
+            },
+            Err(_) => return vec![],
+        };
+
+        let running = self.running_batch_ids.read().unwrap();
+        let mut user_counts: HashMap<i64, i64> = self.user_counter.read().unwrap().clone();
+        let mut ret = vec![];
+        for (id, user_id) in results {
+            if running.contains(&id) {
+                continue;
+            }
+            let cnt = user_counts.entry(user_id).or_insert(0);
+            if *cnt >= self.max_batches_per_user {
+                continue;
+            }
+            *cnt += 1;
+            ret.push((id, user_id));
+        }
+        ret
     }
 
     pub async fn reinitialize_open_batches(&self) -> Option<()> {
