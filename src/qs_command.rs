@@ -233,11 +233,18 @@ impl QuickStatementsCommand {
                 json["item"] = json!(resolved);
             }
         }
-        self.replace_last_item(&mut json["datavalue"], state)?;
-        self.replace_last_item(&mut json["qualifier"]["value"], state)?;
-        if let Some(arr) = json["sources"].as_array_mut() {
-            for v in arr {
-                self.replace_last_item(v, state)?
+        if json["datavalue"].is_object() {
+            self.replace_last_item(&mut json["datavalue"], state)?;
+        }
+        // Only touch qualifier if it is an object with a non-null "value" object inside
+        if json["qualifier"].is_object() && json["qualifier"]["value"].is_object() {
+            self.replace_last_item(&mut json["qualifier"]["value"], state)?;
+        }
+        if json.get("sources").is_some_and(|s| s.is_array()) {
+            if let Some(arr) = json["sources"].as_array_mut() {
+                for v in arr {
+                    self.replace_last_item(v, state)?
+                }
             }
         }
         self.json = json;
@@ -1408,6 +1415,55 @@ mod tests {
         c.insert_last_item_into_sources_and_qualifiers(&state_with_last("L123"))
             .unwrap();
         assert_eq!(c.json["item"], "L123");
+    }
+
+    // Null qualifier/sources from DB must not pollute the command JSON or the API call
+    #[test]
+    fn null_qualifier_and_sources_are_preserved() {
+        let mut c = QuickStatementsCommand::new_from_json(&json!({
+            "action":"add",
+            "datavalue":{"type":"wikibase-entityid","value":{"entity-type":"item","id":"Q45006"}},
+            "item":"Q112239934",
+            "new_statement":0,
+            "property":"P170",
+            "qualifier":{"value":null},
+            "sources":null,
+            "what":"statement"
+        }));
+        let original = c.json.clone();
+        c.insert_last_item_into_sources_and_qualifiers(&state_with_last("Q999"))
+            .unwrap();
+        // Item is not LAST, so nothing should change
+        assert_eq!(c.json["item"], "Q112239934");
+        // qualifier and sources must remain exactly as they were
+        assert!(c.json["qualifier"]["value"].is_null());
+        assert!(c.json["sources"].is_null());
+        // Datavalue must not be modified (it's not LAST)
+        assert_eq!(c.json["datavalue"]["value"]["id"], "Q45006");
+        // The action result must be clean wbcreateclaim with no qualifier/source params
+        let entity = empty_test_item();
+        let action = c.action_add_statement(&entity).unwrap();
+        assert_eq!(action["action"], "wbcreateclaim");
+        assert!(action.get("qualifier").is_none());
+        assert!(action.get("sources").is_none());
+    }
+
+    // Ensure that when qualifier/sources keys don't exist at all, they aren't created
+    #[test]
+    fn missing_qualifier_and_sources_not_injected() {
+        let mut c = QuickStatementsCommand::new_from_json(&json!({
+            "action":"add",
+            "item":"LAST",
+            "property":"P31",
+            "datavalue":{"type":"wikibase-entityid","value":{"entity-type":"item","id":"Q5"}},
+            "what":"statement"
+        }));
+        c.insert_last_item_into_sources_and_qualifiers(&state_with_last("Q999"))
+            .unwrap();
+        assert_eq!(c.json["item"], "Q999");
+        // qualifier and sources keys must not have been created
+        assert!(c.json.get("qualifier").is_none());
+        assert!(c.json.get("sources").is_none());
     }
 
     // ========== LastEntityState tests ==========
