@@ -145,7 +145,7 @@ impl QuickStatementsBot {
     fn is_lexeme_subentity_command(command: &QuickStatementsCommand) -> bool {
         matches!(
             command.json["what"].as_str(),
-            Some("form") | Some("sense") | Some("lemma") | Some("lexical_category")
+            Some("lemma") | Some("lexical_category")
             | Some("language") | Some("representation") | Some("grammatical_feature")
             | Some("gloss")
         )
@@ -157,6 +157,19 @@ impl QuickStatementsBot {
     ) -> Result<Option<wikibase::Entity>, String> {
         let command_action = command.get_action()?;
         self.log(format!("[prepare_to_execute] Action '{}'", &command_action));
+        // Form/sense creation: resolve LAST but don't load entity
+        if command_action == "create" {
+            if let Some(entity_type) = command.json["type"].as_str() {
+                if entity_type == "form" || entity_type == "sense" {
+                    self.current_entity_id = command.get_entity_id_option(&command.json["item"]);
+                    if self.current_entity_id == Some("LAST".to_string()) {
+                        self.current_entity_id = self.last_entity_id.clone();
+                    }
+                    return Ok(None);
+                }
+            }
+        }
+
         // Add/remove require the main item to be loaded
         if command_action == "add" || command_action == "remove" {
             // Reset

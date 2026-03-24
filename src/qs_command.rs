@@ -297,28 +297,6 @@ impl QuickStatementsCommand {
         }))
     }
 
-    fn action_add_form(&self) -> Result<Value, String> {
-        let item = self.json["item"].as_str().ok_or("ADD_FORM: item not set")?;
-        let data = serde_json::to_string(&self.json["data"])
-            .map_err(|e| format!("ADD_FORM: {:?}", e))?;
-        Ok(json!({
-            "action": "wbladdform",
-            "lexemeId": item,
-            "data": data,
-        }))
-    }
-
-    fn action_add_sense(&self) -> Result<Value, String> {
-        let item = self.json["item"].as_str().ok_or("ADD_SENSE: item not set")?;
-        let data = serde_json::to_string(&self.json["data"])
-            .map_err(|e| format!("ADD_SENSE: {:?}", e))?;
-        Ok(json!({
-            "action": "wbladdsense",
-            "lexemeId": item,
-            "data": data,
-        }))
-    }
-
     fn action_set_lemma(&self) -> Result<Value, String> {
         let item = self.json["item"].as_str().ok_or("SetLemma: item not set")?;
         let language = self.json["language"].as_str().ok_or("SetLemma: language not set")?;
@@ -419,11 +397,31 @@ impl QuickStatementsCommand {
             Some(t) => t,
             None => return Err("No type set".to_string()),
         };
-        Ok(json!({
-            "action":"wbeditentity",
-            "new":new_type,
-            "data":data,
-        }))
+
+        // Forms and senses use specialized API actions
+        match new_type {
+            "form" => {
+                let item = self.json["item"].as_str().ok_or("ADD_FORM: item not set")?;
+                Ok(json!({
+                    "action": "wbladdform",
+                    "lexemeId": item,
+                    "data": data,
+                }))
+            }
+            "sense" => {
+                let item = self.json["item"].as_str().ok_or("ADD_SENSE: item not set")?;
+                Ok(json!({
+                    "action": "wbladdsense",
+                    "lexemeId": item,
+                    "data": data,
+                }))
+            }
+            _ => Ok(json!({
+                "action":"wbeditentity",
+                "new":new_type,
+                "data":data,
+            })),
+        }
     }
 
     fn action_merge_entities(&self) -> Result<Value, String> {
@@ -448,8 +446,6 @@ impl QuickStatementsCommand {
     fn add_to_entity(&mut self, item: &Option<wikibase::Entity>) -> Result<Value, String> {
         // Lexeme commands that don't require loading an entity
         match self.json["what"].as_str() {
-            Some("form") => return self.action_add_form(),
-            Some("sense") => return self.action_add_sense(),
             Some("lemma") => return self.action_set_lemma(),
             Some("lexical_category") => return self.action_set_lexical_category(),
             Some("language") => return self.action_set_language(),
@@ -1567,38 +1563,6 @@ mod tests {
     // ========== Lexeme command action tests ==========
 
     #[test]
-    fn action_add_form() {
-        let c = QuickStatementsCommand::new_from_json(&json!({
-            "action": "add",
-            "what": "form",
-            "item": "L123",
-            "data": {
-                "representations": {"en": {"language": "en", "value": "running"}},
-                "grammaticalFeatures": ["Q146786"]
-            }
-        }));
-        let result = c.action_add_form().unwrap();
-        assert_eq!(result["action"], "wbladdform");
-        assert_eq!(result["lexemeId"], "L123");
-        assert!(result["data"].as_str().is_some());
-    }
-
-    #[test]
-    fn action_add_sense() {
-        let c = QuickStatementsCommand::new_from_json(&json!({
-            "action": "add",
-            "what": "sense",
-            "item": "L123",
-            "data": {
-                "glosses": {"en": {"language": "en", "value": "transparent liquid"}}
-            }
-        }));
-        let result = c.action_add_sense().unwrap();
-        assert_eq!(result["action"], "wbladdsense");
-        assert_eq!(result["lexemeId"], "L123");
-    }
-
-    #[test]
     fn action_set_lemma() {
         let c = QuickStatementsCommand::new_from_json(&json!({
             "action": "add",
@@ -1694,8 +1658,8 @@ mod tests {
     #[test]
     fn action_to_execute_add_form() {
         let mut c = QuickStatementsCommand::new_from_json(&json!({
-            "action": "add",
-            "what": "form",
+            "action": "create",
+            "type": "form",
             "item": "L123",
             "data": {"representations": {"en": {"language": "en", "value": "running"}}}
         }));
@@ -1706,8 +1670,8 @@ mod tests {
     #[test]
     fn action_to_execute_add_sense() {
         let mut c = QuickStatementsCommand::new_from_json(&json!({
-            "action": "add",
-            "what": "sense",
+            "action": "create",
+            "type": "sense",
             "item": "L123",
             "data": {"glosses": {"en": {"language": "en", "value": "liquid"}}}
         }));
@@ -1729,5 +1693,69 @@ mod tests {
         let result = c.action_create_entity().unwrap();
         assert_eq!(result["action"], "wbeditentity");
         assert_eq!(result["new"], "lexeme");
+    }
+
+    #[test]
+    fn action_create_property() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "create",
+            "type": "property",
+            "data": {"datatype": "string"}
+        }));
+        let result = c.action_create_entity().unwrap();
+        assert_eq!(result["action"], "wbeditentity");
+        assert_eq!(result["new"], "property");
+    }
+
+    #[test]
+    fn action_create_form_via_create() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "create",
+            "type": "form",
+            "item": "L123",
+            "data": {"representations": {"en": {"language": "en", "value": "running"}}}
+        }));
+        let result = c.action_create_entity().unwrap();
+        assert_eq!(result["action"], "wbladdform");
+        assert_eq!(result["lexemeId"], "L123");
+    }
+
+    #[test]
+    fn action_create_sense_via_create() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "create",
+            "type": "sense",
+            "item": "L123",
+            "data": {"glosses": {"en": {"language": "en", "value": "liquid"}}}
+        }));
+        let result = c.action_create_entity().unwrap();
+        assert_eq!(result["action"], "wbladdsense");
+        assert_eq!(result["lexemeId"], "L123");
+    }
+
+    #[test]
+    fn action_novalue_statement() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "add",
+            "what": "statement",
+            "item": "Q123",
+            "property": "P456",
+            "datavalue": {"type": "novalue", "value": "novalue"}
+        }));
+        let snak_type = c.get_snak_type_for_datavalue(&c.json["datavalue"]).unwrap();
+        assert_eq!(snak_type, "novalue");
+    }
+
+    #[test]
+    fn action_somevalue_statement() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "action": "add",
+            "what": "statement",
+            "item": "Q123",
+            "property": "P456",
+            "datavalue": {"type": "somevalue", "value": "somevalue"}
+        }));
+        let snak_type = c.get_snak_type_for_datavalue(&c.json["datavalue"]).unwrap();
+        assert_eq!(snak_type, "somevalue");
     }
 }

@@ -2,6 +2,7 @@
 pub enum CommandType {
     Create,
     CreateLexeme,
+    CreateProperty,
     Merge,
     EditStatement,
     SetLabel,

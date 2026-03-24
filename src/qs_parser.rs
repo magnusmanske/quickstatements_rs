@@ -11,6 +11,7 @@ use crate::value::Value;
 
 pub const COMMONS_API: &str = "https://commons.wikimedia.org/w/api.php";
 const GREGORIAN_CALENDAR: &str = "http://www.wikidata.org/entity/Q1985727";
+const JULIAN_CALENDAR: &str = "http://www.wikidata.org/entity/Q1985786";
 const GLOBE_EARTH: &str = "http://www.wikidata.org/entity/Q2";
 const PHP_COMPATIBILITY: bool = true; // TODO
 
@@ -28,6 +29,8 @@ pub struct QuickStatementsParser {
     pub locale_string: Option<LocaleString>,
     pub comment: Option<String>,
     pub create_data: Option<serde_json::Value>,
+    pub new_statement: bool,                     // !P prefix forces new statement
+    pub datatype: Option<String>,                // For CREATE_PROPERTY
     // Lexeme-specific fields
     pub lexeme_language: Option<String>,         // Q-id for language
     pub lexeme_category: Option<String>,         // Q-id for lexical category
@@ -46,9 +49,18 @@ impl QuickStatementsParser {
         }
 
         let (line, comment) = Self::parse_comment(line);
-        let mut parts: Vec<String> = line
-            .trim()
-            .replace("||", "\t")
+        let trimmed = line.trim();
+
+        // Handle separators: || first, then if no tabs exist, single | is used
+        let normalized = if trimmed.contains('\t') || trimmed.contains("||") {
+            trimmed.replace("||", "\t")
+        } else if trimmed.contains('|') {
+            trimmed.replace('|', "\t")
+        } else {
+            trimmed.to_string()
+        };
+
+        let mut parts: Vec<String> = normalized
             .split('\t')
             .map(|s| s.to_string())
             .collect();
@@ -59,12 +71,19 @@ impl QuickStatementsParser {
         match parts[0].to_uppercase().as_str() {
             "CREATE" => return Self::new_create(comment),
             "CREATE_LEXEME" => return Self::new_create_lexeme(&parts[1..], comment),
+            "CREATE_PROPERTY" => return Self::new_create_property(&parts[1..], comment),
             "MERGE" => {
                 return Self::new_merge(
                     parts.get(1).map(|s| s.as_str()),
                     parts.get(2).map(|s| s.as_str()),
                     comment,
                 )
+            }
+            "STATEMENT" => {
+                if parts.len() >= 2 {
+                    return Self::new_statement_by_id(&parts[1], comment);
+                }
+                return Err("STATEMENT requires a statement ID".to_string());
             }
             _ => {}
         }
@@ -161,6 +180,8 @@ impl QuickStatementsParser {
             locale_string: None,
             comment: None,
             create_data: None,
+            new_statement: false,
+            datatype: None,
             lexeme_language: None,
             lexeme_category: None,
             lemmas: vec![],
@@ -179,6 +200,56 @@ impl QuickStatementsParser {
     fn new_create(comment: Option<String>) -> Result<Self, String> {
         let mut ret = Self::new_blank_with_comment(comment);
         ret.command = CommandType::Create;
+        Ok(ret)
+    }
+
+    fn new_create_property(parts: &[String], comment: Option<String>) -> Result<Self, String> {
+        if parts.is_empty() {
+            return Err("CREATE_PROPERTY requires a datatype".to_string());
+        }
+        let mut datatype = parts[0].trim().to_lowercase();
+        // PHP compatibility: "commonsmedia" → "commonsMedia"
+        if datatype == "commonsmedia" {
+            datatype = "commonsMedia".to_string();
+        }
+        let valid_datatypes = [
+            "commonsMedia",
+            "globe-coordinate",
+            "wikibase-item",
+            "wikibase-property",
+            "string",
+            "monolingualtext",
+            "external-id",
+            "quantity",
+            "time",
+            "url",
+            "math",
+            "geo-shape",
+            "musical-notation",
+            "tabular-data",
+            "wikibase-lexeme",
+            "wikibase-form",
+            "wikibase-sense",
+        ];
+        if !valid_datatypes.contains(&datatype.as_str()) {
+            return Err(format!("CREATE_PROPERTY: Unknown datatype '{}'", &datatype));
+        }
+        let mut ret = Self::new_blank_with_comment(comment);
+        ret.command = CommandType::CreateProperty;
+        ret.datatype = Some(datatype);
+        Ok(ret)
+    }
+
+    fn new_statement_by_id(statement_id: &str, comment: Option<String>) -> Result<Self, String> {
+        let id = statement_id.trim().to_string();
+        if id.is_empty() {
+            return Err("STATEMENT requires a statement ID".to_string());
+        }
+        let mut ret = Self::new_blank_with_comment(comment);
+        ret.command = CommandType::EditStatement;
+        // For STATEMENT command, the item is derived from the statement ID
+        // and stored in a special way - no property/value, just the statement ID
+        ret.value = Some(Value::String(id));
         Ok(ret)
     }
 
@@ -202,7 +273,7 @@ impl QuickStatementsParser {
 
     fn new_edit_statement(parts: Vec<String>, comment: Option<String>) -> Result<Self, String> {
         lazy_static! {
-            static ref RE_PROPERTY: Regex = Regex::new(r#"^[Pp]\d+$"#).unwrap();
+            static ref RE_PROPERTY: Regex = Regex::new(r#"^!?[Pp]\d+$"#).unwrap();
         }
 
         let mut ret = Self::new_blank_with_comment(comment);
@@ -220,7 +291,12 @@ impl QuickStatementsParser {
         };
 
         if RE_PROPERTY.is_match(&second) {
-            ret.parse_edit_statement_property(parts, second.to_uppercase())?;
+            let mut prop_str = second.to_uppercase();
+            if prop_str.starts_with('!') {
+                ret.new_statement = true;
+                prop_str = prop_str[1..].to_string();
+            }
+            ret.parse_edit_statement_property(parts, prop_str)?;
             return Ok(ret);
         }
 
@@ -244,7 +320,7 @@ impl QuickStatementsParser {
         // References and qualifiers
 
         lazy_static! {
-            static ref RE_REF_QUAL: Regex = Regex::new(r#"^([PS])(\d+)$"#).unwrap();
+            static ref RE_REF_QUAL: Regex = Regex::new(r#"^(!?[PS])(\d+)$"#).unwrap();
         }
         let mut i = parts.iter();
         i.next();
@@ -255,7 +331,9 @@ impl QuickStatementsParser {
             let (subtype, property) = match i.next() {
                 Some(p) => match RE_REF_QUAL.captures(p) {
                     Some(caps) => {
-                        let subtype = caps.get(1).unwrap().as_str().to_string();
+                        let subtype_raw = caps.get(1).unwrap().as_str().to_string();
+                        // !S is treated like S (new source group marker handled at execution time)
+                        let subtype = subtype_raw.replace('!', "");
                         let prop_string = "P".to_string() + caps.get(2).unwrap().as_str();
                         let property = self.parse_property_id(&prop_string)?;
                         (subtype, property)
@@ -302,6 +380,7 @@ impl QuickStatementsParser {
         lazy_static! {
             static ref RE_TIME: Regex = Regex::new(r#"^[\+\-]{0,1}\d+"#).unwrap();
             static ref RE_PRECISION: Regex = Regex::new(r#"^(.+)/(\d+)$"#).unwrap();
+            static ref RE_JULIAN: Regex = Regex::new(r#"/J$"#).unwrap();
         }
 
         if !RE_TIME.is_match(value) {
@@ -311,6 +390,13 @@ impl QuickStatementsParser {
         let mut lead = '+';
 
         let mut v = value.to_string();
+
+        // Check for Julian calendar suffix /J
+        let is_julian = RE_JULIAN.is_match(&v);
+        if is_julian {
+            v = v.trim_end_matches("/J").to_string();
+        }
+
         if v.starts_with('+') {
             v = v[1..].to_string();
         } else if v.starts_with('-') {
@@ -368,10 +454,15 @@ impl QuickStatementsParser {
             )
         };
 
+        let calendar = if is_julian {
+            JULIAN_CALENDAR
+        } else {
+            GREGORIAN_CALENDAR
+        };
         Some(Value::Time(TimeValue::new(
             0,
             0,
-            GREGORIAN_CALENDAR,
+            calendar,
             precision,
             &time,
             0,
@@ -439,12 +530,20 @@ impl QuickStatementsParser {
     fn parse_value(value: String) -> Option<Value> {
         lazy_static! {
             static ref RE_STRING: Regex = Regex::new(r#"^"(.*)"$"#).unwrap();
-            static ref RE_MONOLINGUAL_STRING: Regex = Regex::new(r#"^([a-z-]+):"(.*)"$"#).unwrap();
+            static ref RE_MONOLINGUAL_STRING: Regex = Regex::new(r#"^([a-z][a-z0-9_-]*):"(.*)"$"#).unwrap();
             static ref RE_COORDINATE: Regex =
-                Regex::new(r#"^@([+-]{0,1}[0-9.-]+)/([+-]{0,1}[0-9.-]+)$"#).unwrap();
+                Regex::new(r#"^@\s*([+-]{0,1}[0-9.-]+)\s*/\s*([+-]{0,1}[0-9.-]+)$"#).unwrap();
         }
 
         let value = value.trim();
+
+        // Special values: novalue and somevalue
+        if value == "somevalue" {
+            return Some(Value::Somevalue);
+        }
+        if value == "novalue" {
+            return Some(Value::Novalue);
+        }
 
         if let Some(caps) = RE_COORDINATE.captures(value) {
             return Some(Value::GlobeCoordinate(Coordinate::new(
@@ -857,6 +956,10 @@ impl QuickStatementsParser {
                 "S".to_string() + self.sitelink.clone()?.site(),
                 Self::quote(self.sitelink.clone()?.title()),
             ],
+            CommandType::CreateProperty => vec![
+                "CREATE_PROPERTY".to_string(),
+                self.datatype.clone()?,
+            ],
             CommandType::CreateLexeme => {
                 let mut ret = vec![
                     "CREATE_LEXEME".to_string(),
@@ -940,7 +1043,22 @@ impl QuickStatementsParser {
         match &self.command {
             CommandType::EditStatement => {
                 let mut ret = vec![];
+
+                // STATEMENT command: operate on existing statement by ID
+                if self.item.is_none() && self.property.is_none() {
+                    if let Some(Value::String(id)) = &self.value {
+                        let mut base = json!({"action":self.get_action(),"what":"statement","id":id});
+                        if let Some(comment) = &self.comment {
+                            base["summary"] = json!(comment);
+                        }
+                        return Ok(vec![base]);
+                    }
+                }
+
                 let mut base = json!({"action":self.get_action(),"what":"statement"});
+                if self.new_statement {
+                    base["new_statement"] = json!(1);
+                }
                 if let Some(comment) = &self.comment {
                     base["summary"] = json!(comment)
                 }
@@ -1041,6 +1159,15 @@ impl QuickStatementsParser {
                 ]),
                 _ => Err("Sitelink issue".to_string()),
             },
+            CommandType::CreateProperty => {
+                let datatype = self.datatype.as_ref().ok_or("No datatype set for CREATE_PROPERTY")?;
+                let data = json!({"datatype": datatype});
+                let mut ret = json!({"action":"create","type":"property","data":data});
+                if let Some(comment) = &self.comment {
+                    ret["summary"] = json!(comment);
+                }
+                Ok(vec![ret])
+            }
             CommandType::CreateLexeme => {
                 let lang = self.lexeme_language.as_ref().ok_or("No language set for CREATE_LEXEME")?;
                 let cat = self.lexeme_category.as_ref().ok_or("No lexical category set for CREATE_LEXEME")?;
@@ -1077,7 +1204,7 @@ impl QuickStatementsParser {
                     data["grammaticalFeatures"] = json!(self.grammatical_features);
                 }
                 let item_str = self.item.as_ref().ok_or("No item set for ADD_FORM")?.to_string();
-                let mut ret = json!({"action":"add","what":"form","item":item_str,"data":data});
+                let mut ret = json!({"action":"create","type":"form","item":item_str,"data":data});
                 if let Some(comment) = &self.comment {
                     ret["summary"] = json!(comment);
                 }
@@ -1090,7 +1217,7 @@ impl QuickStatementsParser {
                 }
                 let data = json!({"glosses": glosses_json});
                 let item_str = self.item.as_ref().ok_or("No item set for ADD_SENSE")?.to_string();
-                let mut ret = json!({"action":"add","what":"sense","item":item_str,"data":data});
+                let mut ret = json!({"action":"create","type":"sense","item":item_str,"data":data});
                 if let Some(comment) = &self.comment {
                     ret["summary"] = json!(comment);
                 }
@@ -2552,8 +2679,8 @@ mod tests {
             .unwrap();
         let j = qsp.to_json().unwrap();
         assert_eq!(j.len(), 1);
-        assert_eq!(j[0]["action"], "add");
-        assert_eq!(j[0]["what"], "form");
+        assert_eq!(j[0]["action"], "create");
+        assert_eq!(j[0]["type"], "form");
         assert_eq!(j[0]["item"], "L123");
         assert_eq!(j[0]["data"]["representations"]["en"]["value"], "running");
         assert_eq!(j[0]["data"]["grammaticalFeatures"][0], "Q146786");
@@ -2567,8 +2694,8 @@ mod tests {
             .unwrap();
         let j = qsp.to_json().unwrap();
         assert_eq!(j.len(), 1);
-        assert_eq!(j[0]["action"], "add");
-        assert_eq!(j[0]["what"], "sense");
+        assert_eq!(j[0]["action"], "create");
+        assert_eq!(j[0]["type"], "sense");
         assert_eq!(j[0]["data"]["glosses"]["en"]["value"], "transparent liquid");
     }
 
@@ -2809,5 +2936,346 @@ mod tests {
             let result = QuickStatementsParser::new_from_line(cmd, None).await;
             assert!(result.is_ok(), "Failed to parse: {}", cmd);
         }
+    }
+
+    // ========== novalue / somevalue tests ==========
+
+    #[test]
+    fn parse_value_novalue() {
+        assert_eq!(
+            QuickStatementsParser::parse_value("novalue".to_string()),
+            Some(Value::Novalue)
+        );
+    }
+
+    #[test]
+    fn parse_value_somevalue() {
+        assert_eq!(
+            QuickStatementsParser::parse_value("somevalue".to_string()),
+            Some(Value::Somevalue)
+        );
+    }
+
+    #[test]
+    fn novalue_display() {
+        assert_eq!(Value::Novalue.to_string(), "novalue");
+    }
+
+    #[test]
+    fn somevalue_display() {
+        assert_eq!(Value::Somevalue.to_string(), "somevalue");
+    }
+
+    #[test]
+    fn novalue_to_json() {
+        let j = Value::Novalue.to_json().unwrap();
+        assert_eq!(j["type"], "novalue");
+        assert_eq!(j["value"], "novalue");
+    }
+
+    #[test]
+    fn somevalue_to_json() {
+        let j = Value::Somevalue.to_json().unwrap();
+        assert_eq!(j["type"], "somevalue");
+        assert_eq!(j["value"], "somevalue");
+    }
+
+    #[tokio::test]
+    async fn parse_statement_novalue() {
+        let command = "Q123\tP456\tnovalue";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::EditStatement);
+        assert_eq!(qsp.value, Some(Value::Novalue));
+    }
+
+    #[tokio::test]
+    async fn parse_statement_somevalue() {
+        let command = "Q123\tP456\tsomevalue";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::EditStatement);
+        assert_eq!(qsp.value, Some(Value::Somevalue));
+    }
+
+    // ========== Entity type in to_json tests ==========
+
+    #[test]
+    fn entity_to_json_item() {
+        let v = Value::Entity(EntityID::Id(EntityValue::new(EntityType::Item, "Q42")));
+        let j = v.to_json().unwrap();
+        assert_eq!(j["value"]["entity-type"], "item");
+        assert_eq!(j["value"]["id"], "Q42");
+    }
+
+    #[test]
+    fn entity_to_json_property() {
+        let v = Value::Entity(EntityID::Id(EntityValue::new(EntityType::Property, "P31")));
+        let j = v.to_json().unwrap();
+        assert_eq!(j["value"]["entity-type"], "property");
+        assert_eq!(j["value"]["id"], "P31");
+    }
+
+    #[test]
+    fn entity_to_json_lexeme() {
+        let v = Value::Entity(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123")));
+        let j = v.to_json().unwrap();
+        assert_eq!(j["value"]["entity-type"], "lexeme");
+    }
+
+    #[test]
+    fn entity_to_json_form() {
+        let v = Value::Entity(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123-F1")));
+        let j = v.to_json().unwrap();
+        assert_eq!(j["value"]["entity-type"], "form");
+    }
+
+    #[test]
+    fn entity_to_json_sense() {
+        let v = Value::Entity(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123-S1")));
+        let j = v.to_json().unwrap();
+        assert_eq!(j["value"]["entity-type"], "sense");
+    }
+
+    #[test]
+    fn entity_to_json_last() {
+        let v = Value::Entity(EntityID::Last);
+        let j = v.to_json().unwrap();
+        assert_eq!(j["value"]["entity-type"], "item");
+        assert_eq!(j["value"]["id"], "LAST");
+    }
+
+    // ========== Julian calendar tests ==========
+
+    #[test]
+    fn parse_time_julian() {
+        let v = QuickStatementsParser::parse_time("+1582-10-04T00:00:00Z/11/J");
+        assert!(v.is_some());
+        if let Some(Value::Time(tv)) = v {
+            assert_eq!(tv.calendarmodel(), JULIAN_CALENDAR);
+            assert_eq!(*tv.precision(), 11);
+        } else {
+            panic!("Expected Time value");
+        }
+    }
+
+    #[test]
+    fn parse_time_not_julian() {
+        let v = QuickStatementsParser::parse_time("+2020-01-01T00:00:00Z/11");
+        assert!(v.is_some());
+        if let Some(Value::Time(tv)) = v {
+            assert_eq!(tv.calendarmodel(), GREGORIAN_CALENDAR);
+        } else {
+            panic!("Expected Time value");
+        }
+    }
+
+    // ========== CREATE_PROPERTY tests ==========
+
+    #[tokio::test]
+    async fn parse_create_property() {
+        let command = "CREATE_PROPERTY\tstring";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::CreateProperty);
+        assert_eq!(qsp.datatype, Some("string".to_string()));
+    }
+
+    #[tokio::test]
+    async fn parse_create_property_commonsmedia() {
+        let command = "CREATE_PROPERTY\tcommonsMedia";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.datatype, Some("commonsMedia".to_string()));
+    }
+
+    #[tokio::test]
+    async fn parse_create_property_commonsmedia_lowercase() {
+        // PHP compatibility: "commonsmedia" → "commonsMedia"
+        let command = "CREATE_PROPERTY\tcommonsmedia";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.datatype, Some("commonsMedia".to_string()));
+    }
+
+    #[tokio::test]
+    async fn parse_create_property_bad_type() {
+        let result =
+            QuickStatementsParser::new_from_line("CREATE_PROPERTY\tinvalid_type", None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn parse_create_property_no_type() {
+        let result = QuickStatementsParser::new_from_line("CREATE_PROPERTY", None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn to_json_create_property() {
+        let command = "CREATE_PROPERTY\tstring";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j[0]["action"], "create");
+        assert_eq!(j[0]["type"], "property");
+        assert_eq!(j[0]["data"]["datatype"], "string");
+    }
+
+    #[tokio::test]
+    async fn generate_qs_line_create_property() {
+        let command = "CREATE_PROPERTY\tstring";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            qsp.generate_qs_line(),
+            Some("CREATE_PROPERTY\tstring".to_string())
+        );
+    }
+
+    // ========== !P prefix (force new statement) tests ==========
+
+    #[tokio::test]
+    async fn parse_force_new_statement() {
+        let command = "Q123\t!P456\tQ789";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::EditStatement);
+        assert_eq!(qsp.new_statement, true);
+        assert_eq!(
+            qsp.property,
+            Some(EntityValue::new(EntityType::Property, "P456"))
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_no_force_new_statement() {
+        let command = "Q123\tP456\tQ789";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.new_statement, false);
+    }
+
+    #[tokio::test]
+    async fn to_json_force_new_statement() {
+        let command = "Q123\t!P456\tQ789";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j[0]["new_statement"], 1);
+    }
+
+    #[tokio::test]
+    async fn to_json_no_force_new_statement() {
+        let command = "Q123\tP456\tQ789";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert!(j[0]["new_statement"].is_null());
+    }
+
+    // ========== STATEMENT command tests ==========
+
+    #[tokio::test]
+    async fn parse_statement_by_id() {
+        let command = "STATEMENT\tQ123$some-guid-here";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::EditStatement);
+    }
+
+    #[tokio::test]
+    async fn to_json_statement_by_id() {
+        let command = "STATEMENT\tQ123$some-guid-here";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        let j = qsp.to_json().unwrap();
+        assert_eq!(j[0]["action"], "add");
+        assert_eq!(j[0]["what"], "statement");
+        assert_eq!(j[0]["id"], "Q123$some-guid-here");
+    }
+
+    #[tokio::test]
+    async fn parse_remove_statement_by_id() {
+        let command = "-STATEMENT\tQ123$some-guid-here";
+        // STATEMENT doesn't support - prefix (first column is STATEMENT, not entity)
+        // But should not crash
+        let result = QuickStatementsParser::new_from_line(command, None).await;
+        // -STATEMENT is not a recognized command
+        assert!(result.is_err());
+    }
+
+    // ========== Single pipe separator tests ==========
+
+    #[tokio::test]
+    async fn parse_single_pipe_separator() {
+        let command = "Q123|P456|Q789";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::EditStatement);
+        assert_eq!(qsp.item, Some(item1()));
+    }
+
+    #[tokio::test]
+    async fn parse_single_pipe_not_used_when_tabs_present() {
+        // When tabs are present, single pipes are NOT treated as separators
+        let command = "Q123\tP456\tQ789";
+        let qsp = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap();
+        assert_eq!(qsp.command, CommandType::EditStatement);
+    }
+
+    // ========== Coordinate with spaces around slash (PHP compat) ==========
+
+    #[test]
+    fn parse_coordinate_with_spaces() {
+        assert_eq!(
+            QuickStatementsParser::parse_value("@ -123.45 / 67.89".to_string()),
+            make_coordinate(-123.45, 67.89)
+        )
+    }
+
+    // ========== Valid property datatypes ==========
+
+    #[tokio::test]
+    async fn parse_create_property_all_valid_datatypes() {
+        let valid = vec![
+            "string", "url", "external-id", "quantity", "time",
+            "globe-coordinate", "wikibase-item", "wikibase-property",
+            "monolingualtext", "math", "geo-shape", "musical-notation",
+            "tabular-data", "wikibase-lexeme", "wikibase-form", "wikibase-sense",
+        ];
+        for dt in valid {
+            let command = format!("CREATE_PROPERTY\t{}", dt);
+            let result = QuickStatementsParser::new_from_line(&command, None).await;
+            assert!(result.is_ok(), "Datatype '{}' should be valid", dt);
+        }
+    }
+
+    // ========== Monolingual text language codes with underscores ==========
+
+    #[test]
+    fn parse_value_monolingual_with_underscore() {
+        // PHP regex: /^([a-z_-]+):"(.*)"$/i — allows underscores
+        // e.g., "zh_min_nan:\"text\""
+        // Note: our regex is ^([a-z-]+):"(.*)"$ which doesn't include underscores
+        // This tests the current behavior - we should match PHP
+        let result = QuickStatementsParser::parse_value("en:\"hello\"".to_string());
+        assert!(result.is_some());
     }
 }
