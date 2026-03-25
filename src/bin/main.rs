@@ -186,6 +186,78 @@ async fn command_validate() {
     }
 }
 
+async fn command_debug_command(config_file: &str, command_id: i64) {
+    let config = match QuickStatements::new_from_config_json(config_file) {
+        Some(qs) => Arc::new(qs),
+        None => panic!("Could not create QuickStatements from config file"),
+    };
+
+    // Load the command from DB
+    let mut command = config
+        .get_command_by_id(command_id)
+        .await
+        .unwrap_or_else(|| panic!("Command #{} not found in database", command_id));
+
+    println!("Command #{}:", command_id);
+    println!("  Batch:  {}", command.batch_id);
+    println!("  Num:    {}", command.num);
+    println!("  Status: {}", command.status);
+    println!("  JSON:   {}", serde_json::to_string_pretty(&command.json).unwrap());
+    println!();
+
+    // Get the API URL for this batch's site
+    let api_url = config
+        .get_api_url(command.batch_id)
+        .await
+        .unwrap_or_else(|| panic!("No API URL for batch #{}", command.batch_id));
+
+    // Set up a bot with API + auth
+    let mut mw_api = wikibase::mediawiki::api::Api::new(api_url)
+        .await
+        .unwrap_or_else(|e| panic!("Could not create API: {:?}", e));
+    config.set_bot_api_auth(&mut mw_api, command.batch_id).await;
+
+    // Load LAST state from the batch
+    let last_state = config.get_last_state_from_batch(command.batch_id).await;
+
+    let mut bot = QuickStatementsBot::new(config.clone(), Some(command.batch_id), 0);
+    bot.set_mw_api(mw_api);
+    bot.set_last_state(last_state);
+
+    match bot.debug_command(&mut command).await {
+        Ok((params, response)) => {
+            // Print request params
+            let params_json: serde_json::Value = params
+                .iter()
+                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                .collect();
+            println!("API parameters:");
+            println!("{}", serde_json::to_string_pretty(&params_json).unwrap());
+
+            // Print response
+            println!();
+            println!("API response:");
+            println!("{}", serde_json::to_string_pretty(&response).unwrap());
+
+            // Highlight key fields
+            if let Some(code) = response["error"]["code"].as_str() {
+                println!();
+                println!("Error code: {}", code);
+                if let Some(info) = response["error"]["info"].as_str() {
+                    println!("Error info: {}", info);
+                }
+            } else if let Some(success) = response["success"].as_i64() {
+                println!();
+                println!("Success: {}", success);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error preparing command: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 async fn command_server(config_file: &str, port: u16) {
     let config = match QuickStatements::new_from_config_json(config_file) {
         Some(qs) => Arc::new(qs),
@@ -278,6 +350,10 @@ struct Args {
     /// Port for the web server (server command)
     #[arg(short, long, default_value_t = 8080)]
     port: u16,
+
+    /// Command ID for debug_command
+    #[arg(long)]
+    id: Option<i64>,
 }
 
 #[tokio::main]
@@ -290,6 +366,10 @@ async fn main() {
         "validate" => command_validate().await,
         "run" => command_run(&args.site).await,
         "server" => command_server(&args.config_file, args.port).await,
+        "debug_command" => {
+            let id = args.id.expect("--id is required for debug_command");
+            command_debug_command(&args.config_file, id).await;
+        }
         x => panic!("Not a valid command: {}", x),
     }
 }

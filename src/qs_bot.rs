@@ -76,6 +76,62 @@ impl QuickStatementsBot {
         self.mw_api = Some(mw_api);
     }
 
+    pub fn set_last_state(&mut self, state: LastEntityState) {
+        self.last_state = state;
+    }
+
+    /// Execute a command for debugging: prepare params, call the API, and return
+    /// both the request params and the full API response (or error).
+    pub async fn debug_command(
+        &mut self,
+        command: &mut QuickStatementsCommand,
+    ) -> Result<(HashMap<String, String>, Value), String> {
+        command.insert_last_item_into_sources_and_qualifiers(&self.last_state)?;
+        let main_item = self.prepare_to_execute(command).await?;
+        let action = command.action_to_execute(&main_item)?;
+
+        if !action["already_done"].is_null() {
+            return Err("Command is already_done (duplicate)".to_string());
+        }
+
+        let mut params: HashMap<String, String> = HashMap::new();
+        for (k, v) in action
+            .as_object()
+            .ok_or("Action is not a JSON object")?
+        {
+            params.insert(
+                k.to_string(),
+                v.as_str()
+                    .ok_or(format!("Cannot convert param '{}' value to string: {}", k, v))?
+                    .to_string(),
+            );
+        }
+        self.add_summary(&mut params, command);
+
+        // Actually execute the API call
+        let mut mw_api = self.mw_api.to_owned().ok_or("No mw_api set")?;
+        params.insert(
+            "token".to_string(),
+            mw_api
+                .get_edit_token()
+                .await
+                .map_err(|e| format!("get_edit_token: {}", e))?,
+        );
+
+        let response = match mw_api.post_query_api_json_mut(&params).await {
+            Ok(json) => json,
+            Err(e) => {
+                // Return the error as a JSON value so the caller can still see the params
+                serde_json::json!({"_error": format!("{:?}", e)})
+            }
+        };
+
+        // Don't put the token in the debug output
+        params.remove("token");
+
+        Ok((params, response))
+    }
+
     fn log(&self, msg: String) {
         if self.config.verbose() {
             let date = Local::now();

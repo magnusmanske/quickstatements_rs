@@ -398,6 +398,23 @@ impl QuickStatements {
         self.deactivate_batch_run(batch_id, user_id)
     }
 
+    pub async fn get_command_by_id(&self, command_id: i64) -> Option<QuickStatementsCommand> {
+        let sql = r#"SELECT id,batch_id,num,json,`status`,message,ts_change FROM command WHERE id=:command_id"#;
+        self.pool
+            .get_conn()
+            .await
+            .ok()?
+            .exec_iter(sql, params! {command_id})
+            .await
+            .ok()?
+            .map_and_drop(from_row::<(i64, i64, i64, String, String, String, String)>)
+            .await
+            .ok()?
+            .iter()
+            .map(QuickStatementsCommand::from_row)
+            .next()
+    }
+
     pub async fn get_next_command(&self, batch_id: i64) -> Option<QuickStatementsCommand> {
         let sql = r#"SELECT id,batch_id,num,json,`status`,message,ts_change FROM command WHERE batch_id=:batch_id AND status IN ('INIT') ORDER BY num LIMIT 1"#;
         self.pool
