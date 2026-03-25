@@ -30,8 +30,14 @@ impl LastEntityState {
             let parts: Vec<&str> = stored.splitn(3, '|').collect();
             Self {
                 last: Some(parts[0].to_string()).filter(|s| !s.is_empty()),
-                last_form: parts.get(1).map(|s| s.to_string()).filter(|s| !s.is_empty()),
-                last_sense: parts.get(2).map(|s| s.to_string()).filter(|s| !s.is_empty()),
+                last_form: parts
+                    .get(1)
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty()),
+                last_sense: parts
+                    .get(2)
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty()),
             }
         } else {
             Self {
@@ -196,11 +202,7 @@ impl QuickStatementsCommand {
         )
     }
 
-    fn replace_last_item(
-        &self,
-        v: &mut Value,
-        state: &LastEntityState,
-    ) -> Result<(), String> {
+    fn replace_last_item(&self, v: &mut Value, state: &LastEntityState) -> Result<(), String> {
         if !v.is_object() {
             return Ok(());
         }
@@ -351,13 +353,18 @@ impl QuickStatementsCommand {
 
     fn action_set_lemma(&self) -> Result<Value, String> {
         let item = self.json["item"].as_str().ok_or("SetLemma: item not set")?;
-        let language = self.json["language"].as_str().ok_or("SetLemma: language not set")?;
-        let value = self.json["value"].as_str().ok_or("SetLemma: value not set")?;
+        let language = self.json["language"]
+            .as_str()
+            .ok_or("SetLemma: language not set")?;
+        let value = self.json["value"]
+            .as_str()
+            .ok_or("SetLemma: value not set")?;
         let data = serde_json::to_string(&json!({
             "lemmas": {
                 language: {"language": language, "value": value}
             }
-        })).map_err(|e| format!("SetLemma: {:?}", e))?;
+        }))
+        .map_err(|e| format!("SetLemma: {:?}", e))?;
         Ok(json!({
             "action": "wbeditentity",
             "id": item,
@@ -366,11 +373,16 @@ impl QuickStatementsCommand {
     }
 
     fn action_set_lexical_category(&self) -> Result<Value, String> {
-        let item = self.json["item"].as_str().ok_or("SetLexicalCategory: item not set")?;
-        let value = self.json["value"].as_str().ok_or("SetLexicalCategory: value not set")?;
+        let item = self.json["item"]
+            .as_str()
+            .ok_or("SetLexicalCategory: item not set")?;
+        let value = self.json["value"]
+            .as_str()
+            .ok_or("SetLexicalCategory: value not set")?;
         let data = serde_json::to_string(&json!({
             "lexicalCategory": value
-        })).map_err(|e| format!("SetLexicalCategory: {:?}", e))?;
+        }))
+        .map_err(|e| format!("SetLexicalCategory: {:?}", e))?;
         Ok(json!({
             "action": "wbeditentity",
             "id": item,
@@ -379,11 +391,16 @@ impl QuickStatementsCommand {
     }
 
     fn action_set_language(&self) -> Result<Value, String> {
-        let item = self.json["item"].as_str().ok_or("SetLanguage: item not set")?;
-        let value = self.json["value"].as_str().ok_or("SetLanguage: value not set")?;
+        let item = self.json["item"]
+            .as_str()
+            .ok_or("SetLanguage: item not set")?;
+        let value = self.json["value"]
+            .as_str()
+            .ok_or("SetLanguage: value not set")?;
         let data = serde_json::to_string(&json!({
             "language": value
-        })).map_err(|e| format!("SetLanguage: {:?}", e))?;
+        }))
+        .map_err(|e| format!("SetLanguage: {:?}", e))?;
         Ok(json!({
             "action": "wbeditentity",
             "id": item,
@@ -392,14 +409,21 @@ impl QuickStatementsCommand {
     }
 
     fn action_set_form_representation(&self) -> Result<Value, String> {
-        let item = self.json["item"].as_str().ok_or("SetFormRepresentation: item not set")?;
-        let language = self.json["language"].as_str().ok_or("SetFormRepresentation: language not set")?;
-        let value = self.json["value"].as_str().ok_or("SetFormRepresentation: value not set")?;
+        let item = self.json["item"]
+            .as_str()
+            .ok_or("SetFormRepresentation: item not set")?;
+        let language = self.json["language"]
+            .as_str()
+            .ok_or("SetFormRepresentation: language not set")?;
+        let value = self.json["value"]
+            .as_str()
+            .ok_or("SetFormRepresentation: value not set")?;
         let data = serde_json::to_string(&json!({
             "representations": {
                 language: {"language": language, "value": value}
             }
-        })).map_err(|e| format!("SetFormRepresentation: {:?}", e))?;
+        }))
+        .map_err(|e| format!("SetFormRepresentation: {:?}", e))?;
         Ok(json!({
             "action": "wbleditformelements",
             "formId": item,
@@ -408,12 +432,17 @@ impl QuickStatementsCommand {
     }
 
     fn action_set_grammatical_feature(&self) -> Result<Value, String> {
-        let item = self.json["item"].as_str().ok_or("SetGrammaticalFeature: item not set")?;
+        let item = self.json["item"]
+            .as_str()
+            .ok_or("SetGrammaticalFeature: item not set")?;
         let features = &self.json["value"];
-        let features_arr = features.as_array().ok_or("SetGrammaticalFeature: value not an array")?;
+        let features_arr = features
+            .as_array()
+            .ok_or("SetGrammaticalFeature: value not an array")?;
         let data = serde_json::to_string(&json!({
             "grammaticalFeatures": features_arr
-        })).map_err(|e| format!("SetGrammaticalFeature: {:?}", e))?;
+        }))
+        .map_err(|e| format!("SetGrammaticalFeature: {:?}", e))?;
         Ok(json!({
             "action": "wbleditformelements",
             "formId": item,
@@ -422,14 +451,21 @@ impl QuickStatementsCommand {
     }
 
     fn action_set_sense_gloss(&self) -> Result<Value, String> {
-        let item = self.json["item"].as_str().ok_or("SetSenseGloss: item not set")?;
-        let language = self.json["language"].as_str().ok_or("SetSenseGloss: language not set")?;
-        let value = self.json["value"].as_str().ok_or("SetSenseGloss: value not set")?;
+        let item = self.json["item"]
+            .as_str()
+            .ok_or("SetSenseGloss: item not set")?;
+        let language = self.json["language"]
+            .as_str()
+            .ok_or("SetSenseGloss: language not set")?;
+        let value = self.json["value"]
+            .as_str()
+            .ok_or("SetSenseGloss: value not set")?;
         let data = serde_json::to_string(&json!({
             "glosses": {
                 language: {"language": language, "value": value}
             }
-        })).map_err(|e| format!("SetSenseGloss: {:?}", e))?;
+        }))
+        .map_err(|e| format!("SetSenseGloss: {:?}", e))?;
         Ok(json!({
             "action": "wbleditsenseelements",
             "senseId": item,
@@ -461,7 +497,9 @@ impl QuickStatementsCommand {
                 }))
             }
             "sense" => {
-                let item = self.json["item"].as_str().ok_or("ADD_SENSE: item not set")?;
+                let item = self.json["item"]
+                    .as_str()
+                    .ok_or("ADD_SENSE: item not set")?;
                 Ok(json!({
                     "action": "wbladdsense",
                     "lexemeId": item,
@@ -1430,7 +1468,7 @@ mod tests {
             "sources":null,
             "what":"statement"
         }));
-        let original = c.json.clone();
+        let _original = c.json.clone();
         c.insert_last_item_into_sources_and_qualifiers(&state_with_last("Q999"))
             .unwrap();
         // Item is not LAST, so nothing should change
@@ -1470,7 +1508,11 @@ mod tests {
 
     #[test]
     fn last_entity_state_encode_backward_compatible() {
-        let s = LastEntityState { last: Some("Q123".into()), last_form: None, last_sense: None };
+        let s = LastEntityState {
+            last: Some("Q123".into()),
+            last_form: None,
+            last_sense: None,
+        };
         assert_eq!(s.encode(), "Q123");
     }
 
@@ -1560,7 +1602,8 @@ mod tests {
             last_form: Some("L100-F1".into()),
             last_sense: None,
         };
-        c.insert_last_item_into_sources_and_qualifiers(&state).unwrap();
+        c.insert_last_item_into_sources_and_qualifiers(&state)
+            .unwrap();
         assert_eq!(c.json["item"], "L100-F1");
     }
 
@@ -1578,7 +1621,8 @@ mod tests {
             last_form: None,
             last_sense: Some("L100-S1".into()),
         };
-        c.insert_last_item_into_sources_and_qualifiers(&state).unwrap();
+        c.insert_last_item_into_sources_and_qualifiers(&state)
+            .unwrap();
         assert_eq!(c.json["item"], "L100-S1");
     }
 
@@ -1593,7 +1637,8 @@ mod tests {
             last_form: Some("L100-F2".into()),
             last_sense: None,
         };
-        c.insert_last_item_into_sources_and_qualifiers(&state).unwrap();
+        c.insert_last_item_into_sources_and_qualifiers(&state)
+            .unwrap();
         assert_eq!(c.json["datavalue"]["value"]["id"], "L100-F2");
     }
 
@@ -1842,7 +1887,8 @@ mod tests {
         let result = c.action_set_lemma().unwrap();
         assert_eq!(result["action"], "wbeditentity");
         assert_eq!(result["id"], "L123");
-        let data: serde_json::Value = serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
+        let data: serde_json::Value =
+            serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
         assert_eq!(data["lemmas"]["en"]["value"], "water");
     }
 
@@ -1857,7 +1903,8 @@ mod tests {
         let result = c.action_set_lexical_category().unwrap();
         assert_eq!(result["action"], "wbeditentity");
         assert_eq!(result["id"], "L123");
-        let data: serde_json::Value = serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
+        let data: serde_json::Value =
+            serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
         assert_eq!(data["lexicalCategory"], "Q1084");
     }
 
@@ -1872,7 +1919,8 @@ mod tests {
         let result = c.action_set_language().unwrap();
         assert_eq!(result["action"], "wbeditentity");
         assert_eq!(result["id"], "L123");
-        let data: serde_json::Value = serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
+        let data: serde_json::Value =
+            serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
         assert_eq!(data["language"], "Q7725");
     }
 
@@ -1888,7 +1936,8 @@ mod tests {
         let result = c.action_set_form_representation().unwrap();
         assert_eq!(result["action"], "wbleditformelements");
         assert_eq!(result["formId"], "L123-F1");
-        let data: serde_json::Value = serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
+        let data: serde_json::Value =
+            serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
         assert_eq!(data["representations"]["en"]["value"], "running");
     }
 
@@ -1903,7 +1952,8 @@ mod tests {
         let result = c.action_set_grammatical_feature().unwrap();
         assert_eq!(result["action"], "wbleditformelements");
         assert_eq!(result["formId"], "L123-F1");
-        let data: serde_json::Value = serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
+        let data: serde_json::Value =
+            serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
         assert_eq!(data["grammaticalFeatures"], json!(["Q1", "Q2", "Q3"]));
     }
 
@@ -1919,7 +1969,8 @@ mod tests {
         let result = c.action_set_sense_gloss().unwrap();
         assert_eq!(result["action"], "wbleditsenseelements");
         assert_eq!(result["senseId"], "L123-S1");
-        let data: serde_json::Value = serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
+        let data: serde_json::Value =
+            serde_json::from_str(result["data"].as_str().unwrap()).unwrap();
         assert_eq!(data["glosses"]["en"]["value"], "act of running");
     }
 

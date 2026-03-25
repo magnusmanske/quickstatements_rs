@@ -29,15 +29,15 @@ pub struct QuickStatementsParser {
     pub locale_string: Option<LocaleString>,
     pub comment: Option<String>,
     pub create_data: Option<serde_json::Value>,
-    pub new_statement: bool,                     // !P prefix forces new statement
-    pub datatype: Option<String>,                // For CREATE_PROPERTY
+    pub new_statement: bool,      // !P prefix forces new statement
+    pub datatype: Option<String>, // For CREATE_PROPERTY
     // Lexeme-specific fields
-    pub lexeme_language: Option<String>,         // Q-id for language
-    pub lexeme_category: Option<String>,         // Q-id for lexical category
-    pub lemmas: Vec<MonoLingualText>,            // Lemmas (lang:"text" pairs)
-    pub representations: Vec<MonoLingualText>,   // Form representations
-    pub glosses: Vec<MonoLingualText>,           // Sense glosses
-    pub grammatical_features: Vec<String>,       // Q-ids for grammatical features
+    pub lexeme_language: Option<String>, // Q-id for language
+    pub lexeme_category: Option<String>, // Q-id for lexical category
+    pub lemmas: Vec<MonoLingualText>,    // Lemmas (lang:"text" pairs)
+    pub representations: Vec<MonoLingualText>, // Form representations
+    pub glosses: Vec<MonoLingualText>,   // Sense glosses
+    pub grammatical_features: Vec<String>, // Q-ids for grammatical features
 }
 
 impl QuickStatementsParser {
@@ -60,10 +60,7 @@ impl QuickStatementsParser {
             trimmed.to_string()
         };
 
-        let mut parts: Vec<String> = normalized
-            .split('\t')
-            .map(|s| s.to_string())
-            .collect();
+        let mut parts: Vec<String> = normalized.split('\t').map(|s| s.to_string()).collect();
         if parts.is_empty() {
             return Err("Empty string".to_string());
         }
@@ -112,7 +109,8 @@ impl QuickStatementsParser {
                 static ref RE_LEMMA: Regex = Regex::new(r#"(?i)^Lemma_([a-z_-]+)$"#).unwrap();
                 static ref RE_REP: Regex = Regex::new(r#"(?i)^Rep_([a-z_-]+)$"#).unwrap();
                 static ref RE_GLOSS: Regex = Regex::new(r#"(?i)^Gloss_([a-z_-]+)$"#).unwrap();
-                static ref RE_GRAMMATICAL_FEATURE: Regex = Regex::new(r#"(?i)^GRAMMATICAL_FEATURE$"#).unwrap();
+                static ref RE_GRAMMATICAL_FEATURE: Regex =
+                    Regex::new(r#"(?i)^GRAMMATICAL_FEATURE$"#).unwrap();
             }
             if let Some(caps) = RE_LEMMA.captures(&parts[1]) {
                 let lang = caps.get(1).unwrap().as_str().to_lowercase();
@@ -265,9 +263,13 @@ impl QuickStatementsParser {
         if ret.item.is_none() || ret.target_item.is_none() {
             return Err("MERGE requires two parameters".to_string());
         }
-        if matches!(ret.item.as_ref(), Some(EntityID::Last | EntityID::LastForm | EntityID::LastSense))
-            || matches!(ret.target_item.as_ref(), Some(EntityID::Last | EntityID::LastForm | EntityID::LastSense))
-        {
+        if matches!(
+            ret.item.as_ref(),
+            Some(EntityID::Last | EntityID::LastForm | EntityID::LastSense)
+        ) || matches!(
+            ret.target_item.as_ref(),
+            Some(EntityID::Last | EntityID::LastForm | EntityID::LastSense)
+        ) {
             return Err("MERGE does not allow LAST".to_string());
         }
         Ok(ret)
@@ -464,12 +466,7 @@ impl QuickStatementsParser {
             GREGORIAN_CALENDAR
         };
         Some(Value::Time(TimeValue::new(
-            0,
-            0,
-            calendar,
-            precision,
-            &time,
-            0,
+            0, 0, calendar, precision, &time, 0,
         )))
     }
 
@@ -534,7 +531,8 @@ impl QuickStatementsParser {
     fn parse_value(value: String) -> Option<Value> {
         lazy_static! {
             static ref RE_STRING: Regex = Regex::new(r#"^"(.*)"$"#).unwrap();
-            static ref RE_MONOLINGUAL_STRING: Regex = Regex::new(r#"^([a-z][a-z0-9_-]*):"(.*)"$"#).unwrap();
+            static ref RE_MONOLINGUAL_STRING: Regex =
+                Regex::new(r#"^([a-z][a-z0-9_-]*):"(.*)"$"#).unwrap();
             static ref RE_COORDINATE: Regex =
                 Regex::new(r#"^@\s*([+-]{0,1}[0-9.-]+)\s*/\s*([+-]{0,1}[0-9.-]+)$"#).unwrap();
         }
@@ -726,7 +724,10 @@ impl QuickStatementsParser {
 
     fn new_create_lexeme(parts: &[String], comment: Option<String>) -> Result<Self, String> {
         if parts.len() < 3 {
-            return Err("CREATE_LEXEME requires at least language, lexical category, and one lemma".to_string());
+            return Err(
+                "CREATE_LEXEME requires at least language, lexical category, and one lemma"
+                    .to_string(),
+            );
         }
         let mut ret = Self::new_blank_with_comment(comment);
         ret.command = CommandType::CreateLexeme;
@@ -738,10 +739,16 @@ impl QuickStatementsParser {
             static ref RE_QID: Regex = Regex::new(r#"^Q\d+$"#).unwrap();
         }
         if !RE_QID.is_match(&lang_id) {
-            return Err(format!("CREATE_LEXEME: invalid language item '{}'", &parts[0]));
+            return Err(format!(
+                "CREATE_LEXEME: invalid language item '{}'",
+                &parts[0]
+            ));
         }
         if !RE_QID.is_match(&cat_id) {
-            return Err(format!("CREATE_LEXEME: invalid lexical category item '{}'", &parts[1]));
+            return Err(format!(
+                "CREATE_LEXEME: invalid lexical category item '{}'",
+                &parts[1]
+            ));
         }
         ret.lexeme_language = Some(lang_id);
         ret.lexeme_category = Some(cat_id);
@@ -809,10 +816,7 @@ impl QuickStatementsParser {
         Ok(ret)
     }
 
-    fn new_set_lexical_category(
-        parts: &[String],
-        comment: Option<String>,
-    ) -> Result<Self, String> {
+    fn new_set_lexical_category(parts: &[String], comment: Option<String>) -> Result<Self, String> {
         if parts.len() < 3 {
             return Err("LEXICAL_CATEGORY requires a Q-id value".to_string());
         }
@@ -878,7 +882,10 @@ impl QuickStatementsParser {
         }
         let val = value.trim().to_uppercase();
         if !RE_QIDS_COMMA.is_match(&val) {
-            return Err(format!("GRAMMATICAL_FEATURE: invalid Q-id list '{}'", value));
+            return Err(format!(
+                "GRAMMATICAL_FEATURE: invalid Q-id list '{}'",
+                value
+            ));
         }
         ret.grammatical_features = val.split(',').map(|s| s.to_string()).collect();
         Ok(ret)
@@ -966,10 +973,9 @@ impl QuickStatementsParser {
                 "S".to_string() + self.sitelink.clone()?.site(),
                 Self::quote(self.sitelink.clone()?.title()),
             ],
-            CommandType::CreateProperty => vec![
-                "CREATE_PROPERTY".to_string(),
-                self.datatype.clone()?,
-            ],
+            CommandType::CreateProperty => {
+                vec!["CREATE_PROPERTY".to_string(), self.datatype.clone()?]
+            }
             CommandType::CreateLexeme => {
                 let mut ret = vec![
                     "CREATE_LEXEME".to_string(),
@@ -982,10 +988,7 @@ impl QuickStatementsParser {
                 ret
             }
             CommandType::AddForm => {
-                let mut ret = vec![
-                    self.item.clone()?.to_string(),
-                    "ADD_FORM".to_string(),
-                ];
+                let mut ret = vec![self.item.clone()?.to_string(), "ADD_FORM".to_string()];
                 for rep in &self.representations {
                     ret.push(format!("{}:\"{}\"", rep.language(), rep.text()));
                 }
@@ -995,10 +998,7 @@ impl QuickStatementsParser {
                 ret
             }
             CommandType::AddSense => {
-                let mut ret = vec![
-                    self.item.clone()?.to_string(),
-                    "ADD_SENSE".to_string(),
-                ];
+                let mut ret = vec![self.item.clone()?.to_string(), "ADD_SENSE".to_string()];
                 for gloss in &self.glosses {
                     ret.push(format!("{}:\"{}\"", gloss.language(), gloss.text()));
                 }
@@ -1057,7 +1057,8 @@ impl QuickStatementsParser {
                 // STATEMENT command: operate on existing statement by ID
                 if self.item.is_none() && self.property.is_none() {
                     if let Some(Value::String(id)) = &self.value {
-                        let mut base = json!({"action":self.get_action(),"what":"statement","id":id});
+                        let mut base =
+                            json!({"action":self.get_action(),"what":"statement","id":id});
                         if let Some(comment) = &self.comment {
                             base["summary"] = json!(comment);
                         }
@@ -1170,7 +1171,10 @@ impl QuickStatementsParser {
                 _ => Err("Sitelink issue".to_string()),
             },
             CommandType::CreateProperty => {
-                let datatype = self.datatype.as_ref().ok_or("No datatype set for CREATE_PROPERTY")?;
+                let datatype = self
+                    .datatype
+                    .as_ref()
+                    .ok_or("No datatype set for CREATE_PROPERTY")?;
                 let data = json!({"datatype": datatype});
                 let mut ret = json!({"action":"create","type":"property","data":data});
                 if let Some(comment) = &self.comment {
@@ -1179,11 +1183,18 @@ impl QuickStatementsParser {
                 Ok(vec![ret])
             }
             CommandType::CreateLexeme => {
-                let lang = self.lexeme_language.as_ref().ok_or("No language set for CREATE_LEXEME")?;
-                let cat = self.lexeme_category.as_ref().ok_or("No lexical category set for CREATE_LEXEME")?;
+                let lang = self
+                    .lexeme_language
+                    .as_ref()
+                    .ok_or("No language set for CREATE_LEXEME")?;
+                let cat = self
+                    .lexeme_category
+                    .as_ref()
+                    .ok_or("No lexical category set for CREATE_LEXEME")?;
                 let mut lemmas_json = json!({});
                 for lemma in &self.lemmas {
-                    lemmas_json[lemma.language()] = json!({"language": lemma.language(), "value": lemma.text()});
+                    lemmas_json[lemma.language()] =
+                        json!({"language": lemma.language(), "value": lemma.text()});
                 }
                 let mut data = json!({
                     "lemmas": lemmas_json,
@@ -1207,13 +1218,18 @@ impl QuickStatementsParser {
             CommandType::AddForm => {
                 let mut representations = json!({});
                 for rep in &self.representations {
-                    representations[rep.language()] = json!({"language": rep.language(), "value": rep.text()});
+                    representations[rep.language()] =
+                        json!({"language": rep.language(), "value": rep.text()});
                 }
                 let mut data = json!({"representations": representations});
                 if !self.grammatical_features.is_empty() {
                     data["grammaticalFeatures"] = json!(self.grammatical_features);
                 }
-                let item_str = self.item.as_ref().ok_or("No item set for ADD_FORM")?.to_string();
+                let item_str = self
+                    .item
+                    .as_ref()
+                    .ok_or("No item set for ADD_FORM")?
+                    .to_string();
                 let mut ret = json!({"action":"create","type":"form","item":item_str,"data":data});
                 if let Some(comment) = &self.comment {
                     ret["summary"] = json!(comment);
@@ -1223,10 +1239,15 @@ impl QuickStatementsParser {
             CommandType::AddSense => {
                 let mut glosses_json = json!({});
                 for gloss in &self.glosses {
-                    glosses_json[gloss.language()] = json!({"language": gloss.language(), "value": gloss.text()});
+                    glosses_json[gloss.language()] =
+                        json!({"language": gloss.language(), "value": gloss.text()});
                 }
                 let data = json!({"glosses": glosses_json});
-                let item_str = self.item.as_ref().ok_or("No item set for ADD_SENSE")?.to_string();
+                let item_str = self
+                    .item
+                    .as_ref()
+                    .ok_or("No item set for ADD_SENSE")?
+                    .to_string();
                 let mut ret = json!({"action":"create","type":"sense","item":item_str,"data":data});
                 if let Some(comment) = &self.comment {
                     ret["summary"] = json!(comment);
@@ -1234,8 +1255,15 @@ impl QuickStatementsParser {
                 Ok(vec![ret])
             }
             CommandType::SetLemma => {
-                let ls = self.locale_string.as_ref().ok_or("No locale string for SetLemma")?;
-                let item_str = self.item.as_ref().ok_or("No item set for SetLemma")?.to_string();
+                let ls = self
+                    .locale_string
+                    .as_ref()
+                    .ok_or("No locale string for SetLemma")?;
+                let item_str = self
+                    .item
+                    .as_ref()
+                    .ok_or("No item set for SetLemma")?
+                    .to_string();
                 let mut ret = json!({"action":"add","what":"lemma","item":item_str,"language":ls.language(),"value":ls.value()});
                 if let Some(comment) = &self.comment {
                     ret["summary"] = json!(comment);
@@ -1243,26 +1271,49 @@ impl QuickStatementsParser {
                 Ok(vec![ret])
             }
             CommandType::SetLexicalCategory => {
-                let cat = self.lexeme_category.as_ref().ok_or("No category for SetLexicalCategory")?;
-                let item_str = self.item.as_ref().ok_or("No item set for SetLexicalCategory")?.to_string();
-                let mut ret = json!({"action":"add","what":"lexical_category","item":item_str,"value":cat});
+                let cat = self
+                    .lexeme_category
+                    .as_ref()
+                    .ok_or("No category for SetLexicalCategory")?;
+                let item_str = self
+                    .item
+                    .as_ref()
+                    .ok_or("No item set for SetLexicalCategory")?
+                    .to_string();
+                let mut ret =
+                    json!({"action":"add","what":"lexical_category","item":item_str,"value":cat});
                 if let Some(comment) = &self.comment {
                     ret["summary"] = json!(comment);
                 }
                 Ok(vec![ret])
             }
             CommandType::SetLanguage => {
-                let lang = self.lexeme_language.as_ref().ok_or("No language for SetLanguage")?;
-                let item_str = self.item.as_ref().ok_or("No item set for SetLanguage")?.to_string();
-                let mut ret = json!({"action":"add","what":"language","item":item_str,"value":lang});
+                let lang = self
+                    .lexeme_language
+                    .as_ref()
+                    .ok_or("No language for SetLanguage")?;
+                let item_str = self
+                    .item
+                    .as_ref()
+                    .ok_or("No item set for SetLanguage")?
+                    .to_string();
+                let mut ret =
+                    json!({"action":"add","what":"language","item":item_str,"value":lang});
                 if let Some(comment) = &self.comment {
                     ret["summary"] = json!(comment);
                 }
                 Ok(vec![ret])
             }
             CommandType::SetFormRepresentation => {
-                let ls = self.locale_string.as_ref().ok_or("No locale string for SetFormRepresentation")?;
-                let item_str = self.item.as_ref().ok_or("No item set for SetFormRepresentation")?.to_string();
+                let ls = self
+                    .locale_string
+                    .as_ref()
+                    .ok_or("No locale string for SetFormRepresentation")?;
+                let item_str = self
+                    .item
+                    .as_ref()
+                    .ok_or("No item set for SetFormRepresentation")?
+                    .to_string();
                 let mut ret = json!({"action":"add","what":"representation","item":item_str,"language":ls.language(),"value":ls.value()});
                 if let Some(comment) = &self.comment {
                     ret["summary"] = json!(comment);
@@ -1270,7 +1321,11 @@ impl QuickStatementsParser {
                 Ok(vec![ret])
             }
             CommandType::SetGrammaticalFeature => {
-                let item_str = self.item.as_ref().ok_or("No item set for SetGrammaticalFeature")?.to_string();
+                let item_str = self
+                    .item
+                    .as_ref()
+                    .ok_or("No item set for SetGrammaticalFeature")?
+                    .to_string();
                 let mut ret = json!({"action":"add","what":"grammatical_feature","item":item_str,"value":self.grammatical_features.clone()});
                 if let Some(comment) = &self.comment {
                     ret["summary"] = json!(comment);
@@ -1278,8 +1333,15 @@ impl QuickStatementsParser {
                 Ok(vec![ret])
             }
             CommandType::SetSenseGloss => {
-                let ls = self.locale_string.as_ref().ok_or("No locale string for SetSenseGloss")?;
-                let item_str = self.item.as_ref().ok_or("No item set for SetSenseGloss")?.to_string();
+                let ls = self
+                    .locale_string
+                    .as_ref()
+                    .ok_or("No locale string for SetSenseGloss")?;
+                let item_str = self
+                    .item
+                    .as_ref()
+                    .ok_or("No item set for SetSenseGloss")?
+                    .to_string();
                 let mut ret = json!({"action":"add","what":"gloss","item":item_str,"language":ls.language(),"value":ls.value()});
                 if let Some(comment) = &self.comment {
                     ret["summary"] = json!(comment);
@@ -1449,7 +1511,8 @@ impl QuickStatementsParser {
             },
             CommandType::SetLemma => match &merge_command.locale_string {
                 Some(s) => {
-                    cd["lemmas"][s.language()] = json!({"language": s.language(), "value": s.value()});
+                    cd["lemmas"][s.language()] =
+                        json!({"language": s.language(), "value": s.value()});
                     Some(cd)
                 }
                 None => None,
@@ -2467,7 +2530,10 @@ mod tests {
     fn parse_item_id_form() {
         assert_eq!(
             QuickStatementsParser::parse_item_id(Some("L123-F1")),
-            Ok(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123-F1")))
+            Ok(EntityID::Id(EntityValue::new(
+                EntityType::Lexeme,
+                "L123-F1"
+            )))
         );
     }
 
@@ -2475,7 +2541,10 @@ mod tests {
     fn parse_item_id_sense() {
         assert_eq!(
             QuickStatementsParser::parse_item_id(Some("L123-S1")),
-            Ok(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123-S1")))
+            Ok(EntityID::Id(EntityValue::new(
+                EntityType::Lexeme,
+                "L123-S1"
+            )))
         );
     }
 
@@ -2518,11 +2587,9 @@ mod tests {
 
     #[tokio::test]
     async fn parse_create_lexeme_bad_language() {
-        let result = QuickStatementsParser::new_from_line(
-            "CREATE_LEXEME\tBAD\tQ1084\ten:\"water\"",
-            None,
-        )
-        .await;
+        let result =
+            QuickStatementsParser::new_from_line("CREATE_LEXEME\tBAD\tQ1084\ten:\"water\"", None)
+                .await;
         assert!(result.is_err());
     }
 
@@ -2595,10 +2662,7 @@ mod tests {
             qsp.item,
             Some(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123")))
         );
-        assert_eq!(
-            qsp.locale_string,
-            Some(LocaleString::new("en", "water"))
-        );
+        assert_eq!(qsp.locale_string, Some(LocaleString::new("en", "water")));
     }
 
     #[tokio::test]
@@ -2609,10 +2673,7 @@ mod tests {
             .unwrap();
         assert_eq!(qsp.command, CommandType::SetLemma);
         assert_eq!(qsp.item, Some(EntityID::Last));
-        assert_eq!(
-            qsp.locale_string,
-            Some(LocaleString::new("fr", "eau"))
-        );
+        assert_eq!(qsp.locale_string, Some(LocaleString::new("fr", "eau")));
     }
 
     #[tokio::test]
@@ -2644,12 +2705,12 @@ mod tests {
         assert_eq!(qsp.command, CommandType::SetFormRepresentation);
         assert_eq!(
             qsp.item,
-            Some(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123-F1")))
+            Some(EntityID::Id(EntityValue::new(
+                EntityType::Lexeme,
+                "L123-F1"
+            )))
         );
-        assert_eq!(
-            qsp.locale_string,
-            Some(LocaleString::new("en", "running"))
-        );
+        assert_eq!(qsp.locale_string, Some(LocaleString::new("en", "running")));
     }
 
     #[tokio::test]
@@ -2671,7 +2732,10 @@ mod tests {
         assert_eq!(qsp.command, CommandType::SetSenseGloss);
         assert_eq!(
             qsp.item,
-            Some(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123-S1")))
+            Some(EntityID::Id(EntityValue::new(
+                EntityType::Lexeme,
+                "L123-S1"
+            )))
         );
         assert_eq!(
             qsp.locale_string,
@@ -2701,7 +2765,10 @@ mod tests {
         assert_eq!(qsp.command, CommandType::EditStatement);
         assert_eq!(
             qsp.item,
-            Some(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123-F1")))
+            Some(EntityID::Id(EntityValue::new(
+                EntityType::Lexeme,
+                "L123-F1"
+            )))
         );
     }
 
@@ -2714,7 +2781,10 @@ mod tests {
         assert_eq!(qsp.command, CommandType::EditStatement);
         assert_eq!(
             qsp.item,
-            Some(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123-S1")))
+            Some(EntityID::Id(EntityValue::new(
+                EntityType::Lexeme,
+                "L123-S1"
+            )))
         );
     }
 
@@ -3217,14 +3287,20 @@ mod tests {
 
     #[test]
     fn entity_to_json_form() {
-        let v = Value::Entity(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123-F1")));
+        let v = Value::Entity(EntityID::Id(EntityValue::new(
+            EntityType::Lexeme,
+            "L123-F1",
+        )));
         let j = v.to_json().unwrap();
         assert_eq!(j["value"]["entity-type"], "form");
     }
 
     #[test]
     fn entity_to_json_sense() {
-        let v = Value::Entity(EntityID::Id(EntityValue::new(EntityType::Lexeme, "L123-S1")));
+        let v = Value::Entity(EntityID::Id(EntityValue::new(
+            EntityType::Lexeme,
+            "L123-S1",
+        )));
         let j = v.to_json().unwrap();
         assert_eq!(j["value"]["entity-type"], "sense");
     }
@@ -3355,7 +3431,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(qsp.command, CommandType::EditStatement);
-        assert_eq!(qsp.new_statement, true);
+        assert!(qsp.new_statement);
         assert_eq!(
             qsp.property,
             Some(EntityValue::new(EntityType::Property, "P456"))
@@ -3368,7 +3444,7 @@ mod tests {
         let qsp = QuickStatementsParser::new_from_line(command, None)
             .await
             .unwrap();
-        assert_eq!(qsp.new_statement, false);
+        assert!(!qsp.new_statement);
     }
 
     #[tokio::test]
@@ -3461,10 +3537,22 @@ mod tests {
     #[tokio::test]
     async fn parse_create_property_all_valid_datatypes() {
         let valid = vec![
-            "string", "url", "external-id", "quantity", "time",
-            "globe-coordinate", "wikibase-item", "wikibase-property",
-            "monolingualtext", "math", "geo-shape", "musical-notation",
-            "tabular-data", "wikibase-lexeme", "wikibase-form", "wikibase-sense",
+            "string",
+            "url",
+            "external-id",
+            "quantity",
+            "time",
+            "globe-coordinate",
+            "wikibase-item",
+            "wikibase-property",
+            "monolingualtext",
+            "math",
+            "geo-shape",
+            "musical-notation",
+            "tabular-data",
+            "wikibase-lexeme",
+            "wikibase-form",
+            "wikibase-sense",
         ];
         for dt in valid {
             let command = format!("CREATE_PROPERTY\t{}", dt);

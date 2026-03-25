@@ -1,3 +1,4 @@
+use crate::error::{QsError, QsResult};
 use crate::qs_command::{LastEntityState, QuickStatementsCommand};
 use crate::qs_config::QuickStatements;
 use crate::qs_parser::COMMONS_API;
@@ -95,14 +96,14 @@ impl QuickStatementsBot {
         }
 
         let mut params: HashMap<String, String> = HashMap::new();
-        for (k, v) in action
-            .as_object()
-            .ok_or("Action is not a JSON object")?
-        {
+        for (k, v) in action.as_object().ok_or("Action is not a JSON object")? {
             params.insert(
                 k.to_string(),
                 v.as_str()
-                    .ok_or(format!("Cannot convert param '{}' value to string: {}", k, v))?
+                    .ok_or(format!(
+                        "Cannot convert param '{}' value to string: {}",
+                        k, v
+                    ))?
                     .to_string(),
             );
         }
@@ -185,14 +186,14 @@ impl QuickStatementsBot {
         }
     }
 
-    async fn get_next_command(&self) -> Result<Option<QuickStatementsCommand>, String> {
+    async fn get_next_command(&self) -> QsResult<Option<QuickStatementsCommand>> {
         match self.batch_id {
             Some(batch_id) => {
                 self.config.check_batch_not_stopped(batch_id).await?;
                 let result = self.config.get_next_command(batch_id).await;
                 Ok(result)
             }
-            None => Err("No match ID set".to_string()),
+            None => Err(QsError::NoMatchSetError),
         }
     }
 
@@ -201,9 +202,12 @@ impl QuickStatementsBot {
     fn is_lexeme_subentity_command(command: &QuickStatementsCommand) -> bool {
         matches!(
             command.json["what"].as_str(),
-            Some("lemma") | Some("lexical_category")
-            | Some("language") | Some("representation") | Some("grammatical_feature")
-            | Some("gloss")
+            Some("lemma")
+                | Some("lexical_category")
+                | Some("language")
+                | Some("representation")
+                | Some("grammatical_feature")
+                | Some("gloss")
         )
     }
 
@@ -370,7 +374,9 @@ impl QuickStatementsBot {
             .map_err(|e| format!("{:?}", e))?;
 
         // Check if user has a blockid
-        QuickStatements::is_user_blocked(&mut mw_api, &user_name).await
+        QuickStatements::is_user_blocked(&mut mw_api, &user_name)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     pub async fn execute_command(
@@ -457,9 +463,7 @@ impl QuickStatementsBot {
                 if let Some(q) = wikibase::entity_diff::EntityDiff::get_entity_id(entity_json) {
                     self.last_state.last = Some(q.to_owned());
                     // CREATE / CREATE_LEXEME: clear LAST_FORM and LAST_SENSE
-                    if command_action == "create"
-                        && !matches!(command_type, "form" | "sense")
-                    {
+                    if command_action == "create" && !matches!(command_type, "form" | "sense") {
                         self.last_state.last_form = None;
                         self.last_state.last_sense = None;
                     }

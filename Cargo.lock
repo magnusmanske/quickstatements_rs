@@ -1993,7 +1993,6 @@ dependencies = [
 name = "quickstatements"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-recursion",
  "axum",
  "chrono",
@@ -2009,6 +2008,7 @@ dependencies = [
  "serde",
  "serde_json",
  "simple_logger",
+ "thiserror 2.0.18",
  "tokio",
  "tower-http",
  "wikibase",

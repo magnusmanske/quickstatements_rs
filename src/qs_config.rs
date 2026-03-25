@@ -1,5 +1,5 @@
+use crate::error::{QsError, QsResult};
 use crate::qs_command::QuickStatementsCommand;
-use anyhow::Result;
 use chrono::prelude::Utc;
 use config::*;
 use mysql_async as my;
@@ -31,7 +31,10 @@ impl QuickStatements {
             Some(filename) => match File::open(filename) {
                 Ok(file) => serde_json::from_reader(file).unwrap_or(json!({})),
                 Err(_) => {
-                    eprintln!("Warning: could not open config_file '{}', using empty config", filename);
+                    eprintln!(
+                        "Warning: could not open config_file '{}', using empty config",
+                        filename
+                    );
                     json!({})
                 }
             },
@@ -40,7 +43,7 @@ impl QuickStatements {
 
         let max_batches_per_user = params["max_batches_per_user"].as_i64().unwrap_or(2);
         let ret = Self {
-            pool: Self::create_mysql_pool(&params).ok()?,
+            pool: Self::create_mysql_pool(&params),
             params,
             running_batch_ids: Arc::new(RwLock::new(HashSet::new())),
             user_counter: Arc::new(RwLock::new(HashMap::new())),
@@ -73,8 +76,8 @@ impl QuickStatements {
     }
 
     /// Get a database connection from the pool
-    pub async fn get_db_conn(&self) -> Result<my::Conn, mysql_async::Error> {
-        self.pool.get_conn().await
+    pub async fn get_db_conn(&self) -> QsResult<my::Conn> {
+        Ok(self.pool.get_conn().await?)
     }
 
     pub fn edit_delay_ms(&self) -> Option<u64> {
@@ -118,7 +121,7 @@ impl QuickStatements {
         conn.exec_drop(r#"UPDATE `command` SET `status`="INIT",`message`="",`ts_change`=:ts WHERE `status`="RUN" AND `batch_id`=:batch_id"#, params!{ts,batch_id}).await.ok()
     }
 
-    pub async fn reset_all_running_batches(&self) -> Result<()> {
+    pub async fn reset_all_running_batches(&self) -> QsResult<()> {
         let mut conn = self.pool.get_conn().await?;
         let ts = self.timestamp();
         conn.exec_drop(r#"UPDATE `batch` SET `status`="INIT",`message`="",`ts_last_change`=:ts WHERE `status`="RUN""#, params!{ts}).await?;
@@ -136,7 +139,7 @@ impl QuickStatements {
         self.get_api_for_site(&site)
     }
 
-    pub async fn is_user_blocked(mw_api: &mut Api, user_name: &str) -> Result<bool, String> {
+    pub async fn is_user_blocked(mw_api: &mut Api, user_name: &str) -> QsResult<bool> {
         let params: HashMap<String, String> = [
             ("action", "query"),
             ("list", "users"),
@@ -147,14 +150,11 @@ impl QuickStatements {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-        let res = match mw_api.post_query_api_json_mut(&params).await {
-            Ok(x) => x,
-            Err(e) => return Err(format!("Wiki query failed: {:?}", e)),
-        };
+        let res = mw_api.post_query_api_json_mut(&params).await?;
         Ok(res["query"]["users"][0]["blockid"].is_number())
     }
 
-    fn create_mysql_pool(params: &Value) -> Result<my::Pool, String> {
+    fn create_mysql_pool(params: &Value) -> my::Pool {
         if !params["mysql"].is_object() {
             panic!("QuickStatementsConfig::create_mysql_pool: No mysql info in params");
         }
@@ -170,7 +170,7 @@ impl QuickStatements {
             .pass(Some(pass))
             .tcp_port(port);
 
-        Ok(mysql_async::Pool::new(opts))
+        mysql_async::Pool::new(opts)
     }
 
     pub async fn get_last_item_from_batch(&self, batch_id: i64) -> Option<String> {
@@ -191,7 +191,10 @@ impl QuickStatements {
 
     /// Decode the raw DB value into a LastEntityState. Uses pipe-delimited format
     /// when LAST_FORM / LAST_SENSE are present, plain value otherwise (backward compatible).
-    pub async fn get_last_state_from_batch(&self, batch_id: i64) -> crate::qs_command::LastEntityState {
+    pub async fn get_last_state_from_batch(
+        &self,
+        batch_id: i64,
+    ) -> crate::qs_command::LastEntityState {
         match self.get_last_item_from_batch(batch_id).await {
             Some(stored) => crate::qs_command::LastEntityState::decode(&stored),
             None => crate::qs_command::LastEntityState::default(),
@@ -356,26 +359,21 @@ impl QuickStatements {
         self.set_batch_status("DONE", "", batch_id, user_id).await
     }
 
-    pub async fn check_batch_not_stopped(&self, batch_id: i64) -> Result<(), String> {
+    pub async fn check_batch_not_stopped(&self, batch_id: i64) -> QsResult<()> {
         let sql = r#"SELECT id FROM batch WHERE id=:batch_id AND `status` NOT IN ('RUN','INIT')"#;
 
         let results = self
             .pool
             .get_conn()
-            .await
-            .map_err(|e| e.to_string())?
+            .await?
             .exec_iter(sql, params! {batch_id})
-            .await
-            .map_err(|e| e.to_string())?
+            .await?
             .map_and_drop(from_row::<usize>)
-            .await
-            .map_err(|e| e.to_string())?;
-        match results.is_empty() {
-            true => Ok(()),
-            false => Err(format!(
-                "QuickStatementsConfig::check_batch_not_stopped: batch #{} is not RUN or INIT",
-                batch_id
-            )),
+            .await?;
+        if results.is_empty() {
+            Ok(())
+        } else {
+            Err(QsError::BatchStatusError(batch_id))
         }
     }
 
@@ -605,8 +603,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let result = QuickStatements::is_user_blocked(&mut mw_api, "Magnus Manske").await;
-        assert_eq!(result, Ok(false));
+        let result = QuickStatements::is_user_blocked(&mut mw_api, "Magnus Manske")
+            .await
+            .unwrap();
+        assert!(!result);
     }
 
     #[tokio::test]
@@ -621,8 +621,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let result = QuickStatements::is_user_blocked(&mut mw_api, "Yves Schneider").await;
-        assert_eq!(result, Ok(true));
+        let result = QuickStatements::is_user_blocked(&mut mw_api, "Yves Schneider")
+            .await
+            .unwrap();
+        assert!(result);
     }
 
     #[test]
