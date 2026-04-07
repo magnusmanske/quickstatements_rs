@@ -553,22 +553,22 @@ impl QuickStatementsBot {
             };
             self.log("[run_action] Post post_query_api_json_mut".to_string());
 
-            let res = self.check_run_action_result(res, &params, command)?;
-            if !res {
-                return Ok(());
+            let retry_after = self.check_run_action_result(res, &params, command)?;
+            match retry_after {
+                None => return Ok(()),
+                Some(d) => tokio::time::sleep(d).await,
             }
-
-            tokio::time::sleep(Duration::from_millis(self.throttled_delay_ms)).await;
         }
     }
 
-    /// Checks the command result, returns Ok(true) to re-do, Ok(false) if done, Err otherwise
+    /// Checks the command result.
+    /// Returns Ok(None) when done, Ok(Some(duration)) to retry after sleeping, Err on fatal error.
     fn check_run_action_result(
         &mut self,
         res: Value,
         params: &HashMap<String, String>,
         command: &mut QuickStatementsCommand,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<Duration>, String> {
         lazy_static! {
             static ref RE_QUAL_OK: Regex =
                 Regex::new("^The statement has already a qualifier with hash")
@@ -582,7 +582,7 @@ impl QuickStatementsBot {
             Some(num) => {
                 if num == 1 {
                     self.reset_entities(&res, command);
-                    Ok(false)
+                    Ok(None)
                 } else {
                     Err(format!("Success flag is '{}' in API result", num))
                 }
@@ -590,6 +590,17 @@ impl QuickStatementsBot {
             None => {
                 // Check for rate limiting / throttle — handle both old and new Wikimedia error formats
                 let error_code = res["error"]["code"].as_str().unwrap_or("");
+                if error_code == "maxlag" {
+                    let lag = res["error"]["lag"].as_f64().unwrap_or(5.0);
+                    let sleep_ms = (lag.ceil() as u64 + 1) * 1000;
+                    println!(
+                        "Batch #{}: Maxlag exceeded (lag: {}s), sleeping {}ms",
+                        self.batch_id.unwrap_or(0),
+                        lag,
+                        sleep_ms
+                    );
+                    return Ok(Some(Duration::from_millis(sleep_ms)));
+                }
                 if matches!(error_code, "ratelimited" | "actionthrottled") {
                     println!(
                         "Batch #{}: Rate limited by API (code: {}), sleeping {}ms",
@@ -597,7 +608,7 @@ impl QuickStatementsBot {
                         error_code,
                         self.throttled_delay_ms
                     );
-                    return Ok(true);
+                    return Ok(Some(Duration::from_millis(self.throttled_delay_ms)));
                 }
                 if let Some(arr) = res["error"]["messages"].as_array() {
                     for a in arr {
@@ -609,7 +620,7 @@ impl QuickStatementsBot {
                                     self.batch_id.unwrap_or(0),
                                     self.throttled_delay_ms
                                 );
-                                return Ok(true);
+                                return Ok(Some(Duration::from_millis(self.throttled_delay_ms)));
                             }
                         }
                     }
@@ -618,11 +629,11 @@ impl QuickStatementsBot {
                     command.json["meta"]["message"] = json!(s);
                     // That qualifier already exists, return OK
                     if RE_QUAL_OK.is_match(s) {
-                        return Ok(false);
+                        return Ok(None);
                     }
                     // That reference already exists, return OK
                     if RE_REF_OK.is_match(s) {
-                        return Ok(false);
+                        return Ok(None);
                     }
                 }
                 println!("\nCOMMAND ERROR #{}:\n{:?}\n{}", &command.id, &params, &res);
