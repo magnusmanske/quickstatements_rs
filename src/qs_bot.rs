@@ -7,6 +7,7 @@ use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::time::Duration;
 use wikibase;
 
@@ -307,11 +308,10 @@ impl QuickStatementsBot {
         revision: Option<usize>,
         original_error: String,
     ) -> Result<wikibase::Entity, String> {
-        lazy_static! {
-            static ref RE_MEDIA_INFO: Regex = Regex::new(r#"^M\d+$"#).expect(
-                "QuickStatementsBot::try_create_fake_entity:RE_MEDIA_INFO does not compile"
-            );
-        }
+        static RE_MEDIA_INFO: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r#"^M\d+$"#)
+                .expect("QuickStatementsBot::try_create_fake_entity:RE_MEDIA_INFO does not compile")
+        });
 
         let mw_api = self
             .mw_api
@@ -569,14 +569,14 @@ impl QuickStatementsBot {
         params: &HashMap<String, String>,
         command: &mut QuickStatementsCommand,
     ) -> Result<Option<Duration>, String> {
-        lazy_static! {
-            static ref RE_QUAL_OK: Regex =
-                Regex::new("^The statement has already a qualifier with hash")
-                    .expect("QuickStatementsBot::run_action:RE_QUAL_OK does not compile");
-            static ref RE_REF_OK: Regex =
-                Regex::new("^The statement has already a reference with hash")
-                    .expect("QuickStatementsBot::run_action:RE_REF_OK does not compile");
-        }
+        static RE_QUAL_OK: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new("^The statement has already a qualifier with hash")
+                .expect("QuickStatementsBot::run_action:RE_QUAL_OK does not compile")
+        });
+        static RE_REF_OK: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new("^The statement has already a reference with hash")
+                .expect("QuickStatementsBot::run_action:RE_REF_OK does not compile")
+        });
 
         match res["success"].as_i64() {
             Some(num) => {

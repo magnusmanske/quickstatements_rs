@@ -1,5 +1,6 @@
 use regex::Regex;
 use serde_json::{json, Value};
+use std::sync::LazyLock;
 use wikibase::*;
 
 /// Holds the current LAST / LAST_FORM / LAST_SENSE entity IDs.
@@ -600,10 +601,10 @@ impl QuickStatementsCommand {
     }
 
     fn is_same_datavalue(&self, dv1: &wikibase::DataValue, dv2: &Value) -> Option<bool> {
-        lazy_static! {
-            static ref RE_TIME: Regex = Regex::new("^(?P<a>[+-]{0,1})0*(?P<b>.+)$")
-                .expect("QuickStatementsCommand::is_same_datavalue:RE_TIME does not compile");
-        }
+        static RE_TIME: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new("^(?P<a>[+-]{0,1})0*(?P<b>.+)$")
+                .expect("QuickStatementsCommand::is_same_datavalue:RE_TIME does not compile")
+        });
 
         if dv1.value_type().string_value() != dv2["type"].as_str()? {
             return Some(false);
@@ -698,10 +699,9 @@ impl QuickStatementsCommand {
     }
 
     fn check_prop(&self, s: &str) -> Result<String, String> {
-        lazy_static! {
-            static ref RE_PROP: Regex = Regex::new(r#"^P\d+$"#)
-                .expect("QuickStatementsBot::check_prop:RE_PROP does not compile");
-        }
+        static RE_PROP: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r#"^P\d+$"#).expect("QuickStatementsBot::check_prop:RE_PROP does not compile")
+        });
         match RE_PROP.is_match(s) {
             true => Ok(s.to_string()),
             false => Err(format!("'{}' is not a property", &s)),
@@ -714,10 +714,10 @@ impl QuickStatementsCommand {
     }
 
     pub fn fix_entity_id(id: String) -> String {
-        lazy_static! {
-            static ref RE_STATEMENT_ID: Regex = Regex::new(r#"\$.*$"#)
-                .expect("QuickStatementsBot::fix_entity_id:RE_STATEMENT_ID does not compile");
-        }
+        static RE_STATEMENT_ID: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r#"\$.*$"#)
+                .expect("QuickStatementsBot::fix_entity_id:RE_STATEMENT_ID does not compile")
+        });
         RE_STATEMENT_ID.replace_all(&id, "").trim().to_uppercase()
     }
 }

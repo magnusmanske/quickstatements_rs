@@ -1,7 +1,5 @@
 #[macro_use]
 extern crate serde_json;
-#[macro_use]
-extern crate lazy_static;
 
 pub mod command_type;
 pub mod entity_id;

@@ -1,4 +1,5 @@
 use regex::Regex;
+use std::sync::LazyLock;
 use wikibase::mediawiki::api::Api;
 use wikibase::{
     Coordinate, EntityType, EntityValue, LocaleString, MonoLingualText, SiteLink, TimeValue,
@@ -44,9 +45,8 @@ impl QuickStatementsParser {
     /// Translates a line into a QuickStatementsParser object.
     /// Uses api to translate page titles into entity IDs, if given
     pub async fn new_from_line(line: &str, api: Option<&Api>) -> Result<Self, String> {
-        lazy_static! {
-            static ref RE_META: Regex = Regex::new(r#"^ *([LDAS]) *([a-z_-]+) *$"#).unwrap();
-        }
+        static RE_META: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r#"^ *([LDAS]) *([a-z_-]+) *$"#).unwrap());
 
         let (line, comment) = Self::parse_comment(line);
         let trimmed = line.trim();
@@ -105,13 +105,14 @@ impl QuickStatementsParser {
 
         // Check for Lemma_xx, Rep_xx, Gloss_xx patterns
         {
-            lazy_static! {
-                static ref RE_LEMMA: Regex = Regex::new(r#"(?i)^Lemma_([a-z_-]+)$"#).unwrap();
-                static ref RE_REP: Regex = Regex::new(r#"(?i)^Rep_([a-z_-]+)$"#).unwrap();
-                static ref RE_GLOSS: Regex = Regex::new(r#"(?i)^Gloss_([a-z_-]+)$"#).unwrap();
-                static ref RE_GRAMMATICAL_FEATURE: Regex =
-                    Regex::new(r#"(?i)^GRAMMATICAL_FEATURE$"#).unwrap();
-            }
+            static RE_LEMMA: LazyLock<Regex> =
+                LazyLock::new(|| Regex::new(r#"(?i)^Lemma_([a-z_-]+)$"#).unwrap());
+            static RE_REP: LazyLock<Regex> =
+                LazyLock::new(|| Regex::new(r#"(?i)^Rep_([a-z_-]+)$"#).unwrap());
+            static RE_GLOSS: LazyLock<Regex> =
+                LazyLock::new(|| Regex::new(r#"(?i)^Gloss_([a-z_-]+)$"#).unwrap());
+            static RE_GRAMMATICAL_FEATURE: LazyLock<Regex> =
+                LazyLock::new(|| Regex::new(r#"(?i)^GRAMMATICAL_FEATURE$"#).unwrap());
             if let Some(caps) = RE_LEMMA.captures(&parts[1]) {
                 let lang = caps.get(1).unwrap().as_str().to_lowercase();
                 return Self::new_set_lemma(&parts[0], &lang, &parts[2], comment);
@@ -276,9 +277,8 @@ impl QuickStatementsParser {
     }
 
     fn new_edit_statement(parts: Vec<String>, comment: Option<String>) -> Result<Self, String> {
-        lazy_static! {
-            static ref RE_PROPERTY: Regex = Regex::new(r#"^!?[Pp]\d+$"#).unwrap();
-        }
+        static RE_PROPERTY: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r#"^!?[Pp]\d+$"#).unwrap());
 
         let mut ret = Self::new_blank_with_comment(comment);
         ret.command = CommandType::EditStatement;
@@ -323,9 +323,8 @@ impl QuickStatementsParser {
 
         // References and qualifiers
 
-        lazy_static! {
-            static ref RE_REF_QUAL: Regex = Regex::new(r#"^(!?[PS])(\d+)$"#).unwrap();
-        }
+        static RE_REF_QUAL: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r#"^(!?[PS])(\d+)$"#).unwrap());
         let mut i = parts.iter();
         i.next();
         i.next();
@@ -383,11 +382,11 @@ impl QuickStatementsParser {
     }
 
     fn parse_time(value: &str) -> Option<Value> {
-        lazy_static! {
-            static ref RE_TIME: Regex = Regex::new(r#"^[\+\-]{0,1}\d+"#).unwrap();
-            static ref RE_PRECISION: Regex = Regex::new(r#"^(.+)/(\d+)$"#).unwrap();
-            static ref RE_JULIAN: Regex = Regex::new(r#"/J$"#).unwrap();
-        }
+        static RE_TIME: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r#"^[\+\-]{0,1}\d+"#).unwrap());
+        static RE_PRECISION: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r#"^(.+)/(\d+)$"#).unwrap());
+        static RE_JULIAN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"/J$"#).unwrap());
 
         if !RE_TIME.is_match(value) {
             return None;
@@ -471,17 +470,18 @@ impl QuickStatementsParser {
     }
 
     fn parse_quantity(value: &str) -> Option<Value> {
-        lazy_static! {
-            static ref RE_QUANTITY_UNIT: Regex = Regex::new(r#"^(.+)U(\d+)$"#).unwrap();
-            static ref RE_QUANTITY_PLAIN: Regex =
-                Regex::new(r#"^([-+]{0,1}\d+\.{0,1}\d*)$"#).unwrap();
-            static ref RE_QUANTITY_TOLERANCE: Regex =
-                Regex::new(r#"^([-+]{0,1}\d+\.{0,1}\d*)~(\d+\.{0,1}\d*)$"#).unwrap();
-            static ref RE_QUANTITY_RANGE: Regex = Regex::new(
-                r#"^([-+]{0,1}\d+\.{0,1}\d*)\[([-+]{0,1}\d+\.{0,1}\d*),([-+]{0,1}\d+\.{0,1}\d*)\]$"#
+        static RE_QUANTITY_UNIT: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r#"^(.+)U(\d+)$"#).unwrap());
+        static RE_QUANTITY_PLAIN: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r#"^([-+]{0,1}\d+\.{0,1}\d*)$"#).unwrap());
+        static RE_QUANTITY_TOLERANCE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r#"^([-+]{0,1}\d+\.{0,1}\d*)~(\d+\.{0,1}\d*)$"#).unwrap());
+        static RE_QUANTITY_RANGE: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(
+                r#"^([-+]{0,1}\d+\.{0,1}\d*)\[([-+]{0,1}\d+\.{0,1}\d*),([-+]{0,1}\d+\.{0,1}\d*)\]$"#,
             )
-            .unwrap();
-        }
+            .unwrap()
+        });
 
         let value = value.to_string();
         let (value, unit) = match RE_QUANTITY_UNIT.captures(&value) {
@@ -529,13 +529,12 @@ impl QuickStatementsParser {
     }
 
     fn parse_value(value: String) -> Option<Value> {
-        lazy_static! {
-            static ref RE_STRING: Regex = Regex::new(r#"^"(.*)"$"#).unwrap();
-            static ref RE_MONOLINGUAL_STRING: Regex =
-                Regex::new(r#"^([a-z][a-z0-9_-]*):"(.*)"$"#).unwrap();
-            static ref RE_COORDINATE: Regex =
-                Regex::new(r#"^@\s*([+-]{0,1}[0-9.-]+)\s*/\s*([+-]{0,1}[0-9.-]+)$"#).unwrap();
-        }
+        static RE_STRING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^"(.*)"$"#).unwrap());
+        static RE_MONOLINGUAL_STRING: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r#"^([a-z][a-z0-9_-]*):"(.*)"$"#).unwrap());
+        static RE_COORDINATE: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r#"^@\s*([+-]{0,1}[0-9.-]+)\s*/\s*([+-]{0,1}[0-9.-]+)$"#).unwrap()
+        });
 
         let value = value.trim();
 
@@ -597,14 +596,18 @@ impl QuickStatementsParser {
     }
 
     fn parse_item_id(id: Option<&str>) -> Result<EntityID, String> {
-        lazy_static! {
-            static ref RE_ENTITY_ID: Regex = Regex::new(r#"^[A-Z]\d+$"#)
-                .expect("QuickStatementsParser::parse_item_id:RE_ENTITY_ID does not compile");
-            static ref RE_FORM_ID: Regex = Regex::new(r#"^L\d+-F\d+$"#)
-                .expect("QuickStatementsParser::parse_item_id:RE_FORM_ID does not compile");
-            static ref RE_SENSE_ID: Regex = Regex::new(r#"^L\d+-S\d+$"#)
-                .expect("QuickStatementsParser::parse_item_id:RE_SENSE_ID does not compile");
-        }
+        static RE_ENTITY_ID: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r#"^[A-Z]\d+$"#)
+                .expect("QuickStatementsParser::parse_item_id:RE_ENTITY_ID does not compile")
+        });
+        static RE_FORM_ID: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r#"^L\d+-F\d+$"#)
+                .expect("QuickStatementsParser::parse_item_id:RE_FORM_ID does not compile")
+        });
+        static RE_SENSE_ID: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r#"^L\d+-S\d+$"#)
+                .expect("QuickStatementsParser::parse_item_id:RE_SENSE_ID does not compile")
+        });
         match id {
             Some(orig_id) => {
                 let id = orig_id.trim().to_uppercase();
@@ -695,11 +698,10 @@ impl QuickStatementsParser {
     /// Parses monolingual text values and Q-ids from a slice of parts.
     /// Returns (monolingual_texts, q_ids).
     fn parse_lexeme_args(parts: &[String]) -> Result<(Vec<MonoLingualText>, Vec<String>), String> {
-        lazy_static! {
-            static ref RE_MONO: Regex = Regex::new(r#"^([a-z][a-z0-9_-]*):"(.*)"$"#).unwrap();
-            static ref RE_QID: Regex = Regex::new(r#"^Q\d+$"#).unwrap();
-            static ref RE_QIDS_COMMA: Regex = Regex::new(r#"^Q\d+(,Q\d+)*$"#).unwrap();
-        }
+        static RE_MONO: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r#"^([a-z][a-z0-9_-]*):"(.*)"$"#).unwrap());
+        static RE_QIDS_COMMA: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r#"^Q\d+(,Q\d+)*$"#).unwrap());
         let mut texts = vec![];
         let mut qids = vec![];
         for part in parts {
@@ -735,9 +737,7 @@ impl QuickStatementsParser {
         // First two args must be Q-ids (language and lexical category)
         let lang_id = parts[0].trim().to_uppercase();
         let cat_id = parts[1].trim().to_uppercase();
-        lazy_static! {
-            static ref RE_QID: Regex = Regex::new(r#"^Q\d+$"#).unwrap();
-        }
+        static RE_QID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^Q\d+$"#).unwrap());
         if !RE_QID.is_match(&lang_id) {
             return Err(format!(
                 "CREATE_LEXEME: invalid language item '{}'",
@@ -824,9 +824,7 @@ impl QuickStatementsParser {
         ret.command = CommandType::SetLexicalCategory;
         ret.item = Some(Self::parse_item_id(Some(&parts[0].trim().to_uppercase()))?);
         let qid = parts[2].trim().to_uppercase();
-        lazy_static! {
-            static ref RE_QID: Regex = Regex::new(r#"^Q\d+$"#).unwrap();
-        }
+        static RE_QID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^Q\d+$"#).unwrap());
         if !RE_QID.is_match(&qid) {
             return Err(format!("LEXICAL_CATEGORY: invalid Q-id '{}'", &parts[2]));
         }
@@ -842,9 +840,7 @@ impl QuickStatementsParser {
         ret.command = CommandType::SetLanguage;
         ret.item = Some(Self::parse_item_id(Some(&parts[0].trim().to_uppercase()))?);
         let qid = parts[2].trim().to_uppercase();
-        lazy_static! {
-            static ref RE_QID: Regex = Regex::new(r#"^Q\d+$"#).unwrap();
-        }
+        static RE_QID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^Q\d+$"#).unwrap());
         if !RE_QID.is_match(&qid) {
             return Err(format!("LANGUAGE: invalid Q-id '{}'", &parts[2]));
         }
@@ -877,9 +873,8 @@ impl QuickStatementsParser {
         let mut ret = Self::new_blank_with_comment(comment);
         ret.command = CommandType::SetGrammaticalFeature;
         ret.item = Some(Self::parse_item_id(Some(&entity.trim().to_uppercase()))?);
-        lazy_static! {
-            static ref RE_QIDS_COMMA: Regex = Regex::new(r#"^Q\d+(,Q\d+)*$"#).unwrap();
-        }
+        static RE_QIDS_COMMA: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r#"^Q\d+(,Q\d+)*$"#).unwrap());
         let val = value.trim().to_uppercase();
         if !RE_QIDS_COMMA.is_match(&val) {
             return Err(format!(
@@ -909,10 +904,10 @@ impl QuickStatementsParser {
     }
 
     fn parse_comment(line: &str) -> (String, Option<String>) {
-        lazy_static! {
-            static ref RE_COMMENT: Regex = Regex::new(r#"^(.*)/\*\s*(.*?)\s*\*/(.*)$"#)
-                .expect("QuickStatementsParser::parse_comment:RE_COMMENT does not compile");
-        }
+        static RE_COMMENT: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r#"^(.*)/\*\s*(.*?)\s*\*/(.*)$"#)
+                .expect("QuickStatementsParser::parse_comment:RE_COMMENT does not compile")
+        });
         match RE_COMMENT.captures(line) {
             Some(caps) => (
                 String::from(caps.get(1).unwrap().as_str()) + caps.get(3).unwrap().as_str(),
