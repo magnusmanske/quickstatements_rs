@@ -2,6 +2,7 @@ use crate::error::{QsError, QsResult};
 use crate::qs_command::QuickStatementsCommand;
 use chrono::prelude::Utc;
 use config::*;
+use log;
 use mysql_async as my;
 use mysql_async::from_row;
 use mysql_async::prelude::*;
@@ -78,6 +79,14 @@ impl QuickStatements {
     /// Get a database connection from the pool
     pub async fn get_db_conn(&self) -> QsResult<my::Conn> {
         Ok(self.pool.get_conn().await?)
+    }
+
+    /// Lightweight check: can we reach the database at all?
+    pub async fn db_ping(&self) -> bool {
+        match self.pool.get_conn().await {
+            Ok(mut conn) => conn.query_drop("SELECT 1").await.is_ok(),
+            Err(_) => false,
+        }
     }
 
     pub fn edit_delay_ms(&self) -> Option<u64> {
@@ -317,10 +326,7 @@ impl QuickStatements {
     }
 
     pub async fn set_batch_running(&self, batch_id: i64, user_id: i64) {
-        println!(
-            "set_batch_running: Starting batch #{} for user {}",
-            batch_id, user_id
-        );
+        log::info!("Starting batch #{} for user {}", batch_id, user_id);
 
         let _ = self.reinitialize_open_batches().await;
 
@@ -335,7 +341,7 @@ impl QuickStatements {
             .unwrap()
             .insert(user_id, user_counter + 1);
 
-        println!("Currently {} bots running", self.number_of_bots_running());
+        log::info!("Currently {} bots running", self.number_of_bots_running());
     }
 
     pub fn deactivate_batch_run(&self, batch_id: i64, user_id: i64) -> Option<()> {
@@ -350,12 +356,12 @@ impl QuickStatements {
             .write()
             .unwrap()
             .insert(user_id, (user_counter - 1).max(0));
-        println!("Currently {} bots running", self.number_of_bots_running());
+        log::info!("Currently {} bots running", self.number_of_bots_running());
         Some(())
     }
 
     pub async fn set_batch_finished(&self, batch_id: i64, user_id: i64) -> Option<()> {
-        println!("set_batch_finished: Batch #{}", batch_id);
+        log::info!("Batch #{} finished", batch_id);
         self.set_batch_status("DONE", "", batch_id, user_id).await
     }
 

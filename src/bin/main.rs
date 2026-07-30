@@ -16,20 +16,54 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 const SLEEP_BETWEEN_BOT_RUNS_MS: u64 = 500;
 const MAX_INACTIVITY_BEFORE_SEPPUKU_SEC: u64 = 60;
+const MAX_COMMAND_RETRIES: u32 = 3;
+
+/// Run the bot loop for a single batch. Returns false when the batch is done or should stop.
+async fn run_bot_loop(mut bot: QuickStatementsBot) -> bool {
+    let mut consecutive_errors = 0u32;
+    loop {
+        match bot.run().await {
+            Ok(true) => {
+                consecutive_errors = 0;
+                continue;
+            }
+            Ok(false) => return false,
+            Err(e) => {
+                consecutive_errors += 1;
+                error!(
+                    "Batch #{} loop error (attempt {}/{}): {}",
+                    bot.batch_id().unwrap_or(0),
+                    consecutive_errors,
+                    MAX_COMMAND_RETRIES,
+                    e
+                );
+                if consecutive_errors >= MAX_COMMAND_RETRIES {
+                    error!(
+                        "Batch #{}: too many consecutive errors, stopping",
+                        bot.batch_id().unwrap_or(0)
+                    );
+                    return false;
+                }
+                // Back off before retrying: 1s, 4s, 9s
+                let delay = consecutive_errors as u64 * consecutive_errors as u64 * 1_000;
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+        }
+    }
+}
 
 async fn start_batch(config: Arc<QuickStatements>, batch_id: i64, user_id: i64) {
-    println!("Starting batch {} for user {}", &batch_id, &user_id);
+    info!("Starting batch {} for user {}", batch_id, user_id);
     let mut bot = QuickStatementsBot::new(config.clone(), Some(batch_id), user_id);
 
     match bot.start().await {
         Ok(_) => {
-            tokio::spawn(async move { while bot.run().await.unwrap_or(false) {} });
+            tokio::spawn(async move {
+                run_bot_loop(bot).await;
+            });
         }
         Err(error) => {
-            println!(
-                "Error when starting bot for batch #{}: '{}'",
-                &batch_id, &error
-            );
+            error!("Cannot start batch #{}: {}", batch_id, error);
         }
     }
 }
@@ -45,25 +79,48 @@ async fn run_bot(config: Arc<QuickStatements>) -> usize {
 }
 
 async fn command_bot(verbose: bool, config_file: &str) {
-    let cpus = num_cpus::get();
-    println!("{} CPUs available", cpus);
+    info!("{} CPUs available", num_cpus::get());
     let config = match QuickStatements::new_from_config_json(config_file) {
         Some(mut qs) => {
             qs.set_verbose(verbose);
             Arc::new(qs)
         }
-        None => panic!("Could not create QuickStatements bot from config file"),
+        None => {
+            error!(
+                "Cannot create QuickStatements from config file '{}'",
+                config_file
+            );
+            std::process::exit(1);
+        }
     };
 
-    config
-        .reset_all_running_batches()
-        .await
-        .expect("Could not reset running batches");
+    // Retry DB reset on startup with backoff
+    let mut db_retries = 0u32;
+    loop {
+        match config.reset_all_running_batches().await {
+            Ok(_) => break,
+            Err(e) => {
+                db_retries += 1;
+                if db_retries >= 10 {
+                    error!(
+                        "Cannot reset running batches after {} attempts: {}",
+                        db_retries, e
+                    );
+                    std::process::exit(1);
+                }
+                let delay = (db_retries as u64).min(6) * 5_000;
+                error!(
+                    "DB reset failed (attempt {}), retrying in {}ms: {}",
+                    db_retries, delay, e
+                );
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+        }
+    }
 
     let last_bot_run = Arc::new(Mutex::new(Instant::now()));
     seppuku(config.clone(), last_bot_run.clone());
 
-    // Run bot
     loop {
         let started = run_bot(config.clone()).await;
         if started > 0 {
@@ -73,15 +130,18 @@ async fn command_bot(verbose: bool, config_file: &str) {
     }
 }
 
-/// Seppuku if no activity for a while
+/// Exit the process if the DB is genuinely unreachable for too long.
+/// This does NOT exit just because the bot is idle.
 fn seppuku(config: Arc<QuickStatements>, last_bot_run: Arc<Mutex<Instant>>) {
     tokio::spawn(async move {
         loop {
             let last = *last_bot_run.lock().unwrap();
-            if last.elapsed().as_secs() > MAX_INACTIVITY_BEFORE_SEPPUKU_SEC
-                && config.get_next_batch().await.is_some()
-            {
-                println!("Commiting seppuku");
+            let idle = last.elapsed().as_secs() > MAX_INACTIVITY_BEFORE_SEPPUKU_SEC;
+            if idle && !config.db_ping().await {
+                error!(
+                    "DB unreachable after {}s of inactivity — committing seppuku",
+                    MAX_INACTIVITY_BEFORE_SEPPUKU_SEC
+                );
                 std::process::exit(0);
             }
             tokio::time::sleep(Duration::from_secs(MAX_INACTIVITY_BEFORE_SEPPUKU_SEC)).await;

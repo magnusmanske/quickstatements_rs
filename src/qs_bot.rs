@@ -2,7 +2,7 @@ use crate::error::{QsError, QsResult};
 use crate::qs_command::{LastEntityState, QuickStatementsCommand};
 use crate::qs_config::QuickStatements;
 use crate::qs_parser::COMMONS_API;
-use chrono::Local;
+use log;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
@@ -74,6 +74,10 @@ impl QuickStatementsBot {
         Ok(())
     }
 
+    pub fn batch_id(&self) -> Option<i64> {
+        self.batch_id
+    }
+
     pub fn set_mw_api(&mut self, mw_api: wikibase::mediawiki::api::Api) {
         self.mw_api = Some(mw_api);
     }
@@ -136,29 +140,27 @@ impl QuickStatementsBot {
 
     fn log(&self, msg: String) {
         if self.config.verbose() {
-            let date = Local::now();
-            let timestamp = date.format("%Y-%m-%d][%H:%M:%S");
             match self.batch_id {
-                Some(id) => {
-                    println!("{} Batch #{}: {}", timestamp, id, msg);
-                }
-                None => {
-                    println!("{} No batch ID: {}", timestamp, msg);
-                }
+                Some(id) => log::info!("Batch #{}: {}", id, msg),
+                None => log::info!("No batch ID: {}", msg),
             }
         }
     }
 
+    /// Returns `Ok(true)` when a command was executed, `Ok(false)` when the batch is done,
+    /// or `Err` for transient failures (caller should retry).
     pub async fn run(&mut self) -> Result<bool, String> {
-        //Check if batch is still valid (STOP etc)
         self.log("[run] Getting next command".to_string());
         let command = match self.get_next_command().await {
             Ok(c) => c,
-            Err(_) => {
+            Err(e) => {
+                let is_transient = matches!(e, QsError::MysqlAsyncError(_));
+                if is_transient {
+                    return Err(format!("Transient DB error in get_next_command: {}", e));
+                }
+                // Permanent: batch was stopped, or no batch_id set
                 if let Some(batch_id) = self.batch_id {
-                    self.config
-                        .deactivate_batch_run(batch_id, self.user_id)
-                        .ok_or("Can't set batch as stopped".to_string())?;
+                    let _ = self.config.deactivate_batch_run(batch_id, self.user_id);
                 }
                 return Ok(false);
             }
@@ -167,9 +169,8 @@ impl QuickStatementsBot {
         match command {
             Some(mut command) => {
                 self.log("[run] Executing command".to_string());
-                match self.execute_command(&mut command).await {
-                    Ok(_) => {}
-                    Err(_message) => {} //self.set_command_status("ERROR", Some(&message), &mut command),
+                if let Err(e) = self.execute_command(&mut command).await {
+                    self.log(format!("[run] Command error: {}", e));
                 }
                 self.log("[run] Command executed".to_string());
                 Ok(true)
@@ -177,10 +178,7 @@ impl QuickStatementsBot {
             None => {
                 self.log("[run] No more commands".to_string());
                 if let Some(batch_id) = self.batch_id {
-                    self.config
-                        .set_batch_finished(batch_id, self.user_id)
-                        .await
-                        .ok_or("Can't set batch as finished".to_string())?;
+                    let _ = self.config.set_batch_finished(batch_id, self.user_id).await;
                 }
                 Ok(false)
             }
@@ -356,24 +354,18 @@ impl QuickStatementsBot {
             return Ok(false);
         }
 
-        // Get user name
         let user_name = self
             .config
             .get_user_name(self.user_id)
             .await
             .ok_or("User not found".to_string())?;
 
-        // Get MediaWiki API
-        let api_url = self
-            .config
-            .get_api_url(self.batch_id.unwrap_or_default())
-            .await
-            .ok_or_else(|| "API URL not found".to_string())?;
-        let mut mw_api = wikibase::mediawiki::api::Api::new(api_url)
-            .await
-            .map_err(|e| format!("{:?}", e))?;
+        // Reuse the bot's configured API (already has auth, maxlag, retry settings)
+        let mut mw_api = self
+            .mw_api
+            .clone()
+            .ok_or("No mw_api available for block check".to_string())?;
 
-        // Check if user has a blockid
         QuickStatements::is_user_blocked(&mut mw_api, &user_name)
             .await
             .map_err(|e| e.to_string())
@@ -471,6 +463,8 @@ impl QuickStatementsBot {
                         .set_entity_from_json(entity_json)
                         .expect("Setting entity from JSON failed");
                     self.entity_revision.retain(|er| er.0 != q);
+                    self.entity_revision.push_front((q.to_owned(), 0));
+                    self.entity_revision.truncate(5);
                 }
             }
         }
@@ -503,7 +497,6 @@ impl QuickStatementsBot {
 
         self.log("[run_action] Init".to_string());
 
-        //println!("Running action {}", &j);
         let mut params: HashMap<String, String> = HashMap::new();
         for (k, v) in j
             .as_object()
@@ -522,12 +515,15 @@ impl QuickStatementsBot {
         self.add_summary(&mut params, command);
         self.log("[run_action] Summary added".to_string());
 
-        // TODO baserev?
         let mut mw_api = self.mw_api.to_owned().ok_or(format!(
             "QuickStatementsBot::run_action batch #{} has no mw_api",
             self.batch_id.unwrap_or(0)
         ))?;
-        let mut invalid_json_retries = 3usize;
+
+        const MAX_JSON_RETRIES: usize = 3;
+        const MAX_THROTTLE_RETRIES: usize = 10;
+        let mut json_retries = 0usize;
+        let mut throttle_retries = 0usize;
         loop {
             params.insert(
                 "token".to_string(),
@@ -539,12 +535,13 @@ impl QuickStatementsBot {
             self.log("[run_action] Pre  post_query_api_json_mut".to_string());
             let res = match mw_api.post_query_api_json_mut(&params).await {
                 Ok(x) => x,
-                Err(wikibase::mediawiki::MediaWikiError::Serde(_)) if invalid_json_retries > 0 => {
-                    // API returned non-JSON (e.g. HTML rate-limit page from CDN) — retry after delay
-                    invalid_json_retries -= 1;
+                Err(wikibase::mediawiki::MediaWikiError::Serde(_))
+                    if json_retries < MAX_JSON_RETRIES =>
+                {
+                    json_retries += 1;
                     self.log(format!(
-                        "[run_action] Non-JSON API response, retrying ({} retries left)",
-                        invalid_json_retries
+                        "[run_action] Non-JSON API response, retrying ({}/{})",
+                        json_retries, MAX_JSON_RETRIES
                     ));
                     tokio::time::sleep(Duration::from_secs(30)).await;
                     continue;
@@ -556,7 +553,16 @@ impl QuickStatementsBot {
             let retry_after = self.check_run_action_result(res, &params, command)?;
             match retry_after {
                 None => return Ok(()),
-                Some(d) => tokio::time::sleep(d).await,
+                Some(d) => {
+                    throttle_retries += 1;
+                    if throttle_retries > MAX_THROTTLE_RETRIES {
+                        return Err(format!(
+                            "Too many throttle retries ({}) for command #{}",
+                            throttle_retries, command.id
+                        ));
+                    }
+                    tokio::time::sleep(d).await;
+                }
             }
         }
     }
@@ -593,7 +599,7 @@ impl QuickStatementsBot {
                 if error_code == "maxlag" {
                     let lag = res["error"]["lag"].as_f64().unwrap_or(5.0);
                     let sleep_ms = (lag.ceil() as u64 + 1) * 1000;
-                    println!(
+                    log::warn!(
                         "Batch #{}: Maxlag exceeded (lag: {}s), sleeping {}ms",
                         self.batch_id.unwrap_or(0),
                         lag,
@@ -602,7 +608,7 @@ impl QuickStatementsBot {
                     return Ok(Some(Duration::from_millis(sleep_ms)));
                 }
                 if matches!(error_code, "ratelimited" | "actionthrottled") {
-                    println!(
+                    log::warn!(
                         "Batch #{}: Rate limited by API (code: {}), sleeping {}ms",
                         self.batch_id.unwrap_or(0),
                         error_code,
@@ -614,8 +620,7 @@ impl QuickStatementsBot {
                     for a in arr {
                         if let Some(s) = a["name"].as_str() {
                             if matches!(s, "actionthrottledtext" | "ratelimited") {
-                                // Throttled, try again
-                                println!(
+                                log::warn!(
                                     "Batch #{}: Throttled by API, sleeping {}ms",
                                     self.batch_id.unwrap_or(0),
                                     self.throttled_delay_ms
@@ -636,7 +641,7 @@ impl QuickStatementsBot {
                         return Ok(None);
                     }
                 }
-                println!("\nCOMMAND ERROR #{}:\n{:?}\n{}", &command.id, &params, &res);
+                log::error!("COMMAND ERROR #{}:\n{:?}\n{}", command.id, params, res);
                 Err("No success flag set in API result".to_string())
             }
         }
