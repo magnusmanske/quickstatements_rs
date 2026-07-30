@@ -230,14 +230,9 @@ impl QuickStatements {
         }
     }
 
-    pub async fn get_next_batch(&self) -> Option<(i64, i64)> {
-        let batches = self.get_next_batches().await;
-        batches.into_iter().next()
-    }
-
     /// Returns all batches that can be started right now, respecting per-user limits.
-    /// Writes to the user counter under a write lock to prevent concurrent calls
-    /// from exceeding the per-user batch limit.
+    /// The returned batches are already claimed (running set + user counter), so the
+    /// caller must hand each one to a bot that eventually calls deactivate_batch_run().
     pub async fn get_next_batches(&self) -> Vec<(i64, i64)> {
         let sql =
             "SELECT id,user FROM batch WHERE `status` IN ('INIT','RUN') ORDER BY `ts_last_change`";
@@ -259,13 +254,18 @@ impl QuickStatements {
             }
         };
 
-        let running = self.running_batch_ids.read().await;
-        // Acquire the write lock for the entire read-modify-update so concurrent
-        // callers cannot both see the same counter value and start too many batches
-        // for a single user.
+        self.claim_batches(results).await
+    }
+
+    /// Claims candidate batches: adds them to the running set and increments the
+    /// per-user counters, all under write locks. Claiming at selection time means
+    /// every later deactivate_batch_run() balances exactly once — including for
+    /// batches that subsequently fail to start.
+    async fn claim_batches(&self, candidates: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
+        let mut running = self.running_batch_ids.write().await;
         let mut user_counts = self.user_counter.write().await;
         let mut ret = vec![];
-        for (id, user_id) in results {
+        for (id, user_id) in candidates {
             if running.contains(&id) {
                 continue;
             }
@@ -274,18 +274,21 @@ impl QuickStatements {
                 continue;
             }
             *cnt += 1;
+            running.insert(id);
             ret.push((id, user_id));
         }
         ret
     }
 
     pub async fn reinitialize_open_batches(&self) -> Option<()> {
-        let sql = "UPDATE batch SET status='INIT' WHERE status='DONE' AND id IN (SELECT DISTINCT batch_id FROM command WHERE status='INIT' and batch_id>12000)" ;
+        // Legacy PHP-era batches (below this ID) must not be auto-reinitialized
+        const MIN_AUTO_REINIT_BATCH_ID: i64 = 12000;
+        let sql = "UPDATE batch SET status='INIT' WHERE status='DONE' AND id IN (SELECT DISTINCT batch_id FROM command WHERE status='INIT' and batch_id>:min_id)";
         self.pool
             .get_conn()
             .await
             .ok()?
-            .exec_drop(sql, ())
+            .exec_drop(sql, params! {"min_id" => MIN_AUTO_REINIT_BATCH_ID})
             .await
             .ok()
     }
@@ -300,10 +303,8 @@ impl QuickStatements {
             );
         }
 
-        // Mark the batch as running. The user counter was already incremented
-        // by get_next_batches() under the write lock to avoid TOCTOU races.
-        self.running_batch_ids.write().await.insert(batch_id);
-
+        // The batch was already claimed (running set + user counter) by
+        // get_next_batches(), so there is nothing to mark here.
         log::info!(
             "Currently {} bots running",
             self.number_of_bots_running().await
@@ -498,31 +499,37 @@ impl QuickStatements {
         rows.first().cloned() // None if user not found (legitimate)
     }
 
+    /// Returns the OAuth credentials for a batch, or `Ok(None)` if the batch has none.
+    /// DB and decoding errors are propagated: they must not be mistaken for "no OAuth",
+    /// or the caller would silently fall back to the global bot account.
     async fn get_oauth_for_batch(
         &self,
         batch_id: i64,
-    ) -> Option<wikibase::mediawiki::api::OAuthParams> {
+    ) -> QsResult<Option<wikibase::mediawiki::api::OAuthParams>> {
         let auth_db = "s53220__quickstatements_auth";
         let sql = format!(
             r#"SELECT serialized_json FROM {}.batch_oauth WHERE batch_id=:batch_id"#,
             auth_db
         );
 
-        let first = self
+        let rows = self
             .pool
             .get_conn()
-            .await
-            .ok()?
+            .await?
             .exec_iter(sql, params! {batch_id})
-            .await
-            .ok()?
+            .await?
             .map_and_drop(from_row::<String>)
-            .await
-            .ok()?
-            .first()
-            .cloned()?;
-        let j = serde_json::from_str(&first).ok()?;
-        Some(wikibase::mediawiki::api::OAuthParams::new_from_json(&j))
+            .await?;
+        let first = match rows.first() {
+            Some(first) => first,
+            None => return Ok(None),
+        };
+        let j = serde_json::from_str(first).map_err(|e| {
+            QsError::ConfigError(format!("Corrupt OAuth JSON for batch #{}: {}", batch_id, e))
+        })?;
+        Ok(Some(wikibase::mediawiki::api::OAuthParams::new_from_json(
+            &j,
+        )))
     }
 
     pub async fn set_bot_api_auth(
@@ -530,7 +537,11 @@ impl QuickStatements {
         mw_api: &mut wikibase::mediawiki::api::Api,
         batch_id: i64,
     ) -> Result<(), String> {
-        match self.get_oauth_for_batch(batch_id).await {
+        let oauth_params = self
+            .get_oauth_for_batch(batch_id)
+            .await
+            .map_err(|e| format!("Cannot read OAuth for batch #{}: {}", batch_id, e))?;
+        match oauth_params {
             Some(oauth_params) => {
                 mw_api.set_oauth(Some(oauth_params));
                 Ok(())
@@ -569,6 +580,20 @@ impl QuickStatements {
                     .map_err(|e| format!("Bot login failed: {}", e))?;
                 Ok(())
             }
+        }
+    }
+
+    /// A QuickStatements with an unconnected pool, for testing DB-free methods.
+    #[cfg(test)]
+    pub(crate) fn new_for_tests() -> Self {
+        let params = json!({"mysql":{"host":"127.0.0.1","schema":"s","user":"u","pass":"p"}});
+        Self {
+            pool: Self::create_mysql_pool(&params),
+            params,
+            running_batch_ids: Arc::new(RwLock::new(HashSet::new())),
+            user_counter: Arc::new(RwLock::new(HashMap::new())),
+            max_batches_per_user: 2,
+            verbose: false,
         }
     }
 }
@@ -628,17 +653,8 @@ mod tests {
         assert!(result);
     }
 
-    /// A QuickStatements with an unconnected pool, for testing DB-free methods.
     fn test_qs() -> QuickStatements {
-        let params = json!({"mysql":{"host":"127.0.0.1","schema":"s","user":"u","pass":"p"}});
-        QuickStatements {
-            pool: QuickStatements::create_mysql_pool(&params),
-            params,
-            running_batch_ids: Arc::new(RwLock::new(HashSet::new())),
-            user_counter: Arc::new(RwLock::new(HashMap::new())),
-            max_batches_per_user: 2,
-            verbose: false,
-        }
+        QuickStatements::new_for_tests()
     }
 
     #[tokio::test]
@@ -664,6 +680,46 @@ mod tests {
         qs.deactivate_batch_run(42, 1).await;
 
         assert_eq!(*qs.user_counter.read().await.get(&1).unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_claim_batches_claims_and_counts() {
+        let qs = test_qs();
+        let claimed = qs.claim_batches(vec![(10, 1), (11, 1), (20, 2)]).await;
+
+        assert_eq!(claimed, vec![(10, 1), (11, 1), (20, 2)]);
+        assert!(qs.running_batch_ids.read().await.contains(&10));
+        assert!(qs.running_batch_ids.read().await.contains(&11));
+        assert_eq!(*qs.user_counter.read().await.get(&1).unwrap(), 2);
+        assert_eq!(*qs.user_counter.read().await.get(&2).unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_claim_batches_skips_running_and_respects_user_limit() {
+        let qs = test_qs();
+        qs.running_batch_ids.write().await.insert(10_i64);
+
+        // Batch 10 is already running; user 1 may only get 2 of the remaining 3
+        let claimed = qs
+            .claim_batches(vec![(10, 1), (11, 1), (12, 1), (13, 1)])
+            .await;
+
+        assert_eq!(claimed, vec![(11, 1), (12, 1)]);
+        assert_eq!(*qs.user_counter.read().await.get(&1).unwrap(), 2);
+    }
+
+    // Claiming at selection time must balance with deactivation, even if the
+    // batch never starts (this used to leak user slots)
+    #[tokio::test]
+    async fn test_claim_then_deactivate_balances() {
+        let qs = test_qs();
+        let claimed = qs.claim_batches(vec![(10, 1)]).await;
+        assert_eq!(claimed, vec![(10, 1)]);
+
+        qs.deactivate_batch_run(10, 1).await;
+
+        assert!(!qs.running_batch_ids.read().await.contains(&10));
+        assert_eq!(*qs.user_counter.read().await.get(&1).unwrap(), 0);
     }
 
     #[tokio::test]

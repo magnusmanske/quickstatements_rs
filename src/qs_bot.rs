@@ -11,6 +11,11 @@ use std::sync::LazyLock;
 use std::time::Duration;
 use wikibase;
 
+/// Stop a batch when this many commands in a row fail: that indicates a systemic
+/// problem (e.g. revoked OAuth), not bad individual commands, and continuing
+/// would just burn every remaining command to ERROR.
+const MAX_CONSECUTIVE_COMMAND_ERRORS: u32 = 5;
+
 #[derive(Debug, Clone)]
 pub struct QuickStatementsBot {
     batch_id: Option<i64>,
@@ -23,6 +28,7 @@ pub struct QuickStatementsBot {
     current_property_id: Option<String>,
     throttled_delay_ms: u64,
     entity_revision: VecDeque<(String, usize)>,
+    consecutive_command_errors: u32,
 }
 
 impl QuickStatementsBot {
@@ -38,6 +44,7 @@ impl QuickStatementsBot {
             current_property_id: None,
             throttled_delay_ms: 5000,
             entity_revision: VecDeque::new(),
+            consecutive_command_errors: 0,
         }
     }
 
@@ -193,13 +200,36 @@ impl QuickStatementsBot {
                 // INIT and would be picked up again immediately, so surface it as a
                 // transient error to get the caller's backoff instead of hot-looping.
                 self.set_command_status("RUN", None, &mut command).await?;
-                if let Err(e) = self.execute_command(&mut command).await {
-                    log::error!(
-                        "Batch #{} command #{}: {}",
-                        self.batch_id.unwrap_or(0),
-                        command.id,
-                        e
-                    );
+                match self.execute_command(&mut command).await {
+                    Ok(_) => self.consecutive_command_errors = 0,
+                    Err(e) => {
+                        log::error!(
+                            "Batch #{} command #{}: {}",
+                            self.batch_id.unwrap_or(0),
+                            command.id,
+                            e
+                        );
+                        self.consecutive_command_errors += 1;
+                        if self.consecutive_command_errors >= MAX_CONSECUTIVE_COMMAND_ERRORS {
+                            log::error!(
+                                "Batch #{}: {} consecutive command errors, stopping batch",
+                                self.batch_id.unwrap_or(0),
+                                self.consecutive_command_errors
+                            );
+                            if let Some(batch_id) = self.batch_id {
+                                let _ = self
+                                    .config
+                                    .set_batch_status(
+                                        "ERROR",
+                                        "Too many consecutive command errors",
+                                        batch_id,
+                                        self.user_id,
+                                    )
+                                    .await;
+                            }
+                            return Ok(false);
+                        }
+                    }
                 }
                 self.log("[run] Command executed".to_string());
                 Ok(true)
@@ -686,12 +716,10 @@ impl QuickStatementsBot {
                 }
                 if let Some(s) = res["error"]["info"].as_str() {
                     command.json["meta"]["message"] = json!(s);
-                    // That qualifier already exists, return OK
-                    if RE_QUAL_OK.is_match(s) {
-                        return Ok(None);
-                    }
-                    // That reference already exists, return OK
-                    if RE_REF_OK.is_match(s) {
+                    // That qualifier/reference already exists: logically a success,
+                    // so keep LAST and the entity cache in sync like a normal success
+                    if RE_QUAL_OK.is_match(s) || RE_REF_OK.is_match(s) {
+                        self.reset_entities(&res, command);
                         return Ok(None);
                     }
                 }
@@ -734,5 +762,85 @@ impl QuickStatementsBot {
             ))?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_bot() -> QuickStatementsBot {
+        let config = Arc::new(QuickStatements::new_for_tests());
+        QuickStatementsBot::new(config, Some(1), 0)
+    }
+
+    #[test]
+    fn check_run_action_result_success_updates_last_state() {
+        let mut bot = test_bot();
+        let mut command = QuickStatementsCommand::new_from_json(
+            &json!({"action":"add","what":"statement","item":"Q5"}),
+        );
+        let res = json!({"success":1,"pageinfo":{"lastrevid":123}});
+
+        let result = bot.check_run_action_result(res, &HashMap::new(), &mut command);
+
+        assert_eq!(result, Ok(None));
+        assert_eq!(bot.last_state.last, Some("Q5".to_string()));
+        assert_eq!(bot.entity_revision.front(), Some(&("Q5".to_string(), 123)));
+    }
+
+    // "Already exists" API errors are logically a success and must update LAST
+    // like one, or a following LAST command works on the wrong entity
+    #[test]
+    fn check_run_action_result_existing_qualifier_updates_last_state() {
+        let mut bot = test_bot();
+        let mut command = QuickStatementsCommand::new_from_json(
+            &json!({"action":"add","what":"qualifier","item":"Q123"}),
+        );
+        let res = json!({"error":
+            {"info":"The statement has already a qualifier with hash deadbeef"}});
+
+        let result = bot.check_run_action_result(res, &HashMap::new(), &mut command);
+
+        assert_eq!(result, Ok(None));
+        assert_eq!(bot.last_state.last, Some("Q123".to_string()));
+    }
+
+    #[test]
+    fn check_run_action_result_existing_reference_updates_last_state() {
+        let mut bot = test_bot();
+        let mut command = QuickStatementsCommand::new_from_json(
+            &json!({"action":"add","what":"sources","item":"Q123"}),
+        );
+        let res = json!({"error":
+            {"info":"The statement has already a reference with hash deadbeef"}});
+
+        let result = bot.check_run_action_result(res, &HashMap::new(), &mut command);
+
+        assert_eq!(result, Ok(None));
+        assert_eq!(bot.last_state.last, Some("Q123".to_string()));
+    }
+
+    #[test]
+    fn check_run_action_result_other_error_is_fatal() {
+        let mut bot = test_bot();
+        let mut command = QuickStatementsCommand::new_from_json(&json!({"item":"Q123"}));
+        let res = json!({"error":{"code":"failed-save","info":"Some other error"}});
+
+        let result = bot.check_run_action_result(res, &HashMap::new(), &mut command);
+
+        assert!(result.is_err());
+        assert_eq!(bot.last_state.last, None);
+    }
+
+    #[test]
+    fn check_run_action_result_maxlag_is_retried() {
+        let mut bot = test_bot();
+        let mut command = QuickStatementsCommand::new_from_json(&json!({"item":"Q123"}));
+        let res = json!({"error":{"code":"maxlag","lag":3.2}});
+
+        let result = bot.check_run_action_result(res, &HashMap::new(), &mut command);
+
+        assert_eq!(result, Ok(Some(Duration::from_millis(5000))));
     }
 }

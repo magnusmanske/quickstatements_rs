@@ -77,7 +77,12 @@ impl QuickStatementsCommand {
             id: r.0,
             batch_id: r.1,
             num: r.2,
-            json: serde_json::from_str(&r.3).unwrap_or(json!({})),
+            // Must be a JSON object: `json["meta"]["status"] = ...` panics on
+            // arrays/strings/numbers (e.g. "[]" from PHP's json_encode)
+            json: serde_json::from_str(&r.3)
+                .ok()
+                .filter(Value::is_object)
+                .unwrap_or(json!({})),
             status: r.4.to_owned(),
             message: r.5.to_owned(),
             ts_change: r.6.to_owned(),
@@ -1117,6 +1122,26 @@ mod tests {
         );
         let cmd = QuickStatementsCommand::from_row(&row);
         assert_eq!(cmd.json, json!({}));
+    }
+
+    // Valid JSON that is not an object (e.g. "[]" from PHP's json_encode) must
+    // also fall back to an empty object, or later `json["meta"][...] = ...`
+    // assignments panic
+    #[test]
+    fn from_row_non_object_json() {
+        for bad in ["[]", "\"foo\"", "42", "null"] {
+            let row = (
+                1_i64,
+                2_i64,
+                3_i64,
+                bad.to_string(),
+                "INIT".to_string(),
+                "".to_string(),
+                "".to_string(),
+            );
+            let cmd = QuickStatementsCommand::from_row(&row);
+            assert_eq!(cmd.json, json!({}), "for input {}", bad);
+        }
     }
 
     #[test]

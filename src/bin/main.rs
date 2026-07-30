@@ -149,15 +149,23 @@ async fn command_bot(verbose: bool, config_file: &str) {
 fn seppuku(config: Arc<QuickStatements>, last_bot_run: Arc<Mutex<Instant>>) {
     tokio::spawn(async move {
         let result: Result<(), _> = std::panic::AssertUnwindSafe(async {
+            // Require two consecutive failed pings, so a single transient
+            // connection failure does not kill the process
+            let mut failed_pings = 0u32;
             loop {
                 let last = *last_bot_run.lock().await;
                 let idle = last.elapsed().as_secs() > MAX_INACTIVITY_BEFORE_SEPPUKU_SEC;
                 if idle && !config.db_ping().await {
-                    error!(
-                        "DB unreachable after {}s of inactivity — committing seppuku",
-                        MAX_INACTIVITY_BEFORE_SEPPUKU_SEC
-                    );
-                    std::process::exit(0);
+                    failed_pings += 1;
+                    if failed_pings >= 2 {
+                        error!(
+                            "DB unreachable after {}s of inactivity — committing seppuku",
+                            MAX_INACTIVITY_BEFORE_SEPPUKU_SEC
+                        );
+                        std::process::exit(1);
+                    }
+                } else {
+                    failed_pings = 0;
                 }
                 tokio::time::sleep(Duration::from_secs(MAX_INACTIVITY_BEFORE_SEPPUKU_SEC)).await;
             }
