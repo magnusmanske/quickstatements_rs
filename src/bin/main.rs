@@ -39,12 +39,13 @@ async fn run_bot_loop(mut bot: QuickStatementsBot) -> bool {
                 );
                 if consecutive_errors >= MAX_COMMAND_RETRIES {
                     error!(
-                        "Batch #{}: too many consecutive errors, stopping",
+                        "Batch #{}: too many consecutive errors, releasing batch",
                         bot.batch_id().unwrap_or(0)
                     );
+                    bot.release_batch("Too many consecutive errors").await;
                     return false;
                 }
-                // Back off before retrying: 1s, 4s, 9s
+                // Back off before retrying: 1s, 4s
                 let delay = consecutive_errors as u64 * consecutive_errors as u64 * 1_000;
                 tokio::time::sleep(Duration::from_millis(delay)).await;
             }
@@ -64,6 +65,12 @@ async fn start_batch(config: Arc<QuickStatements>, batch_id: i64, user_id: i64) 
         }
         Err(error) => {
             error!("Cannot start batch #{}: {}", batch_id, error);
+            // Mark the batch failed so it is not re-tried every cycle. If the DB
+            // itself is down this update fails, the batch stays RUN, and it will
+            // be picked up again once the DB is back.
+            let _ = config
+                .set_batch_status("ERROR", &error, batch_id, user_id)
+                .await;
         }
     }
 }
@@ -258,6 +265,7 @@ async fn command_debug_command(config_file: &str, command_id: i64) {
     let mut command = config
         .get_command_by_id(command_id)
         .await
+        .unwrap_or_else(|e| panic!("Cannot load command #{}: {}", command_id, e))
         .unwrap_or_else(|| panic!("Command #{} not found in database", command_id));
 
     println!("Command #{}:", command_id);

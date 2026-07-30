@@ -12,6 +12,9 @@ use std::fs::File;
 use std::sync::{Arc, RwLock};
 use wikibase::mediawiki::Api;
 
+/// Row layout of the `command` table: (id, batch_id, num, json, status, message, ts_change)
+type CommandRow = (i64, i64, i64, String, String, String, String);
+
 #[derive(Debug, Clone)]
 pub struct QuickStatements {
     params: Value,
@@ -127,7 +130,7 @@ impl QuickStatements {
         let ts = self.timestamp();
         conn.exec_drop(r#"UPDATE `batch` SET `status`="RUN",`message`="",`ts_last_change`=:ts WHERE id=:batch_id AND `status`!="TEST""#, params!{ts,batch_id}).await.ok()?;
         let ts = self.timestamp();
-        conn.exec_drop(r#"UPDATE `command` SET `status`="INIT",`message`="",`ts_change`=:ts WHERE `status`="RUN" AND `batch_id`=:batch_id"#, params!{ts,batch_id}).await.ok()
+        conn.exec_drop(r#"UPDATE `command` SET `status`="INIT",`message`="",`ts_change`=:ts WHERE `status` IN ("RUN","BLOCKED") AND `batch_id`=:batch_id"#, params!{ts,batch_id}).await.ok()
     }
 
     pub async fn reset_all_running_batches(&self) -> QsResult<()> {
@@ -284,10 +287,13 @@ impl QuickStatements {
         log::info!("Currently {} bots running", self.number_of_bots_running());
     }
 
+    /// Removes a batch from the running set and frees its per-user slot.
+    /// Idempotent: only adjusts the user counter if the batch was actually running,
+    /// so multiple deactivations (e.g. BLOCKED then STOP) can't leak slots.
     pub fn deactivate_batch_run(&self, batch_id: i64, user_id: i64) -> Option<()> {
-        // Remove batch from running set
-        self.running_batch_ids.write().unwrap().remove(&batch_id);
-        // Decrease user batch counter (saturating to avoid underflow)
+        if !self.running_batch_ids.write().unwrap().remove(&batch_id) {
+            return Some(());
+        }
         let user_counter = match self.user_counter.read().unwrap().get(&user_id) {
             Some(cnt) => *cnt,
             None => 0,
@@ -330,6 +336,8 @@ impl QuickStatements {
         batch_id: i64,
         user_id: i64,
     ) -> Option<()> {
+        // Free the in-memory slot first, so a failing DB update cannot leak it
+        self.deactivate_batch_run(batch_id, user_id);
         let ts = self.timestamp();
         let sql = r#"UPDATE `batch` SET `status`=:status,`message`=:message,`ts_last_change`=:ts WHERE id=:batch_id"#;
         self.pool
@@ -338,42 +346,38 @@ impl QuickStatements {
             .ok()?
             .exec_drop(sql, params! {status,message,ts,batch_id})
             .await
-            .ok()?;
-        self.deactivate_batch_run(batch_id, user_id)
+            .ok()
     }
 
-    pub async fn get_command_by_id(&self, command_id: i64) -> Option<QuickStatementsCommand> {
+    /// Runs a query against the `command` table and returns the first result.
+    /// DB errors are propagated, so callers can tell "no command" from "DB down".
+    async fn fetch_first_command(
+        &self,
+        sql: &str,
+        params: my::Params,
+    ) -> QsResult<Option<QuickStatementsCommand>> {
+        let rows = self
+            .pool
+            .get_conn()
+            .await?
+            .exec_iter(sql, params)
+            .await?
+            .map_and_drop(from_row::<CommandRow>)
+            .await?;
+        Ok(rows.first().map(QuickStatementsCommand::from_row))
+    }
+
+    pub async fn get_command_by_id(
+        &self,
+        command_id: i64,
+    ) -> QsResult<Option<QuickStatementsCommand>> {
         let sql = r#"SELECT id,batch_id,num,json,`status`,message,ts_change FROM command WHERE id=:command_id"#;
-        self.pool
-            .get_conn()
-            .await
-            .ok()?
-            .exec_iter(sql, params! {command_id})
-            .await
-            .ok()?
-            .map_and_drop(from_row::<(i64, i64, i64, String, String, String, String)>)
-            .await
-            .ok()?
-            .iter()
-            .map(QuickStatementsCommand::from_row)
-            .next()
+        self.fetch_first_command(sql, params! {command_id}).await
     }
 
-    pub async fn get_next_command(&self, batch_id: i64) -> Option<QuickStatementsCommand> {
+    pub async fn get_next_command(&self, batch_id: i64) -> QsResult<Option<QuickStatementsCommand>> {
         let sql = r#"SELECT id,batch_id,num,json,`status`,message,ts_change FROM command WHERE batch_id=:batch_id AND status IN ('INIT') ORDER BY num LIMIT 1"#;
-        self.pool
-            .get_conn()
-            .await
-            .ok()?
-            .exec_iter(sql, params! {batch_id})
-            .await
-            .ok()?
-            .map_and_drop(from_row::<(i64, i64, i64, String, String, String, String)>)
-            .await
-            .ok()?
-            .iter()
-            .map(QuickStatementsCommand::from_row)
-            .next()
+        self.fetch_first_command(sql, params! {batch_id}).await
     }
 
     pub async fn set_command_status(
@@ -581,37 +585,52 @@ mod tests {
         assert!(result);
     }
 
+    /// A QuickStatements with an unconnected pool, for testing DB-free methods.
+    fn test_qs() -> QuickStatements {
+        let params = json!({"mysql":{"host":"127.0.0.1","schema":"s","user":"u","pass":"p"}});
+        QuickStatements {
+            pool: QuickStatements::create_mysql_pool(&params),
+            params,
+            running_batch_ids: Arc::new(RwLock::new(HashSet::new())),
+            user_counter: Arc::new(RwLock::new(HashMap::new())),
+            max_batches_per_user: 2,
+            verbose: false,
+        }
+    }
+
     #[test]
     fn test_deactivate_batch_run_removes_batch_id() {
-        // Create a minimal QuickStatements-like setup using the shared fields
-        let running_batch_ids = Arc::new(RwLock::new(HashSet::new()));
-        let user_counter = Arc::new(RwLock::new(HashMap::new()));
+        let qs = test_qs();
+        qs.running_batch_ids.write().unwrap().insert(42_i64);
+        qs.user_counter.write().unwrap().insert(1_i64, 1_i64);
 
-        // Simulate set_batch_running
-        running_batch_ids.write().unwrap().insert(42_i64);
-        user_counter.write().unwrap().insert(1_i64, 1_i64);
+        qs.deactivate_batch_run(42, 1);
 
-        assert!(running_batch_ids.read().unwrap().contains(&42));
-        assert_eq!(*user_counter.read().unwrap().get(&1).unwrap(), 1);
+        assert!(!qs.running_batch_ids.read().unwrap().contains(&42));
+        assert_eq!(*qs.user_counter.read().unwrap().get(&1).unwrap(), 0);
+    }
 
-        // Simulate deactivate_batch_run logic (same as the method)
-        running_batch_ids.write().unwrap().remove(&42);
-        let cnt = *user_counter.read().unwrap().get(&1).unwrap_or(&0);
-        user_counter.write().unwrap().insert(1, (cnt - 1).max(0));
+    #[test]
+    fn test_deactivate_batch_run_is_idempotent() {
+        let qs = test_qs();
+        qs.running_batch_ids.write().unwrap().insert(42_i64);
+        qs.user_counter.write().unwrap().insert(1_i64, 2_i64);
 
-        assert!(!running_batch_ids.read().unwrap().contains(&42));
-        assert_eq!(*user_counter.read().unwrap().get(&1).unwrap(), 0);
+        // Second call must not decrement the counter again
+        qs.deactivate_batch_run(42, 1);
+        qs.deactivate_batch_run(42, 1);
+
+        assert_eq!(*qs.user_counter.read().unwrap().get(&1).unwrap(), 1);
     }
 
     #[test]
     fn test_deactivate_batch_run_no_underflow() {
-        // When user_counter is already 0, it should not underflow
-        let user_counter = Arc::new(RwLock::new(HashMap::new()));
-        user_counter.write().unwrap().insert(1_i64, 0_i64);
+        let qs = test_qs();
+        qs.running_batch_ids.write().unwrap().insert(42_i64);
+        qs.user_counter.write().unwrap().insert(1_i64, 0_i64);
 
-        let cnt = *user_counter.read().unwrap().get(&1).unwrap_or(&0);
-        user_counter.write().unwrap().insert(1, (cnt - 1).max(0));
+        qs.deactivate_batch_run(42, 1);
 
-        assert_eq!(*user_counter.read().unwrap().get(&1).unwrap(), 0);
+        assert_eq!(*qs.user_counter.read().unwrap().get(&1).unwrap(), 0);
     }
 }

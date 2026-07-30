@@ -78,6 +78,17 @@ impl QuickStatementsBot {
         self.batch_id
     }
 
+    /// Gives up on this batch after repeated transient failures: frees its slot
+    /// and puts it back in the queue, so it will be picked up again later.
+    pub async fn release_batch(&self, message: &str) {
+        if let Some(batch_id) = self.batch_id {
+            let _ = self
+                .config
+                .set_batch_status("INIT", message, batch_id, self.user_id)
+                .await;
+        }
+    }
+
     pub fn set_mw_api(&mut self, mw_api: wikibase::mediawiki::api::Api) {
         self.mw_api = Some(mw_api);
     }
@@ -189,8 +200,7 @@ impl QuickStatementsBot {
         match self.batch_id {
             Some(batch_id) => {
                 self.config.check_batch_not_stopped(batch_id).await?;
-                let result = self.config.get_next_command(batch_id).await;
-                Ok(result)
+                self.config.get_next_command(batch_id).await
             }
             None => Err(QsError::NoMatchSetError),
         }
@@ -462,9 +472,10 @@ impl QuickStatementsBot {
                     if let Err(e) = self.entities.set_entity_from_json(entity_json) {
                         log::error!("Failed to set entity from JSON for {}: {}", q, e);
                     }
+                    // The full entity is now cached; drop any revision pin so the next
+                    // load uses the cache instead of an anonymous fetch from a possibly
+                    // lagging replica (which may not even know a new entity yet).
                     self.entity_revision.retain(|er| er.0 != q);
-                    self.entity_revision.push_front((q.to_owned(), 0));
-                    self.entity_revision.truncate(5);
                 }
             }
         }
@@ -535,6 +546,9 @@ impl QuickStatementsBot {
             self.log("[run_action] Pre  post_query_api_json_mut".to_string());
             let res = match mw_api.post_query_api_json_mut(&params).await {
                 Ok(x) => x,
+                // Usually an HTML rate-limit page, i.e. the edit was rejected. If the
+                // edit was applied and only the response was lost, this retry may
+                // duplicate it; MediaWiki offers no idempotency token to prevent that.
                 Err(wikibase::mediawiki::MediaWikiError::Serde(_))
                     if json_retries < MAX_JSON_RETRIES =>
                 {
@@ -647,15 +661,15 @@ impl QuickStatementsBot {
         }
     }
 
+    // LAST / LAST_FORM / LAST_SENSE are maintained by reset_entities() from the
+    // API response; setting them here as well would overwrite e.g. a freshly
+    // created entity ID with None.
     async fn set_command_status(
-        &mut self,
+        &self,
         status: &str,
         message: Option<&str>,
         command: &mut QuickStatementsCommand,
     ) -> Result<(), String> {
-        if status == "DONE" {
-            self.last_state.last = self.current_entity_id.clone();
-        }
         if self.batch_id.is_none() {
             return Ok(());
         }
