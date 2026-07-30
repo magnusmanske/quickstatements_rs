@@ -9,7 +9,8 @@ use mysql_async::prelude::*;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use wikibase::mediawiki::Api;
 
 /// Row layout of the `command` table: (id, batch_id, num, json, status, message, ts_change)
@@ -116,11 +117,8 @@ impl QuickStatements {
             .cloned()
     }
 
-    pub fn number_of_bots_running(&self) -> usize {
-        self.running_batch_ids
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
+    pub async fn number_of_bots_running(&self) -> usize {
+        self.running_batch_ids.read().await.len()
     }
 
     pub fn timestamp(&self) -> String {
@@ -243,15 +241,8 @@ impl QuickStatements {
             }
         };
 
-        let running = self
-            .running_batch_ids
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-        let mut user_counts: HashMap<i64, i64> = self
-            .user_counter
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let running = self.running_batch_ids.read().await;
+        let mut user_counts: HashMap<i64, i64> = self.user_counter.read().await.clone();
         let mut ret = vec![];
         for (id, user_id) in results {
             if running.contains(&id) {
@@ -289,49 +280,47 @@ impl QuickStatements {
         }
 
         // Increase user batch counter
-        self.running_batch_ids
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(batch_id);
+        self.running_batch_ids.write().await.insert(batch_id);
         let user_counter = self
             .user_counter
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .await
             .get(&user_id)
             .copied()
             .unwrap_or(0);
         self.user_counter
             .write()
-            .unwrap_or_else(|e| e.into_inner())
+            .await
             .insert(user_id, user_counter + 1);
 
-        log::info!("Currently {} bots running", self.number_of_bots_running());
+        log::info!(
+            "Currently {} bots running",
+            self.number_of_bots_running().await
+        );
     }
 
     /// Removes a batch from the running set and frees its per-user slot.
     /// Idempotent: only adjusts the user counter if the batch was actually running,
     /// so multiple deactivations (e.g. BLOCKED then STOP) can't leak slots.
-    pub fn deactivate_batch_run(&self, batch_id: i64, user_id: i64) -> Option<()> {
-        if !self
-            .running_batch_ids
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&batch_id)
-        {
+    pub async fn deactivate_batch_run(&self, batch_id: i64, user_id: i64) -> Option<()> {
+        if !self.running_batch_ids.write().await.remove(&batch_id) {
             return Some(());
         }
         let user_counter = self
             .user_counter
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .await
             .get(&user_id)
             .copied()
             .unwrap_or(0);
         self.user_counter
             .write()
-            .unwrap_or_else(|e| e.into_inner())
+            .await
             .insert(user_id, (user_counter - 1).max(0));
-        log::info!("Currently {} bots running", self.number_of_bots_running());
+        log::info!(
+            "Currently {} bots running",
+            self.number_of_bots_running().await
+        );
         Some(())
     }
 
@@ -366,7 +355,7 @@ impl QuickStatements {
         user_id: i64,
     ) -> Option<()> {
         // Free the in-memory slot first, so a failing DB update cannot leak it
-        self.deactivate_batch_run(batch_id, user_id);
+        self.deactivate_batch_run(batch_id, user_id).await;
         let ts = self.timestamp();
         let sql = r#"UPDATE `batch` SET `status`=:status,`message`=:message,`ts_last_change`=:ts WHERE id=:batch_id"#;
         self.pool
@@ -637,39 +626,39 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_deactivate_batch_run_removes_batch_id() {
+    #[tokio::test]
+    async fn test_deactivate_batch_run_removes_batch_id() {
         let qs = test_qs();
-        qs.running_batch_ids.write().unwrap().insert(42_i64);
-        qs.user_counter.write().unwrap().insert(1_i64, 1_i64);
+        qs.running_batch_ids.write().await.insert(42_i64);
+        qs.user_counter.write().await.insert(1_i64, 1_i64);
 
-        qs.deactivate_batch_run(42, 1);
+        qs.deactivate_batch_run(42, 1).await;
 
-        assert!(!qs.running_batch_ids.read().unwrap().contains(&42));
-        assert_eq!(*qs.user_counter.read().unwrap().get(&1).unwrap(), 0);
+        assert!(!qs.running_batch_ids.read().await.contains(&42));
+        assert_eq!(*qs.user_counter.read().await.get(&1).unwrap(), 0);
     }
 
-    #[test]
-    fn test_deactivate_batch_run_is_idempotent() {
+    #[tokio::test]
+    async fn test_deactivate_batch_run_is_idempotent() {
         let qs = test_qs();
-        qs.running_batch_ids.write().unwrap().insert(42_i64);
-        qs.user_counter.write().unwrap().insert(1_i64, 2_i64);
+        qs.running_batch_ids.write().await.insert(42_i64);
+        qs.user_counter.write().await.insert(1_i64, 2_i64);
 
         // Second call must not decrement the counter again
-        qs.deactivate_batch_run(42, 1);
-        qs.deactivate_batch_run(42, 1);
+        qs.deactivate_batch_run(42, 1).await;
+        qs.deactivate_batch_run(42, 1).await;
 
-        assert_eq!(*qs.user_counter.read().unwrap().get(&1).unwrap(), 1);
+        assert_eq!(*qs.user_counter.read().await.get(&1).unwrap(), 1);
     }
 
-    #[test]
-    fn test_deactivate_batch_run_no_underflow() {
+    #[tokio::test]
+    async fn test_deactivate_batch_run_no_underflow() {
         let qs = test_qs();
-        qs.running_batch_ids.write().unwrap().insert(42_i64);
-        qs.user_counter.write().unwrap().insert(1_i64, 0_i64);
+        qs.running_batch_ids.write().await.insert(42_i64);
+        qs.user_counter.write().await.insert(1_i64, 0_i64);
 
-        qs.deactivate_batch_run(42, 1);
+        qs.deactivate_batch_run(42, 1).await;
 
-        assert_eq!(*qs.user_counter.read().unwrap().get(&1).unwrap(), 0);
+        assert_eq!(*qs.user_counter.read().await.get(&1).unwrap(), 0);
     }
 }

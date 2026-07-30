@@ -8,8 +8,9 @@ use quickstatements::qs_server;
 use serde_json::json;
 use std::io;
 use std::io::prelude::*;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -131,7 +132,7 @@ async fn command_bot(verbose: bool, config_file: &str) {
     loop {
         let started = run_bot(config.clone()).await;
         if started > 0 {
-            *last_bot_run.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+            *last_bot_run.lock().await = Instant::now();
         }
         tokio::time::sleep(Duration::from_millis(SLEEP_BETWEEN_BOT_RUNS_MS)).await;
     }
@@ -142,7 +143,7 @@ async fn command_bot(verbose: bool, config_file: &str) {
 fn seppuku(config: Arc<QuickStatements>, last_bot_run: Arc<Mutex<Instant>>) {
     tokio::spawn(async move {
         loop {
-            let last = *last_bot_run.lock().unwrap_or_else(|e| e.into_inner());
+            let last = *last_bot_run.lock().await;
             let idle = last.elapsed().as_secs() > MAX_INACTIVITY_BEFORE_SEPPUKU_SEC;
             if idle && !config.db_ping().await {
                 error!(

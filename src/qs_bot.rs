@@ -171,7 +171,10 @@ impl QuickStatementsBot {
                 }
                 // Permanent: batch was stopped, or no batch_id set
                 if let Some(batch_id) = self.batch_id {
-                    let _ = self.config.deactivate_batch_run(batch_id, self.user_id);
+                    let _ = self
+                        .config
+                        .deactivate_batch_run(batch_id, self.user_id)
+                        .await;
                 }
                 return Ok(false);
             }
