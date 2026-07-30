@@ -566,10 +566,12 @@ async fn reset_error_commands(qs: &QuickStatements, batch_id: i64) -> i64 {
 // ---- V1 / CSV import helpers ----
 
 async fn import_v1(data: &str, compress: bool) -> Value {
-    let lines: Vec<&str> = if data.contains('\n') {
-        data.split('\n').collect()
-    } else {
+    // || is the primary command separator (PHP-compatible), newlines are secondary.
+    // Split by || first, then flatten any newlines within each segment.
+    let lines: Vec<&str> = if data.contains("||") {
         data.split("||").collect()
+    } else {
+        data.split('\n').collect()
     };
 
     let mut parsers = vec![];

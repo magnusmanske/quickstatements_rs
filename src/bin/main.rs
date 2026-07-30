@@ -1,4 +1,5 @@
 use clap::Parser;
+use futures::FutureExt;
 use log::{error, info};
 use quickstatements::qs_bot::QuickStatementsBot;
 use quickstatements::qs_command::QuickStatementsCommand;
@@ -147,17 +148,30 @@ async fn command_bot(verbose: bool, config_file: &str) {
 /// This does NOT exit just because the bot is idle.
 fn seppuku(config: Arc<QuickStatements>, last_bot_run: Arc<Mutex<Instant>>) {
     tokio::spawn(async move {
-        loop {
-            let last = *last_bot_run.lock().await;
-            let idle = last.elapsed().as_secs() > MAX_INACTIVITY_BEFORE_SEPPUKU_SEC;
-            if idle && !config.db_ping().await {
-                error!(
-                    "DB unreachable after {}s of inactivity — committing seppuku",
-                    MAX_INACTIVITY_BEFORE_SEPPUKU_SEC
-                );
-                std::process::exit(0);
+        let result: Result<(), _> = std::panic::AssertUnwindSafe(async {
+            loop {
+                let last = *last_bot_run.lock().await;
+                let idle = last.elapsed().as_secs() > MAX_INACTIVITY_BEFORE_SEPPUKU_SEC;
+                if idle && !config.db_ping().await {
+                    error!(
+                        "DB unreachable after {}s of inactivity — committing seppuku",
+                        MAX_INACTIVITY_BEFORE_SEPPUKU_SEC
+                    );
+                    std::process::exit(0);
+                }
+                tokio::time::sleep(Duration::from_secs(MAX_INACTIVITY_BEFORE_SEPPUKU_SEC)).await;
             }
-            tokio::time::sleep(Duration::from_secs(MAX_INACTIVITY_BEFORE_SEPPUKU_SEC)).await;
+        })
+        .catch_unwind()
+        .await;
+        if let Err(e) = result {
+            let msg = e
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| e.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_string());
+            error!("Seppuku monitor panicked: {} — exiting", msg);
+            std::process::exit(1);
         }
     });
 }

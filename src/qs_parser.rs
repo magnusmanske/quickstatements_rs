@@ -588,8 +588,8 @@ impl QuickStatementsParser {
             return None;
         }
         if first.starts_with('-') {
-            let (_, remain) = first.split_at(1);
-            *first = remain.trim().to_string();
+            // Use char-aware slicing instead of split_at (which operates on bytes)
+            *first = first['-'.len_utf8()..].trim().to_string();
             return Some(CommandModifier::Remove);
         }
         None

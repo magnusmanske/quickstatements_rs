@@ -139,6 +139,10 @@ impl QuickStatements {
         let mut conn = self.pool.get_conn().await?;
         let ts = self.timestamp();
         conn.exec_drop(r#"UPDATE `batch` SET `status`="INIT",`message`="",`ts_last_change`=:ts WHERE `status`="RUN""#, params!{ts}).await?;
+        // Also reset any commands that were left mid-execution (status=RUN) so
+        // they are picked up again instead of being lost forever.
+        let ts = self.timestamp();
+        conn.exec_drop(r#"UPDATE `command` SET `status`="INIT",`message`="",`ts_change`=:ts WHERE `status`="RUN""#, params!{ts}).await?;
         Ok(())
     }
 
@@ -153,7 +157,11 @@ impl QuickStatements {
             // A DB error must not fall back to the default site — that could
             // run the batch against the wrong wiki
             Err(e) => {
-                log::error!("get_api_url: cannot get site for batch #{}: {}", batch_id, e);
+                log::error!(
+                    "get_api_url: cannot get site for batch #{}: {}",
+                    batch_id,
+                    e
+                );
                 return None;
             }
         };
@@ -228,6 +236,8 @@ impl QuickStatements {
     }
 
     /// Returns all batches that can be started right now, respecting per-user limits.
+    /// Writes to the user counter under a write lock to prevent concurrent calls
+    /// from exceeding the per-user batch limit.
     pub async fn get_next_batches(&self) -> Vec<(i64, i64)> {
         let sql =
             "SELECT id,user FROM batch WHERE `status` IN ('INIT','RUN') ORDER BY `ts_last_change`";
@@ -250,7 +260,10 @@ impl QuickStatements {
         };
 
         let running = self.running_batch_ids.read().await;
-        let mut user_counts: HashMap<i64, i64> = self.user_counter.read().await.clone();
+        // Acquire the write lock for the entire read-modify-update so concurrent
+        // callers cannot both see the same counter value and start too many batches
+        // for a single user.
+        let mut user_counts = self.user_counter.write().await;
         let mut ret = vec![];
         for (id, user_id) in results {
             if running.contains(&id) {
@@ -287,15 +300,9 @@ impl QuickStatements {
             );
         }
 
-        // Increase user batch counter. The read-modify-write must happen under a
-        // single write lock, or concurrent (de)activations lose updates.
+        // Mark the batch as running. The user counter was already incremented
+        // by get_next_batches() under the write lock to avoid TOCTOU races.
         self.running_batch_ids.write().await.insert(batch_id);
-        *self
-            .user_counter
-            .write()
-            .await
-            .entry(user_id)
-            .or_insert(0) += 1;
 
         log::info!(
             "Currently {} bots running",
@@ -467,20 +474,28 @@ impl QuickStatements {
             auth_db
         );
 
-        let first = self
-            .pool
-            .get_conn()
-            .await
-            .ok()?
-            .exec_iter(sql, params! {user_id})
-            .await
-            .ok()?
-            .map_and_drop(from_row::<String>)
-            .await
-            .ok()?
-            .first()
-            .cloned()?;
-        Some(first)
+        let mut conn = match self.pool.get_conn().await {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!(
+                    "get_user_name: cannot get DB conn for user {}: {}",
+                    user_id,
+                    e
+                );
+                return None;
+            }
+        };
+        let rows: Vec<String> = match conn.exec_iter(sql, params! {user_id}).await {
+            Ok(result) => result
+                .map_and_drop(from_row::<String>)
+                .await
+                .unwrap_or_default(),
+            Err(e) => {
+                log::error!("get_user_name: query failed for user {}: {}", user_id, e);
+                return None;
+            }
+        };
+        rows.first().cloned() // None if user not found (legitimate)
     }
 
     async fn get_oauth_for_batch(

@@ -714,19 +714,23 @@ impl QuickStatementsBot {
             return Ok(());
         }
 
-        self.config
-            .set_command_status(command, status, message.map(|s| s.to_string()))
-            .await
-            .ok_or(format!(
-                "Can't config.set_command_status for batch #{}",
-                self.batch_id.unwrap() //Safe
-            ))?;
+        // Write LAST state first: if this DB write fails we bail out before
+        // updating the command status, keeping the two in sync. In the worst
+        // case the LAST state is stale but the command is still RUN/INIT and
+        // will be retried.
         self.config
             .set_last_state_for_batch(self.batch_id.unwrap(), &self.last_state) // unwrap safe
             .await
             .ok_or(format!(
                 "Can't config.set_last_state_for_batch for batch #{}",
-                self.batch_id.unwrap() //Safe
+                self.batch_id.unwrap()
+            ))?;
+        self.config
+            .set_command_status(command, status, message.map(|s| s.to_string()))
+            .await
+            .ok_or(format!(
+                "Can't config.set_command_status for batch #{}",
+                self.batch_id.unwrap() // Safe
             ))?;
 
         Ok(())

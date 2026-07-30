@@ -107,7 +107,7 @@ impl QuickStatementsCommand {
         Ok(json!({"action":"wbremoveclaims","claim":statement_id}))
     }
 
-    pub fn action_remove_sitelink(&mut self, item: &wikibase::Entity) -> Result<Value, String> {
+    pub fn action_remove_sitelink(&self, item: &wikibase::Entity) -> Result<Value, String> {
         let site = match self.json["site"].as_str() {
             Some(s) => s,
             None => return Err("site not set".to_string()),
@@ -121,11 +121,8 @@ impl QuickStatementsCommand {
         if !has_sitelink {
             return self.already_done();
         }
-        let tmp = self.json["value"].clone();
-        self.json["value"] = json!("");
-        let ret = self.action_set_sitelink(item);
-        self.json["value"] = tmp;
-        ret
+        // Pass empty title to action_set_sitelink_with_title instead of mutating self.json
+        self.action_set_sitelink_with_title(item, site, "")
     }
 
     pub fn action_set_sitelink(&self, item: &wikibase::Entity) -> Result<Value, String> {
@@ -137,7 +134,15 @@ impl QuickStatementsCommand {
             Some(s) => s.to_owned(),
             None => return Err("value (title) not set".to_string()),
         };
+        self.action_set_sitelink_with_title(item, site, title)
+    }
 
+    fn action_set_sitelink_with_title(
+        &self,
+        item: &wikibase::Entity,
+        site: &str,
+        title: &str,
+    ) -> Result<Value, String> {
         // Check if this same sitelink is already set
         if let Some(sitelinks) = item.sitelinks() {
             let title_underscores = title.replace(' ', "_");
@@ -323,7 +328,8 @@ impl QuickStatementsCommand {
             if !qual_value.is_string() && !qual_value.is_object() {
                 return Err("Incomplete command parameters: value.value".to_string());
             }
-            ret["value"] = json!(serde_json::to_string(&qual_value).map_err(|e| format!("{:?}", e))?);
+            ret["value"] =
+                json!(serde_json::to_string(&qual_value).map_err(|e| format!("{:?}", e))?);
         }
         Ok(ret)
     }
@@ -594,7 +600,7 @@ impl QuickStatementsCommand {
         }
     }
 
-    fn remove_from_entity(&mut self, item: &Option<wikibase::Entity>) -> Result<Value, String> {
+    fn remove_from_entity(&self, item: &Option<wikibase::Entity>) -> Result<Value, String> {
         let item = item
             .as_ref()
             .ok_or("remove_from_entity: item is None".to_string())?;
@@ -658,8 +664,7 @@ impl QuickStatementsCommand {
                 // A missing unit means "1" (unitless)
                 let unit2 = v2["unit"].as_str().unwrap_or("1");
                 Some(
-                    *v.amount() == v2["amount"].as_str()?.parse::<f64>().ok()?
-                        && v.unit() == unit2,
+                    *v.amount() == v2["amount"].as_str()?.parse::<f64>().ok()? && v.unit() == unit2,
                 )
             }
             wikibase::Value::StringValue(v) => Some(*v == v2.as_str()?),
@@ -859,7 +864,7 @@ mod tests {
 
     #[test]
     fn action_remove_sitelink() {
-        let mut c = QuickStatementsCommand::new_from_json(&json!({"site":"enwiki"}));
+        let c = QuickStatementsCommand::new_from_json(&json!({"site":"enwiki"}));
         let mut item = empty_test_item();
         item.set_sitelink(wikibase::SiteLink::new("enwiki", "Jimbo_Wales", vec![]));
         assert_eq!(
@@ -1748,7 +1753,7 @@ mod tests {
 
     #[test]
     fn action_remove_sitelink_restores_value() {
-        let mut c = QuickStatementsCommand::new_from_json(
+        let c = QuickStatementsCommand::new_from_json(
             &json!({"site":"enwiki","value":"Original Title"}),
         );
         let mut item = empty_test_item();
@@ -1913,7 +1918,7 @@ mod tests {
 
     #[test]
     fn action_remove_statement_from_entity() {
-        let mut c = QuickStatementsCommand::new_from_json(&json!({
+        let c = QuickStatementsCommand::new_from_json(&json!({
             "action":"remove",
             "what":"statement",
             "property":"P31",
@@ -1926,8 +1931,7 @@ mod tests {
 
     #[test]
     fn action_remove_bad_what() {
-        let mut c =
-            QuickStatementsCommand::new_from_json(&json!({"action":"remove","what":"label"}));
+        let c = QuickStatementsCommand::new_from_json(&json!({"action":"remove","what":"label"}));
         let result = c.remove_from_entity(&Some(empty_test_item()));
         assert!(result.is_err());
     }
@@ -2253,7 +2257,7 @@ mod tests {
 
     #[test]
     fn action_remove_sitelink_absent_already_done() {
-        let mut c = QuickStatementsCommand::new_from_json(&json!({"site":"enwiki","value":"Foo"}));
+        let c = QuickStatementsCommand::new_from_json(&json!({"site":"enwiki","value":"Foo"}));
         // Item has no enwiki sitelink: removal is a no-op, not an API error
         assert_eq!(
             c.action_remove_sitelink(&empty_test_item()),
