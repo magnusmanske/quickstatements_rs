@@ -332,12 +332,15 @@ fn action_get_batch(params: &ApiParams) -> Value {
 use mysql_async as my;
 use mysql_async::prelude::*;
 
+/// Row layout of the `batch` table:
+/// (id, name, user, site, status, message, last_item, ts_last_change)
+type BatchRow = (i64, String, i64, String, String, String, String, String);
+
 /// Get a single batch's metadata
 async fn get_batch_row(qs: &QuickStatements, batch_id: i64) -> Option<Value> {
     let sql = "SELECT id, `name`, `user`, site, `status`, message, last_item, ts_last_change FROM batch WHERE id=:batch_id";
     let mut conn = qs.get_db_conn().await.ok()?;
-    let rows: Vec<(i64, String, i64, String, String, String, String, String)> =
-        conn.exec(sql, my::params! {batch_id}).await.ok()?;
+    let rows: Vec<BatchRow> = conn.exec(sql, my::params! {batch_id}).await.ok()?;
     let row = rows.first()?;
 
     let user_name = qs.get_user_name(row.2).await.unwrap_or_default();
@@ -395,11 +398,10 @@ async fn get_batches(qs: &QuickStatements, user_filter: &str, limit: i64, offset
         (sql, my::params! { user_filter, limit, offset })
     };
 
-    let rows: Vec<(i64, String, i64, String, String, String, String, String)> =
-        match conn.exec(&sql, query_params).await {
-            Ok(r) => r,
-            Err(_) => return json!({}),
-        };
+    let rows: Vec<BatchRow> = match conn.exec(&sql, query_params).await {
+        Ok(r) => r,
+        Err(_) => return json!({}),
+    };
 
     let mut result = json!({});
     for row in &rows {
