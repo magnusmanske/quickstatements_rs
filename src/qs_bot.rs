@@ -181,7 +181,12 @@ impl QuickStatementsBot {
             Some(mut command) => {
                 self.log("[run] Executing command".to_string());
                 if let Err(e) = self.execute_command(&mut command).await {
-                    self.log(format!("[run] Command error: {}", e));
+                    log::error!(
+                        "Batch #{} command #{}: {}",
+                        self.batch_id.unwrap_or(0),
+                        command.id,
+                        e
+                    );
                 }
                 self.log("[run] Command executed".to_string());
                 Ok(true)
@@ -442,7 +447,8 @@ impl QuickStatementsBot {
             }
         }
 
-        if let Some(q) = command.json["item"].as_str() {
+        // Update LAST from command's item field, but only if it's a concrete entity ID.
+        let has_concrete_item = if let Some(q) = command.json["item"].as_str() {
             let upper = q.to_uppercase();
             if !matches!(upper.as_str(), "LAST" | "LAST_FORM" | "LAST_SENSE") {
                 self.log("[reset_entities] Start".to_string());
@@ -455,15 +461,26 @@ impl QuickStatementsBot {
                     self.entity_revision.truncate(5); // Keep only the last 5 around to save RAM
                 }
                 self.log("[reset_entities] End".to_string());
-                return;
+                true
+            } else {
+                false
             }
-        }
+        } else {
+            false
+        };
 
+        // Cache the full entity from the API response (e.g. wbeditentity).
+        // Even when a concrete item was already processed above, the response
+        // may carry a richer entity JSON that we still want to cache.
         match &res["entity"] {
             serde_json::Value::Null => {}
             entity_json => {
                 if let Some(q) = wikibase::entity_diff::EntityDiff::get_entity_id(entity_json) {
-                    self.last_state.last = Some(q.to_owned());
+                    // Don't overwrite LAST from entity response if we already set it
+                    // from the command, unless the entity ID actually changed.
+                    if !has_concrete_item {
+                        self.last_state.last = Some(q.to_owned());
+                    }
                     // CREATE / CREATE_LEXEME: clear LAST_FORM and LAST_SENSE
                     if command_action == "create" && !matches!(command_type, "form" | "sense") {
                         self.last_state.last_form = None;

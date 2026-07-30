@@ -117,7 +117,10 @@ impl QuickStatements {
     }
 
     pub fn number_of_bots_running(&self) -> usize {
-        self.running_batch_ids.read().unwrap().len()
+        self.running_batch_ids
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
 
     pub fn timestamp(&self) -> String {
@@ -240,8 +243,15 @@ impl QuickStatements {
             }
         };
 
-        let running = self.running_batch_ids.read().unwrap();
-        let mut user_counts: HashMap<i64, i64> = self.user_counter.read().unwrap().clone();
+        let running = self
+            .running_batch_ids
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut user_counts: HashMap<i64, i64> = self
+            .user_counter
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         let mut ret = vec![];
         for (id, user_id) in results {
             if running.contains(&id) {
@@ -271,17 +281,28 @@ impl QuickStatements {
     pub async fn set_batch_running(&self, batch_id: i64, user_id: i64) {
         log::info!("Starting batch #{} for user {}", batch_id, user_id);
 
-        let _ = self.reinitialize_open_batches().await;
+        if self.reinitialize_open_batches().await.is_none() {
+            log::warn!(
+                "Failed to reinitialize open batches for batch #{}",
+                batch_id
+            );
+        }
 
         // Increase user batch counter
-        self.running_batch_ids.write().unwrap().insert(batch_id);
-        let user_counter = match self.user_counter.read().unwrap().get(&user_id) {
-            Some(cnt) => *cnt,
-            None => 0,
-        };
+        self.running_batch_ids
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(batch_id);
+        let user_counter = self
+            .user_counter
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&user_id)
+            .copied()
+            .unwrap_or(0);
         self.user_counter
             .write()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(user_id, user_counter + 1);
 
         log::info!("Currently {} bots running", self.number_of_bots_running());
@@ -291,16 +312,24 @@ impl QuickStatements {
     /// Idempotent: only adjusts the user counter if the batch was actually running,
     /// so multiple deactivations (e.g. BLOCKED then STOP) can't leak slots.
     pub fn deactivate_batch_run(&self, batch_id: i64, user_id: i64) -> Option<()> {
-        if !self.running_batch_ids.write().unwrap().remove(&batch_id) {
+        if !self
+            .running_batch_ids
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&batch_id)
+        {
             return Some(());
         }
-        let user_counter = match self.user_counter.read().unwrap().get(&user_id) {
-            Some(cnt) => *cnt,
-            None => 0,
-        };
+        let user_counter = self
+            .user_counter
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&user_id)
+            .copied()
+            .unwrap_or(0);
         self.user_counter
             .write()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(user_id, (user_counter - 1).max(0));
         log::info!("Currently {} bots running", self.number_of_bots_running());
         Some(())
@@ -375,7 +404,10 @@ impl QuickStatements {
         self.fetch_first_command(sql, params! {command_id}).await
     }
 
-    pub async fn get_next_command(&self, batch_id: i64) -> QsResult<Option<QuickStatementsCommand>> {
+    pub async fn get_next_command(
+        &self,
+        batch_id: i64,
+    ) -> QsResult<Option<QuickStatementsCommand>> {
         let sql = r#"SELECT id,batch_id,num,json,`status`,message,ts_change FROM command WHERE batch_id=:batch_id AND status IN ('INIT') ORDER BY num LIMIT 1"#;
         self.fetch_first_command(sql, params! {batch_id}).await
     }
@@ -386,9 +418,13 @@ impl QuickStatements {
         new_status: &str,
         new_message: Option<String>,
     ) -> Option<()> {
-        command.json["meta"]["status"] = json!(new_status.trim().to_uppercase());
-
+        let status = new_status.trim().to_uppercase();
         let message = new_message.as_deref().unwrap_or("");
+
+        // Keep the in-memory struct fields in sync with the JSON blob.
+        command.status = status.clone();
+        command.message = message.to_string();
+        command.json["meta"]["status"] = json!(&status);
         command.json["meta"]["message"] = json!(message);
 
         let json = serde_json::to_string(&command.json).unwrap_or_else(|_| "{}".to_string());
@@ -400,7 +436,10 @@ impl QuickStatements {
             .get_conn()
             .await
             .ok()?
-            .exec_drop(sql, params! {ts,json,new_status,message,command_id})
+            .exec_drop(
+                sql,
+                params! {ts,json,"new_status"=>status,"message"=>message,"command_id"=>command_id},
+            )
             .await
             .ok()
     }

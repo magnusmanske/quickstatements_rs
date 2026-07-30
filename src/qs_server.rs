@@ -77,10 +77,7 @@ async fn serve_config(State(state): State<AppState>) -> Json<Value> {
 }
 
 // GET handler
-async fn api_handler(
-    State(state): State<AppState>,
-    Query(params): Query<ApiParams>,
-) -> Response {
+async fn api_handler(State(state): State<AppState>, Query(params): Query<ApiParams>) -> Response {
     handle_api(state, params).await
 }
 
@@ -211,14 +208,7 @@ async fn action_get_commands_from_batch(state: &AppState, params: &ApiParams) ->
         .unwrap_or(0);
     let filter = params.filter.as_deref().unwrap_or("");
 
-    let commands = get_commands(
-        &state.config,
-        batch_id,
-        start,
-        limit,
-        filter,
-    )
-    .await;
+    let commands = get_commands(&state.config, batch_id, start, limit, filter).await;
 
     json!({"status": "OK", "data": commands})
 }
@@ -311,11 +301,7 @@ fn action_get_token() -> Value {
 
 /// `action=reset_errors`
 async fn action_reset_errors(state: &AppState, params: &ApiParams) -> Value {
-    let batch_id: i64 = match params
-        .batch_id
-        .as_deref()
-        .and_then(|s| s.parse().ok())
-    {
+    let batch_id: i64 = match params.batch_id.as_deref().and_then(|s| s.parse().ok()) {
         Some(id) => id,
         None => return json!({"status": "ERROR: batch_id parameter required"}),
     };
@@ -350,10 +336,8 @@ use mysql_async::prelude::*;
 async fn get_batch_row(qs: &QuickStatements, batch_id: i64) -> Option<Value> {
     let sql = "SELECT id, `name`, `user`, site, `status`, message, last_item, ts_last_change FROM batch WHERE id=:batch_id";
     let mut conn = qs.get_db_conn().await.ok()?;
-    let rows: Vec<(i64, String, i64, String, String, String, String, String)> = conn
-        .exec(sql, my::params! {batch_id})
-        .await
-        .ok()?;
+    let rows: Vec<(i64, String, i64, String, String, String, String, String)> =
+        conn.exec(sql, my::params! {batch_id}).await.ok()?;
     let row = rows.first()?;
 
     let user_name = qs.get_user_name(row.2).await.unwrap_or_default();
@@ -372,7 +356,8 @@ async fn get_batch_row(qs: &QuickStatements, batch_id: i64) -> Option<Value> {
 
 /// Get command status counts for a batch
 async fn get_command_counts(qs: &QuickStatements, batch_id: i64) -> Value {
-    let sql = "SELECT `status`, COUNT(*) AS cnt FROM command WHERE batch_id=:batch_id GROUP BY `status`";
+    let sql =
+        "SELECT `status`, COUNT(*) AS cnt FROM command WHERE batch_id=:batch_id GROUP BY `status`";
     let mut counts = json!({
         "INIT": 0, "RUN": 0, "DONE": 0, "ERROR": 0, "BLOCKED": 0, "STOP": 0
     });
@@ -391,12 +376,7 @@ async fn get_command_counts(qs: &QuickStatements, batch_id: i64) -> Value {
 }
 
 /// Get list of batches, optionally filtered by user
-async fn get_batches(
-    qs: &QuickStatements,
-    user_filter: &str,
-    limit: i64,
-    offset: i64,
-) -> Value {
+async fn get_batches(qs: &QuickStatements, user_filter: &str, limit: i64, offset: i64) -> Value {
     let mut conn = match qs.get_db_conn().await {
         Ok(c) => c,
         Err(_) => return json!({}),
@@ -444,7 +424,9 @@ async fn get_batches(
     result
 }
 
-/// Get commands from a batch with pagination and optional status filter
+/// Get commands from a batch with pagination and optional status filter.
+/// Numeric and validated values are interpolated safely; the status filter is
+/// validated against a whitelist before being embedded in SQL.
 async fn get_commands(
     qs: &QuickStatements,
     batch_id: i64,
@@ -457,27 +439,31 @@ async fn get_commands(
         Err(_) => return json!([]),
     };
 
+    const VALID_STATUSES: &[&str] = &["INIT", "RUN", "DONE", "ERROR", "BLOCKED", "STOP"];
+
+    // Whitelist-validate filter statuses to prevent SQL injection.
     let filter_statuses: Vec<&str> = if filter.is_empty() {
         vec![]
     } else {
-        filter.split(',').map(|s| s.trim()).collect()
+        filter
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| VALID_STATUSES.contains(s))
+            .collect()
     };
 
+    // Safe: batch_id, start, limit are all i64 parsed by the caller.
     let mut sql = format!(
         "SELECT id, batch_id, num, json, `status`, message, ts_change FROM command WHERE batch_id={}",
         batch_id
     );
 
     if !filter_statuses.is_empty() {
-        let quoted: Vec<String> = filter_statuses
-            .iter()
-            .map(|s| format!("'{}'", s.replace('\'', "")))
-            .collect();
+        let quoted: Vec<String> = filter_statuses.iter().map(|s| format!("'{}'", s)).collect();
         sql += &format!(" AND `status` IN ({})", quoted.join(","));
     }
 
     sql += " ORDER BY num";
-
     if limit > 0 {
         sql += &format!(" LIMIT {}", limit);
     }
@@ -485,17 +471,16 @@ async fn get_commands(
         sql += &format!(" OFFSET {}", start);
     }
 
-    let rows: Vec<(i64, i64, i64, String, String, String, String)> =
-        match conn.exec(&sql, ()).await {
-            Ok(r) => r,
-            Err(_) => return json!([]),
-        };
+    let rows: Vec<(i64, i64, i64, String, String, String, String)> = match conn.exec(&sql, ()).await
+    {
+        Ok(r) => r,
+        Err(_) => return json!([]),
+    };
 
     let commands: Vec<Value> = rows
         .iter()
         .map(|row| {
-            let cmd_json: Value =
-                serde_json::from_str(&row.3).unwrap_or(json!({}));
+            let cmd_json: Value = serde_json::from_str(&row.3).unwrap_or(json!({}));
             json!({
                 "id": row.0,
                 "batch_id": row.1,
@@ -570,12 +555,10 @@ async fn reset_error_commands(qs: &QuickStatements, batch_id: i64) -> i64 {
     let ts = qs.timestamp();
     let sql = r#"UPDATE command SET `status`='INIT', message='', ts_change=:ts WHERE batch_id=:batch_id AND `status`='ERROR'"#;
     match qs.get_db_conn().await {
-        Ok(mut conn) => {
-            match conn.exec_iter(sql, my::params! {ts, batch_id}).await {
-                Ok(result) => result.affected_rows() as i64,
-                Err(_) => 0,
-            }
-        }
+        Ok(mut conn) => match conn.exec_iter(sql, my::params! {ts, batch_id}).await {
+            Ok(result) => result.affected_rows() as i64,
+            Err(_) => 0,
+        },
         Err(_) => 0,
     }
 }
