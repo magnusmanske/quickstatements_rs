@@ -1,5 +1,3 @@
-use serde_json::json;
-
 use clap::Parser;
 use log::{error, info};
 use quickstatements::qs_bot::QuickStatementsBot;
@@ -7,10 +5,14 @@ use quickstatements::qs_command::QuickStatementsCommand;
 use quickstatements::qs_config::QuickStatements;
 use quickstatements::qs_parser::QuickStatementsParser;
 use quickstatements::qs_server;
+use serde_json::json;
 use std::io;
 use std::io::prelude::*;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 const SLEEP_BETWEEN_BOT_RUNS_MS: u64 = 500;
 const MAX_INACTIVITY_BEFORE_SEPPUKU_SEC: u64 = 60;
@@ -202,7 +204,10 @@ async fn command_debug_command(config_file: &str, command_id: i64) {
     println!("  Batch:  {}", command.batch_id);
     println!("  Num:    {}", command.num);
     println!("  Status: {}", command.status);
-    println!("  JSON:   {}", serde_json::to_string_pretty(&command.json).unwrap());
+    println!(
+        "  JSON:   {}",
+        serde_json::to_string_pretty(&command.json).unwrap()
+    );
     println!();
 
     // Get the API URL for this batch's site

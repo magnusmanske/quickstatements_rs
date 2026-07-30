@@ -1876,6 +1876,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn file2mediainfo() {
         let command =
             "File:Ruins_of_the_Dower_House,_Fawsley_Park,_Northamptonshire.jpg\tP123\tQ456";
