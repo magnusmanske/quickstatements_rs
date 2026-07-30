@@ -101,20 +101,19 @@ impl QuickStatements {
         Some(self.params["set_maxlag"].as_u64().unwrap_or(5))
     }
 
-    pub async fn get_site_from_batch(&self, batch_id: i64) -> Option<String> {
+    /// Returns the site of a batch, or `Ok(None)` if the batch has no (usable) site.
+    /// DB errors are propagated, so callers can tell "no site" from "DB down".
+    pub async fn get_site_from_batch(&self, batch_id: i64) -> QsResult<Option<String>> {
         let sql = r#"SELECT site FROM batch WHERE id=:batch_id"#;
-        self.pool
+        let rows = self
+            .pool
             .get_conn()
-            .await
-            .ok()?
+            .await?
             .exec_iter(sql, params! {batch_id})
-            .await
-            .ok()?
-            .map_and_drop(from_row::<String>)
-            .await
-            .ok()?
-            .first()
-            .cloned()
+            .await?
+            .map_and_drop(from_row::<Option<String>>)
+            .await?;
+        Ok(rows.first().cloned().flatten().filter(|s| !s.is_empty()))
     }
 
     pub async fn number_of_bots_running(&self) -> usize {
@@ -129,7 +128,9 @@ impl QuickStatements {
     pub async fn restart_batch(&self, batch_id: i64) -> Option<()> {
         let mut conn = self.pool.get_conn().await.ok()?;
         let ts = self.timestamp();
-        conn.exec_drop(r#"UPDATE `batch` SET `status`="RUN",`message`="",`ts_last_change`=:ts WHERE id=:batch_id AND `status`!="TEST""#, params!{ts,batch_id}).await.ok()?;
+        // Only (re)start batches that are still INIT or RUN, so a user STOP issued
+        // between batch selection and this update is not overwritten.
+        conn.exec_drop(r#"UPDATE `batch` SET `status`="RUN",`message`="",`ts_last_change`=:ts WHERE id=:batch_id AND `status` IN ("INIT","RUN")"#, params!{ts,batch_id}).await.ok()?;
         let ts = self.timestamp();
         conn.exec_drop(r#"UPDATE `command` SET `status`="INIT",`message`="",`ts_change`=:ts WHERE `status` IN ("RUN","BLOCKED") AND `batch_id`=:batch_id"#, params!{ts,batch_id}).await.ok()
     }
@@ -143,11 +144,18 @@ impl QuickStatements {
 
     pub async fn get_api_url(&self, batch_id: i64) -> Option<&str> {
         let site: String = match self.get_site_from_batch(batch_id).await {
-            Some(site) => site,
-            None => match self.params["config"]["site"].as_str() {
+            Ok(Some(site)) => site,
+            // No/empty site set for this batch: use the configured default
+            Ok(None) => match self.params["config"]["site"].as_str() {
                 Some(s) => s.to_string(),
                 None => return None,
             },
+            // A DB error must not fall back to the default site — that could
+            // run the batch against the wrong wiki
+            Err(e) => {
+                log::error!("get_api_url: cannot get site for batch #{}: {}", batch_id, e);
+                return None;
+            }
         };
         self.get_api_for_site(&site)
     }
@@ -279,19 +287,15 @@ impl QuickStatements {
             );
         }
 
-        // Increase user batch counter
+        // Increase user batch counter. The read-modify-write must happen under a
+        // single write lock, or concurrent (de)activations lose updates.
         self.running_batch_ids.write().await.insert(batch_id);
-        let user_counter = self
+        *self
             .user_counter
-            .read()
-            .await
-            .get(&user_id)
-            .copied()
-            .unwrap_or(0);
-        self.user_counter
             .write()
             .await
-            .insert(user_id, user_counter + 1);
+            .entry(user_id)
+            .or_insert(0) += 1;
 
         log::info!(
             "Currently {} bots running",
@@ -306,17 +310,13 @@ impl QuickStatements {
         if !self.running_batch_ids.write().await.remove(&batch_id) {
             return Some(());
         }
-        let user_counter = self
-            .user_counter
-            .read()
-            .await
-            .get(&user_id)
-            .copied()
-            .unwrap_or(0);
-        self.user_counter
-            .write()
-            .await
-            .insert(user_id, (user_counter - 1).max(0));
+        // Read-modify-write under a single write lock, or concurrent
+        // deactivations lose updates and leak user slots.
+        {
+            let mut user_counter = self.user_counter.write().await;
+            let count = user_counter.entry(user_id).or_insert(0);
+            *count = (*count - 1).max(0);
+        }
         log::info!(
             "Currently {} bots running",
             self.number_of_bots_running().await

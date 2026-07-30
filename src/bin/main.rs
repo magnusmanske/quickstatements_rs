@@ -66,12 +66,17 @@ async fn start_batch(config: Arc<QuickStatements>, batch_id: i64, user_id: i64) 
         }
         Err(error) => {
             error!("Cannot start batch #{}: {}", batch_id, error);
-            // Mark the batch failed so it is not re-tried every cycle. If the DB
-            // itself is down this update fails, the batch stays RUN, and it will
-            // be picked up again once the DB is back.
-            let _ = config
-                .set_batch_status("ERROR", &error, batch_id, user_id)
-                .await;
+            // Mark the batch failed so it is not re-tried every cycle — but only
+            // if it is still INIT/RUN; a batch the user stopped in the meantime
+            // keeps its status. If the DB itself is down this check fails, the
+            // batch stays as-is, and it will be picked up again once the DB is back.
+            if config.check_batch_not_stopped(batch_id).await.is_ok() {
+                let _ = config
+                    .set_batch_status("ERROR", &error, batch_id, user_id)
+                    .await;
+            } else {
+                let _ = config.deactivate_batch_run(batch_id, user_id).await;
+            }
         }
     }
 }

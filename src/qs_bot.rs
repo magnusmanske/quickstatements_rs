@@ -49,6 +49,12 @@ impl QuickStatementsBot {
                     .restart_batch(batch_id)
                     .await
                     .ok_or("Can't (re)start batch".to_string())?;
+                // restart_batch only touches INIT/RUN batches; if the user stopped
+                // the batch in the meantime, its status is unchanged and we bail out.
+                config
+                    .check_batch_not_stopped(batch_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 self.last_state = config.get_last_state_from_batch(batch_id).await;
                 match config.get_api_url(batch_id).await {
                     Some(url) => {
@@ -183,6 +189,10 @@ impl QuickStatementsBot {
         match command {
             Some(mut command) => {
                 self.log("[run] Executing command".to_string());
+                // Mark the command RUN here: if this write fails, the command stays
+                // INIT and would be picked up again immediately, so surface it as a
+                // transient error to get the caller's backoff instead of hot-looping.
+                self.set_command_status("RUN", None, &mut command).await?;
                 if let Err(e) = self.execute_command(&mut command).await {
                     log::error!(
                         "Batch #{} command #{}: {}",
@@ -402,13 +412,23 @@ impl QuickStatementsBot {
             return Err("User is blocked".to_string());
         }
         self.log("[execute_command] Init".to_string());
-        self.set_command_status("RUN", None, command).await?;
         self.current_property_id = None;
         self.current_entity_id = None;
 
         self.log("[execute_command] Prep".to_string());
-        command.insert_last_item_into_sources_and_qualifiers(&self.last_state)?;
-        let main_item = self.prepare_to_execute(command).await?;
+        // Preparation failures (unresolvable LAST, entity fails to load, ...) must
+        // mark the command ERROR too, or it stays RUN in the DB forever.
+        if let Err(e) = command.insert_last_item_into_sources_and_qualifiers(&self.last_state) {
+            self.set_command_status("ERROR", Some(&e), command).await?;
+            return Err(e);
+        }
+        let main_item = match self.prepare_to_execute(command).await {
+            Ok(main_item) => main_item,
+            Err(e) => {
+                self.set_command_status("ERROR", Some(&e), command).await?;
+                return Err(e);
+            }
+        };
         let action = command.action_to_execute(&main_item);
 
         self.log("[execute_command] Go".to_string());

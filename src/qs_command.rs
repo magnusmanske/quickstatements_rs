@@ -108,6 +108,19 @@ impl QuickStatementsCommand {
     }
 
     pub fn action_remove_sitelink(&mut self, item: &wikibase::Entity) -> Result<Value, String> {
+        let site = match self.json["site"].as_str() {
+            Some(s) => s,
+            None => return Err("site not set".to_string()),
+        };
+        // Removing a sitelink that isn't there is a no-op, not an API error
+        let has_sitelink = item
+            .sitelinks()
+            .as_ref()
+            .map(|sitelinks| sitelinks.iter().any(|sl| sl.site() == site))
+            .unwrap_or(false);
+        if !has_sitelink {
+            return self.already_done();
+        }
         let tmp = self.json["value"].clone();
         self.json["value"] = json!("");
         let ret = self.action_set_sitelink(item);
@@ -148,25 +161,34 @@ impl QuickStatementsCommand {
     }
 
     fn action_add_statement(&self, item: &wikibase::Entity) -> Result<Value, String> {
-        if let Some(_statement_id) = self.get_statement_id(item)? {
-            //println!("Such a statement already exists as {}", &statement_id);
-            return self.already_done();
+        // "!P123"-style commands force a new statement even if an identical one exists
+        let force_new = self.json["new_statement"].as_i64().unwrap_or(0) != 0
+            || self.json["new_statement"].as_bool().unwrap_or(false);
+        if !force_new {
+            if let Some(_statement_id) = self.get_statement_id(item)? {
+                //println!("Such a statement already exists as {}", &statement_id);
+                return self.already_done();
+            }
         }
         let q = item.id().to_string();
         let property = match self.json["property"].as_str() {
             Some(p) => p.to_owned(),
             None => return Err("Property not found".to_string()),
         };
-        let value = serde_json::to_string(&self.json["datavalue"]["value"])
-            .map_err(|e| format!("{:?}", e))?;
+        let snaktype = self.get_snak_type_for_datavalue(&self.json["datavalue"])?;
 
-        Ok(json!({
+        let mut ret = json!({
             "action":"wbcreateclaim",
             "entity":self.get_prefixed_id(&q),
-            "snaktype":self.get_snak_type_for_datavalue(&self.json["datavalue"])?,
+            "snaktype":snaktype,
             "property":property,
-            "value":value
-        }))
+        });
+        // The API rejects a value parameter unless snaktype is "value"
+        if snaktype == "value" {
+            ret["value"] = json!(serde_json::to_string(&self.json["datavalue"]["value"])
+                .map_err(|e| format!("{:?}", e))?);
+        }
+        Ok(ret)
     }
 
     fn action_set_label(&self, item: &wikibase::Entity) -> Result<Value, String> {
@@ -245,8 +267,12 @@ impl QuickStatementsCommand {
         }
         if json.get("sources").is_some_and(|s| s.is_array()) {
             if let Some(arr) = json["sources"].as_array_mut() {
-                for v in arr {
-                    self.replace_last_item(v, state)?
+                // Sources are {"prop":"P123","value":{datavalue}} wrappers; the
+                // datavalue to resolve is one level down.
+                for source in arr {
+                    if let Some(datavalue) = source.get_mut("value") {
+                        self.replace_last_item(datavalue, state)?
+                    }
                 }
             }
         }
@@ -282,18 +308,24 @@ impl QuickStatementsCommand {
             None => return Err("Incomplete command parameters: prop".to_string()),
         };
 
-        let qual_value = &self.json["qualifier"]["value"]["value"];
-        if !qual_value.is_string() && !qual_value.is_object() {
-            return Err("Incomplete command parameters: value.value".to_string());
-        }
+        // The datavalue is at qualifier.value, one level below the qualifier itself
+        let snaktype = self.get_snak_type_for_datavalue(&self.json["qualifier"]["value"])?;
 
-        Ok(json!({
+        let mut ret = json!({
             "action":"wbsetqualifier",
             "claim":statement_id,
             "property":qual_prop,
-            "value":serde_json::to_string(&qual_value).map_err(|e|format!("{:?}",e))?,
-            "snaktype":self.get_snak_type_for_datavalue(&self.json["qualifier"])?,
-        }))
+            "snaktype":snaktype,
+        });
+        // The API rejects a value parameter unless snaktype is "value"
+        if snaktype == "value" {
+            let qual_value = &self.json["qualifier"]["value"]["value"];
+            if !qual_value.is_string() && !qual_value.is_object() {
+                return Err("Incomplete command parameters: value.value".to_string());
+            }
+            ret["value"] = json!(serde_json::to_string(&qual_value).map_err(|e| format!("{:?}", e))?);
+        }
+        Ok(ret)
     }
 
     fn action_add_sources(&self, item: &wikibase::Entity) -> Result<Value, String> {
@@ -317,7 +349,8 @@ impl QuickStatementsCommand {
                         None => return Err("No prop value in source".to_string()),
                     };
                     let prop = self.check_prop(prop)?;
-                    let snaktype = self.get_snak_type_for_datavalue(source)?;
+                    // The datavalue is at source.value, one level below the source itself
+                    let snaktype = self.get_snak_type_for_datavalue(&source["value"])?;
                     let snak = match snaktype.as_str() {
                         "value" => json!({
                             "property":&prop,
@@ -622,13 +655,27 @@ impl QuickStatementsCommand {
             }
             wikibase::Value::Entity(v) => Some(v.id() == v2["id"].as_str()?),
             wikibase::Value::Quantity(v) => {
-                Some(*v.amount() == v2["amount"].as_str()?.parse::<f64>().ok()?)
+                // A missing unit means "1" (unitless)
+                let unit2 = v2["unit"].as_str().unwrap_or("1");
+                Some(
+                    *v.amount() == v2["amount"].as_str()?.parse::<f64>().ok()?
+                        && v.unit() == unit2,
+                )
             }
             wikibase::Value::StringValue(v) => Some(*v == v2.as_str()?),
             wikibase::Value::Time(v) => {
                 let t1 = RE_TIME.replace_all(v.time(), "$a$b");
                 let t2 = RE_TIME.replace_all(v2["time"].as_str()?, "$a$b");
-                Some(v.calendarmodel() == v2["calendarmodel"].as_str()? && t1 == t2)
+                // Only compare precision when the command datavalue carries one
+                let same_precision = match v2["precision"].as_u64() {
+                    Some(p) => *v.precision() == p,
+                    None => true,
+                };
+                Some(
+                    v.calendarmodel() == v2["calendarmodel"].as_str()?
+                        && t1 == t2
+                        && same_precision,
+                )
             }
             wikibase::Value::EntitySchema(es) => Some(es.id() == v2["id"].as_str()?),
         }
@@ -639,6 +686,15 @@ impl QuickStatementsCommand {
     }
 
     fn get_snak_type_for_datavalue(&self, dv: &Value) -> Result<String, String> {
+        // The datavalue type field is authoritative when present
+        if let Some(t) = dv["type"].as_str() {
+            let ret = match t {
+                "novalue" => "novalue",
+                "somevalue" => "somevalue",
+                _ => "value",
+            };
+            return Ok(ret.to_string());
+        }
         if dv["value"].as_object().is_some() {
             return Ok("value".to_string());
         }
@@ -1410,13 +1466,15 @@ mod tests {
 
     #[test]
     fn insert_last_item_replaces_sources_last() {
+        // Sources use the {"prop","value"} wrapper shape, as emitted by the parser
+        // and consumed by action_add_sources
         let mut c = QuickStatementsCommand::new_from_json(&json!({
             "item":"Q123",
-            "sources":[{"type":"wikibase-entityid","value":{"id":"LAST"}}]
+            "sources":[{"prop":"P248","value":{"type":"wikibase-entityid","value":{"id":"LAST"}}}]
         }));
         c.insert_last_item_into_sources_and_qualifiers(&state_with_last("Q999"))
             .unwrap();
-        assert_eq!(c.json["sources"][0]["value"]["id"], "Q999");
+        assert_eq!(c.json["sources"][0]["value"]["value"]["id"], "Q999");
     }
 
     #[test]
@@ -2077,5 +2135,186 @@ mod tests {
         }));
         let snak_type = c.get_snak_type_for_datavalue(&c.json["datavalue"]).unwrap();
         assert_eq!(snak_type, "somevalue");
+    }
+
+    // The API rejects a value parameter unless snaktype is "value"
+    #[test]
+    fn action_add_statement_novalue_omits_value() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "property":"P31",
+            "datavalue":{"type":"novalue","value":"novalue"}
+        }));
+        let result = c.action_add_statement(&empty_test_item()).unwrap();
+        assert_eq!(result["action"], "wbcreateclaim");
+        assert_eq!(result["snaktype"], "novalue");
+        assert!(result.get("value").is_none());
+    }
+
+    #[test]
+    fn action_add_statement_value_included_for_value_snak() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "property":"P31",
+            "datavalue":{"type":"wikibase-entityid","value":{"entity-type":"item","id":"Q42"}}
+        }));
+        let result = c.action_add_statement(&empty_test_item()).unwrap();
+        assert_eq!(result["snaktype"], "value");
+        assert!(result["value"].is_string());
+    }
+
+    // "!P123"-style commands force a new statement even if an identical one exists
+    #[test]
+    fn action_add_statement_forced_new() {
+        let base = json!({
+            "id":"Q12345$some-guid",
+            "property":"P31",
+            "datavalue":{"type":"wikibase-entityid","value":{"entity-type":"item","id":"Q42"}}
+        });
+
+        // Without the flag, the existing statement (found via id) means already_done
+        let c = QuickStatementsCommand::new_from_json(&base);
+        assert_eq!(
+            c.action_add_statement(&empty_test_item()),
+            Ok(json!({"already_done":1}))
+        );
+
+        // With the flag, a new statement is created regardless
+        let mut forced = base.clone();
+        forced["new_statement"] = json!(1);
+        let c = QuickStatementsCommand::new_from_json(&forced);
+        let result = c.action_add_statement(&empty_test_item()).unwrap();
+        assert_eq!(result["action"], "wbcreateclaim");
+    }
+
+    // Snaktype must come from the datavalue at qualifier.value, not the qualifier itself
+    #[test]
+    fn action_add_qualifier_novalue_snaktype() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "id":"Q12345$some-guid",
+            "qualifier":{"prop":"P585","value":{"type":"novalue","value":"novalue"}}
+        }));
+        let result = c.action_add_qualifier(&empty_test_item()).unwrap();
+        assert_eq!(result["action"], "wbsetqualifier");
+        assert_eq!(result["snaktype"], "novalue");
+        assert!(result.get("value").is_none());
+    }
+
+    #[test]
+    fn action_add_qualifier_value_snaktype() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "id":"Q12345$some-guid",
+            "qualifier":{"prop":"P585","value":{"type":"string","value":"foo"}}
+        }));
+        let result = c.action_add_qualifier(&empty_test_item()).unwrap();
+        assert_eq!(result["snaktype"], "value");
+        assert_eq!(result["value"], "\"foo\"");
+    }
+
+    #[test]
+    fn action_add_sources_novalue_snaktype() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "id":"Q12345$some-guid",
+            "sources":[{"prop":"P248","value":{"type":"novalue","value":"novalue"}}]
+        }));
+        let result = c.action_add_sources(&empty_test_item()).unwrap();
+        assert_eq!(result["action"], "wbsetreference");
+        let snaks: serde_json::Value =
+            serde_json::from_str(result["snaks"].as_str().unwrap()).unwrap();
+        assert_eq!(snaks["P248"][0]["snaktype"], "novalue");
+        assert!(snaks["P248"][0].get("datavalue").is_none());
+    }
+
+    #[test]
+    fn action_add_sources_value_snaktype() {
+        let c = QuickStatementsCommand::new_from_json(&json!({
+            "id":"Q12345$some-guid",
+            "sources":[{"prop":"P248","value":{"type":"wikibase-entityid","value":{"entity-type":"item","id":"Q36578"}}}]
+        }));
+        let result = c.action_add_sources(&empty_test_item()).unwrap();
+        let snaks: serde_json::Value =
+            serde_json::from_str(result["snaks"].as_str().unwrap()).unwrap();
+        assert_eq!(snaks["P248"][0]["snaktype"], "value");
+        assert_eq!(snaks["P248"][0]["datavalue"]["value"]["id"], "Q36578");
+    }
+
+    // A typed datavalue whose string value is literally "novalue" is still a value snak
+    #[test]
+    fn get_snak_type_respects_type_field() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        assert_eq!(
+            c.get_snak_type_for_datavalue(&json!({"type":"string","value":"novalue"})),
+            Ok("value".to_string())
+        );
+        // A novalue datavalue without a value key (PHP shape) is still detected
+        assert_eq!(
+            c.get_snak_type_for_datavalue(&json!({"type":"novalue"})),
+            Ok("novalue".to_string())
+        );
+    }
+
+    #[test]
+    fn action_remove_sitelink_absent_already_done() {
+        let mut c = QuickStatementsCommand::new_from_json(&json!({"site":"enwiki","value":"Foo"}));
+        // Item has no enwiki sitelink: removal is a no-op, not an API error
+        assert_eq!(
+            c.action_remove_sitelink(&empty_test_item()),
+            Ok(json!({"already_done":1}))
+        );
+    }
+
+    #[test]
+    fn is_same_datavalue_quantity_unit_mismatch() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        let result = c.is_same_datavalue(
+            &wikibase::DataValue::new(
+                wikibase::DataValueType::Quantity,
+                wikibase::Value::Quantity(wikibase::QuantityValue::new(
+                    100.0,
+                    None,
+                    "http://www.wikidata.org/entity/Q11573",
+                    None,
+                )),
+            ),
+            &json!({"type":"quantity","value":{"amount":"100","unit":"http://www.wikidata.org/entity/Q3710"}}),
+        );
+        assert_eq!(result, Some(false));
+    }
+
+    #[test]
+    fn is_same_datavalue_quantity_unit_match() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        let result = c.is_same_datavalue(
+            &wikibase::DataValue::new(
+                wikibase::DataValueType::Quantity,
+                wikibase::Value::Quantity(wikibase::QuantityValue::new(
+                    100.0,
+                    None,
+                    "http://www.wikidata.org/entity/Q11573",
+                    None,
+                )),
+            ),
+            &json!({"type":"quantity","value":{"amount":"100","unit":"http://www.wikidata.org/entity/Q11573"}}),
+        );
+        assert_eq!(result, Some(true));
+    }
+
+    #[test]
+    fn is_same_datavalue_time_precision_mismatch() {
+        let c = QuickStatementsCommand::new_from_json(&json!({}));
+        let calendarmodel = "http://www.wikidata.org/entity/Q1985727";
+        let result = c.is_same_datavalue(
+            &wikibase::DataValue::new(
+                wikibase::DataValueType::Time,
+                wikibase::Value::Time(wikibase::TimeValue::new(
+                    0,
+                    0,
+                    calendarmodel,
+                    11,
+                    "+2019-01-01T00:00:00Z",
+                    0,
+                )),
+            ),
+            &json!({"type":"time","value":{"time":"+2019-01-01T00:00:00Z","calendarmodel":calendarmodel,"precision":9}}),
+        );
+        assert_eq!(result, Some(false));
     }
 }
