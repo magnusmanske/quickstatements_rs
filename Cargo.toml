@@ -35,4 +35,3 @@ wiremock = "*"
 lto = "fat"
 codegen-units = 1
 #target-cpu = "native"
-panic = "abort"

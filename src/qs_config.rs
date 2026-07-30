@@ -211,90 +211,30 @@ impl QuickStatements {
     }
 
     pub async fn get_next_batch(&self) -> Option<(i64, i64)> {
-        let mut sql: String = "SELECT id,user FROM batch WHERE `status` IN (".to_string();
-        sql += "'INIT','RUN'";
-        //sql += "'TEST'" ;
-        sql += ")";
-
-        //sql += " AND id=13324"; // TESTING: Specific batch only
-        //sql += " AND user=4420"; // TESTING: [[User:Magnus Manske]] only
-        // Lexeme batches are now supported
-
-        // Find users that are already running the maximum of simultaneous jobs
-        // This is to prevent MW API "too many edits" errors
-        // Also, it's more fair
-        let bad_users: Vec<String> = self
-            .user_counter
-            .read()
-            .unwrap()
-            .iter()
-            .filter_map(|(user_id, cnt)| {
-                if *cnt >= self.max_batches_per_user {
-                    Some(user_id.to_string())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !bad_users.is_empty() {
-            sql += " AND user NOT IN (";
-            sql += &bad_users.join(",");
-            sql += ")";
-        }
-        sql += " ORDER BY `ts_last_change`";
-
-        let results = self
-            .pool
-            .get_conn()
-            .await
-            .ok()?
-            .exec_iter(sql, ())
-            .await
-            .ok()?
-            .map_and_drop(from_row::<(i64, i64)>)
-            .await
-            .ok()?;
-        results
-            .iter()
-            .find(|(id, _)| !self.running_batch_ids.read().unwrap().contains(id))
-            .copied()
+        let batches = self.get_next_batches().await;
+        batches.into_iter().next()
     }
 
     /// Returns all batches that can be started right now, respecting per-user limits.
     pub async fn get_next_batches(&self) -> Vec<(i64, i64)> {
-        let mut sql: String = "SELECT id,user FROM batch WHERE `status` IN (".to_string();
-        sql += "'INIT','RUN'";
-        sql += ")";
+        let sql =
+            "SELECT id,user FROM batch WHERE `status` IN ('INIT','RUN') ORDER BY `ts_last_change`";
 
-        let bad_users: Vec<String> = self
-            .user_counter
-            .read()
-            .unwrap()
-            .iter()
-            .filter_map(|(user_id, cnt)| {
-                if *cnt >= self.max_batches_per_user {
-                    Some(user_id.to_string())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !bad_users.is_empty() {
-            sql += " AND user NOT IN (";
-            sql += &bad_users.join(",");
-            sql += ")";
-        }
-        sql += " ORDER BY `ts_last_change`";
-
-        let results = match self.pool.get_conn().await {
+        let results: Vec<(i64, i64)> = match self.pool.get_conn().await {
             Ok(mut conn) => match conn.exec_iter(sql, ()).await {
                 Ok(result) => result
                     .map_and_drop(from_row::<(i64, i64)>)
                     .await
                     .unwrap_or_default(),
-                Err(_) => return vec![],
+                Err(e) => {
+                    log::error!("get_next_batches: query failed: {}", e);
+                    return vec![];
+                }
             },
-            Err(_) => return vec![],
+            Err(e) => {
+                log::error!("get_next_batches: DB connection failed: {}", e);
+                return vec![];
+            }
         };
 
         let running = self.running_batch_ids.read().unwrap();
@@ -542,37 +482,45 @@ impl QuickStatements {
         &self,
         mw_api: &mut wikibase::mediawiki::api::Api,
         batch_id: i64,
-    ) {
+    ) -> Result<(), String> {
         match self.get_oauth_for_batch(batch_id).await {
             Some(oauth_params) => {
-                // Using OAuth
                 mw_api.set_oauth(Some(oauth_params));
+                Ok(())
             }
             None => {
-                match self.params["config"]["bot_config_file"].as_str() {
-                    Some(filename) => {
-                        // Using Bot
-                        let config_file = config::File::with_name(filename);
-                        let settings = Config::builder()
-                            .add_source(config_file)
-                            .build()
-                            .expect("Cannot create config from config file");
-                        let lgname = settings
-                            .get_string("user.user")
-                            .expect("QuickStatements::set_bot_api_auth: Can't get user name");
-                        let lgpassword = settings
-                            .get_string("user.pass")
-                            .expect("QuickStatements::set_bot_api_auth: Can't get user password");
-                        mw_api
-                            .login(lgname, lgpassword)
-                            .await
-                            .expect("Cannot login as bot");
-                    }
-                    None => panic!(
-                        "Neither OAuth nor bot info available for batch #{}",
-                        batch_id
-                    ),
-                }
+                let filename = self.params["config"]["bot_config_file"]
+                    .as_str()
+                    .ok_or_else(|| {
+                        format!(
+                            "Neither OAuth nor bot info available for batch #{}",
+                            batch_id
+                        )
+                    })?;
+
+                // Read config file off the async runtime to avoid blocking
+                let filename = filename.to_owned();
+                let settings = tokio::task::spawn_blocking(move || {
+                    let config_file = config::File::with_name(&filename);
+                    Config::builder()
+                        .add_source(config_file)
+                        .build()
+                        .map_err(|e| format!("Cannot read bot config '{}': {}", filename, e))
+                })
+                .await
+                .map_err(|e| format!("spawn_blocking failed: {}", e))??;
+
+                let lgname = settings
+                    .get_string("user.user")
+                    .map_err(|e| format!("Bot config missing user.user: {}", e))?;
+                let lgpassword = settings
+                    .get_string("user.pass")
+                    .map_err(|e| format!("Bot config missing user.pass: {}", e))?;
+                mw_api
+                    .login(lgname, lgpassword)
+                    .await
+                    .map_err(|e| format!("Bot login failed: {}", e))?;
+                Ok(())
             }
         }
     }

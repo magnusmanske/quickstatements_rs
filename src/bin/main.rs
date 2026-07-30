@@ -124,7 +124,7 @@ async fn command_bot(verbose: bool, config_file: &str) {
     loop {
         let started = run_bot(config.clone()).await;
         if started > 0 {
-            *last_bot_run.lock().unwrap() = Instant::now();
+            *last_bot_run.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
         }
         tokio::time::sleep(Duration::from_millis(SLEEP_BETWEEN_BOT_RUNS_MS)).await;
     }
@@ -135,7 +135,7 @@ async fn command_bot(verbose: bool, config_file: &str) {
 fn seppuku(config: Arc<QuickStatements>, last_bot_run: Arc<Mutex<Instant>>) {
     tokio::spawn(async move {
         loop {
-            let last = *last_bot_run.lock().unwrap();
+            let last = *last_bot_run.lock().unwrap_or_else(|e| e.into_inner());
             let idle = last.elapsed().as_secs() > MAX_INACTIVITY_BEFORE_SEPPUKU_SEC;
             if idle && !config.db_ping().await {
                 error!(
@@ -280,7 +280,10 @@ async fn command_debug_command(config_file: &str, command_id: i64) {
     let mut mw_api = wikibase::mediawiki::api::Api::new(api_url)
         .await
         .unwrap_or_else(|e| panic!("Could not create API: {:?}", e));
-    config.set_bot_api_auth(&mut mw_api, command.batch_id).await;
+    config
+        .set_bot_api_auth(&mut mw_api, command.batch_id)
+        .await
+        .unwrap_or_else(|e| panic!("Cannot authenticate for batch #{}: {}", command.batch_id, e));
 
     // Load LAST state from the batch
     let last_state = config.get_last_state_from_batch(command.batch_id).await;

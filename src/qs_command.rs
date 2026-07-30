@@ -547,33 +547,33 @@ impl QuickStatementsCommand {
         }
 
         let item = item
-            .to_owned()
-            .expect("QuickStatementsCommand::add_to_entity: item is None");
+            .as_ref()
+            .ok_or("add_to_entity: item is None".to_string())?;
         match self.json["what"].as_str() {
-            Some("label") => self.action_set_label(&item),
-            Some("alias") => self.action_add_alias(&item),
-            Some("description") => self.action_set_description(&item),
-            Some("sitelink") => self.action_set_sitelink(&item),
-            Some("statement") => self.action_add_statement(&item),
-            Some("qualifier") => self.action_add_qualifier(&item),
-            Some("sources") => self.action_add_sources(&item),
+            Some("label") => self.action_set_label(item),
+            Some("alias") => self.action_add_alias(item),
+            Some("description") => self.action_set_description(item),
+            Some("sitelink") => self.action_set_sitelink(item),
+            Some("statement") => self.action_add_statement(item),
+            Some("qualifier") => self.action_add_qualifier(item),
+            Some("sources") => self.action_add_sources(item),
             other => Err(format!("Bad 'what': '{:?}'", other)),
         }
     }
 
     fn remove_from_entity(&mut self, item: &Option<wikibase::Entity>) -> Result<Value, String> {
         let item = item
-            .to_owned()
-            .expect("QuickStatementsCommand::remove_from_entity: item is None");
+            .as_ref()
+            .ok_or("remove_from_entity: item is None".to_string())?;
         match self.json["what"].as_str() {
             Some("statement") => {
-                let statement_id = match self.get_statement_id(&item)? {
+                let statement_id = match self.get_statement_id(item)? {
                     Some(id) => id,
                     None => return Err("remove_statement: Statement not found".to_string()),
                 };
                 self.action_remove_statement(statement_id)
             }
-            Some("sitelink") => self.action_remove_sitelink(&item),
+            Some("sitelink") => self.action_remove_sitelink(item),
             other => Err(format!("Bad 'what': '{:?}'", other)),
         }
     }
@@ -700,7 +700,8 @@ impl QuickStatementsCommand {
 
     fn check_prop(&self, s: &str) -> Result<String, String> {
         static RE_PROP: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r#"^P\d+$"#).expect("QuickStatementsBot::check_prop:RE_PROP does not compile")
+            Regex::new(r#"^P\d+$"#)
+                .expect("QuickStatementsBot::check_prop:RE_PROP does not compile")
         });
         match RE_PROP.is_match(s) {
             true => Ok(s.to_string()),

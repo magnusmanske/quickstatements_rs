@@ -58,7 +58,7 @@ impl QuickStatementsBot {
                         mw_api.set_edit_delay(config.edit_delay_ms());
                         mw_api.set_maxlag(config.maxlag_s());
                         mw_api.set_max_retry_attempts(1000);
-                        config.set_bot_api_auth(&mut mw_api, batch_id).await;
+                        config.set_bot_api_auth(&mut mw_api, batch_id).await?;
                         self.mw_api = Some(mw_api);
                     }
                     None => return Err("No site/API info available".to_string()),
@@ -459,9 +459,9 @@ impl QuickStatementsBot {
                         self.last_state.last_form = None;
                         self.last_state.last_sense = None;
                     }
-                    self.entities
-                        .set_entity_from_json(entity_json)
-                        .expect("Setting entity from JSON failed");
+                    if let Err(e) = self.entities.set_entity_from_json(entity_json) {
+                        log::error!("Failed to set entity from JSON for {}: {}", q, e);
+                    }
                     self.entity_revision.retain(|er| er.0 != q);
                     self.entity_revision.push_front((q.to_owned(), 0));
                     self.entity_revision.truncate(5);
