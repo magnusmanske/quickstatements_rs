@@ -471,7 +471,7 @@ impl QuickStatements {
     pub async fn get_user_name(&self, user_id: i64) -> Option<String> {
         let auth_db = "s53220__quickstatements_auth";
         let sql = format!(
-            r#"SELECT name FROM {}.user WHERE user_id=:user_id"#,
+            r#"SELECT name FROM {}.user WHERE id=:user_id"#,
             auth_db
         );
 
