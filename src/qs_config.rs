@@ -98,7 +98,13 @@ impl QuickStatements {
     }
 
     pub fn maxlag_s(&self) -> Option<u64> {
-        Some(self.params["set_maxlag"].as_u64().unwrap_or(5))
+        // `maxlag_s` is the key used in config_rs.json; `set_maxlag` is kept
+        // as a fallback for older config files.
+        let maxlag = self.params["maxlag_s"]
+            .as_u64()
+            .or_else(|| self.params["set_maxlag"].as_u64())
+            .unwrap_or(5);
+        Some(maxlag)
     }
 
     /// Returns the site of a batch, or `Ok(None)` if the batch has no (usable) site.

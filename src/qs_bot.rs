@@ -16,6 +16,15 @@ use wikibase;
 /// would just burn every remaining command to ERROR.
 const MAX_CONSECUTIVE_COMMAND_ERRORS: u32 = 5;
 
+/// Adaptive edit pacing: run at full speed while the API is happy, back off on
+/// pushback (rate limit / throttle / lag), and decay back to full speed on
+/// success. Backoff doubles from the minimum up to the maximum; each successful
+/// edit halves the delay again, down to the configured `edit_delay_ms` floor.
+/// Per-user rate limits are enforced server-side and deliberately not raised
+/// here: the user shares their edit budget with their own manual edits.
+const THROTTLE_BACKOFF_MIN_MS: u64 = 5_000;
+const THROTTLE_BACKOFF_MAX_MS: u64 = 60_000;
+
 #[derive(Debug, Clone)]
 pub struct QuickStatementsBot {
     batch_id: Option<i64>,
@@ -26,13 +35,17 @@ pub struct QuickStatementsBot {
     last_state: LastEntityState,
     current_entity_id: Option<String>,
     current_property_id: Option<String>,
-    throttled_delay_ms: u64,
+    /// Current adaptive delay between edits; see THROTTLE_BACKOFF_* above.
+    adaptive_delay_ms: u64,
+    /// Floor for the adaptive delay, from the `edit_delay_ms` config key.
+    min_delay_ms: u64,
     entity_revision: VecDeque<(String, usize)>,
     consecutive_command_errors: u32,
 }
 
 impl QuickStatementsBot {
     pub fn new(config: Arc<QuickStatements>, batch_id: Option<i64>, user_id: i64) -> Self {
+        let min_delay_ms = config.edit_delay_ms().unwrap_or(0);
         Self {
             batch_id,
             user_id,
@@ -42,10 +55,24 @@ impl QuickStatementsBot {
             last_state: LastEntityState::default(),
             current_entity_id: None,
             current_property_id: None,
-            throttled_delay_ms: 5000,
+            adaptive_delay_ms: min_delay_ms,
+            min_delay_ms,
             entity_revision: VecDeque::new(),
             consecutive_command_errors: 0,
         }
+    }
+
+    /// API pushback: double the adaptive delay (starting at the minimum
+    /// backoff) and return it as the pre-retry sleep in milliseconds.
+    fn bump_backoff(&mut self) -> u64 {
+        self.adaptive_delay_ms = (self.adaptive_delay_ms * 2)
+            .clamp(THROTTLE_BACKOFF_MIN_MS, THROTTLE_BACKOFF_MAX_MS);
+        self.adaptive_delay_ms
+    }
+
+    /// Successful edit: decay the adaptive delay back towards the floor.
+    fn decay_delay(&mut self) {
+        self.adaptive_delay_ms = (self.adaptive_delay_ms / 2).max(self.min_delay_ms);
     }
 
     pub async fn start(&mut self) -> Result<(), String> {
@@ -68,7 +95,9 @@ impl QuickStatementsBot {
                         let mut mw_api = wikibase::mediawiki::api::Api::new(url)
                             .await
                             .map_err(|e| format!("{:?}", e))?;
-                        mw_api.set_edit_delay(config.edit_delay_ms());
+                        // Edit pacing is done adaptively by this bot (see
+                        // THROTTLE_BACKOFF_*), not with a fixed delay in the API layer.
+                        mw_api.set_edit_delay(None);
                         mw_api.set_maxlag(config.maxlag_s());
                         mw_api.set_max_retry_attempts(1000);
                         config.set_bot_api_auth(&mut mw_api, batch_id).await?;
@@ -636,7 +665,14 @@ impl QuickStatementsBot {
 
             let retry_after = self.check_run_action_result(res, &params, command)?;
             match retry_after {
-                None => return Ok(()),
+                None => {
+                    // Pace edits with the current adaptive delay, then relax it
+                    if self.adaptive_delay_ms > 0 {
+                        tokio::time::sleep(Duration::from_millis(self.adaptive_delay_ms)).await;
+                    }
+                    self.decay_delay();
+                    return Ok(());
+                }
                 Some(d) => {
                     throttle_retries += 1;
                     if throttle_retries > MAX_THROTTLE_RETRIES {
@@ -682,7 +718,8 @@ impl QuickStatementsBot {
                 let error_code = res["error"]["code"].as_str().unwrap_or("");
                 if error_code == "maxlag" {
                     let lag = res["error"]["lag"].as_f64().unwrap_or(5.0);
-                    let sleep_ms = (lag.ceil() as u64 + 1) * 1000;
+                    let lag_ms = (lag.ceil() as u64 + 1) * 1000;
+                    let sleep_ms = self.bump_backoff().max(lag_ms);
                     log::warn!(
                         "Batch #{}: Maxlag exceeded (lag: {}s), sleeping {}ms",
                         self.batch_id.unwrap_or(0),
@@ -692,26 +729,27 @@ impl QuickStatementsBot {
                     return Ok(Some(Duration::from_millis(sleep_ms)));
                 }
                 if matches!(error_code, "ratelimited" | "actionthrottled") {
+                    let sleep_ms = self.bump_backoff();
                     log::warn!(
                         "Batch #{}: Rate limited by API (code: {}), sleeping {}ms",
                         self.batch_id.unwrap_or(0),
                         error_code,
-                        self.throttled_delay_ms
+                        sleep_ms
                     );
-                    return Ok(Some(Duration::from_millis(self.throttled_delay_ms)));
+                    return Ok(Some(Duration::from_millis(sleep_ms)));
                 }
                 if let Some(arr) = res["error"]["messages"].as_array() {
-                    for a in arr {
-                        if let Some(s) = a["name"].as_str() {
-                            if matches!(s, "actionthrottledtext" | "ratelimited") {
-                                log::warn!(
-                                    "Batch #{}: Throttled by API, sleeping {}ms",
-                                    self.batch_id.unwrap_or(0),
-                                    self.throttled_delay_ms
-                                );
-                                return Ok(Some(Duration::from_millis(self.throttled_delay_ms)));
-                            }
-                        }
+                    let throttled = arr.iter().any(|a| {
+                        matches!(a["name"].as_str(), Some("actionthrottledtext" | "ratelimited"))
+                    });
+                    if throttled {
+                        let sleep_ms = self.bump_backoff();
+                        log::warn!(
+                            "Batch #{}: Throttled by API, sleeping {}ms",
+                            self.batch_id.unwrap_or(0),
+                            sleep_ms
+                        );
+                        return Ok(Some(Duration::from_millis(sleep_ms)));
                     }
                 }
                 if let Some(s) = res["error"]["info"].as_str() {
@@ -842,5 +880,75 @@ mod tests {
         let result = bot.check_run_action_result(res, &HashMap::new(), &mut command);
 
         assert_eq!(result, Ok(Some(Duration::from_millis(5000))));
+    }
+
+    // Repeated pushback must double the backoff (capped), and successful edits
+    // must decay it back to the configured floor
+    #[test]
+    fn adaptive_delay_backoff_doubles_and_decays() {
+        let mut bot = test_bot();
+        bot.min_delay_ms = 0;
+        bot.adaptive_delay_ms = 0;
+
+        assert_eq!(bot.bump_backoff(), THROTTLE_BACKOFF_MIN_MS);
+        assert_eq!(bot.bump_backoff(), 2 * THROTTLE_BACKOFF_MIN_MS);
+        for _ in 0..10 {
+            bot.bump_backoff();
+        }
+        assert_eq!(bot.adaptive_delay_ms, THROTTLE_BACKOFF_MAX_MS);
+
+        for _ in 0..20 {
+            bot.decay_delay();
+        }
+        assert_eq!(bot.adaptive_delay_ms, 0);
+    }
+
+    #[test]
+    fn adaptive_delay_respects_configured_floor() {
+        let mut bot = test_bot();
+        bot.min_delay_ms = 250;
+        bot.adaptive_delay_ms = THROTTLE_BACKOFF_MIN_MS;
+
+        for _ in 0..20 {
+            bot.decay_delay();
+        }
+        assert_eq!(bot.adaptive_delay_ms, 250);
+    }
+
+    #[test]
+    fn check_run_action_result_ratelimited_backs_off_exponentially() {
+        let mut bot = test_bot();
+        bot.min_delay_ms = 0;
+        bot.adaptive_delay_ms = 0;
+        let mut command = QuickStatementsCommand::new_from_json(&json!({"item":"Q123"}));
+        let res = json!({"error":{"code":"ratelimited"}});
+
+        let first = bot.check_run_action_result(res.clone(), &HashMap::new(), &mut command);
+        let second = bot.check_run_action_result(res, &HashMap::new(), &mut command);
+
+        assert_eq!(
+            first,
+            Ok(Some(Duration::from_millis(THROTTLE_BACKOFF_MIN_MS)))
+        );
+        assert_eq!(
+            second,
+            Ok(Some(Duration::from_millis(2 * THROTTLE_BACKOFF_MIN_MS)))
+        );
+    }
+
+    #[test]
+    fn check_run_action_result_throttled_message_backs_off() {
+        let mut bot = test_bot();
+        bot.min_delay_ms = 0;
+        bot.adaptive_delay_ms = 0;
+        let mut command = QuickStatementsCommand::new_from_json(&json!({"item":"Q123"}));
+        let res = json!({"error":{"messages":[{"name":"actionthrottledtext"}]}});
+
+        let result = bot.check_run_action_result(res, &HashMap::new(), &mut command);
+
+        assert_eq!(
+            result,
+            Ok(Some(Duration::from_millis(THROTTLE_BACKOFF_MIN_MS)))
+        );
     }
 }
