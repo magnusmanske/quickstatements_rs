@@ -139,10 +139,10 @@ impl QuickStatements {
         let mut conn = self.pool.get_conn().await?;
         let ts = self.timestamp();
         conn.exec_drop(r#"UPDATE `batch` SET `status`="INIT",`message`="",`ts_last_change`=:ts WHERE `status`="RUN""#, params!{ts}).await?;
-        // Also reset any commands that were left mid-execution (status=RUN) so
-        // they are picked up again instead of being lost forever.
-        let ts = self.timestamp();
-        conn.exec_drop(r#"UPDATE `command` SET `status`="INIT",`message`="",`ts_change`=:ts WHERE `status`="RUN""#, params!{ts}).await?;
+        // Commands left mid-execution (status=RUN) are reset per batch by
+        // restart_batch() when the batch is picked up again; a global
+        // `UPDATE command WHERE status="RUN"` would full-scan the huge
+        // command table and exceed max_statement_time on ToolsDB.
         Ok(())
     }
 
