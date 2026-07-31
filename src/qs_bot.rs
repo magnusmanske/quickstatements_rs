@@ -11,10 +11,10 @@ use std::sync::LazyLock;
 use std::time::Duration;
 use wikibase;
 
-/// Stop a batch when this many commands in a row fail: that indicates a systemic
-/// problem (e.g. revoked OAuth), not bad individual commands, and continuing
-/// would just burn every remaining command to ERROR.
-const MAX_CONSECUTIVE_COMMAND_ERRORS: u32 = 5;
+/// A failing command never stops its batch — it is marked ERROR and the batch
+/// moves on. Runs of consecutive failures (which suggest a systemic problem,
+/// e.g. revoked OAuth) are logged every this many commands.
+const CONSECUTIVE_COMMAND_ERROR_WARN_EVERY: u32 = 5;
 
 /// Adaptive edit pacing: run at full speed while the API is happy, back off on
 /// pushback (rate limit / throttle / lag), and decay back to full speed on
@@ -65,8 +65,8 @@ impl QuickStatementsBot {
     /// API pushback: double the adaptive delay (starting at the minimum
     /// backoff) and return it as the pre-retry sleep in milliseconds.
     fn bump_backoff(&mut self) -> u64 {
-        self.adaptive_delay_ms = (self.adaptive_delay_ms * 2)
-            .clamp(THROTTLE_BACKOFF_MIN_MS, THROTTLE_BACKOFF_MAX_MS);
+        self.adaptive_delay_ms =
+            (self.adaptive_delay_ms * 2).clamp(THROTTLE_BACKOFF_MIN_MS, THROTTLE_BACKOFF_MAX_MS);
         self.adaptive_delay_ms
     }
 
@@ -238,25 +238,20 @@ impl QuickStatementsBot {
                             command.id,
                             e
                         );
+                        // The command itself is marked ERROR by execute_command;
+                        // the batch carries on with the next one. Long runs of
+                        // failures are only logged, so a systemic problem stays
+                        // visible without killing the remaining commands.
                         self.consecutive_command_errors += 1;
-                        if self.consecutive_command_errors >= MAX_CONSECUTIVE_COMMAND_ERRORS {
-                            log::error!(
-                                "Batch #{}: {} consecutive command errors, stopping batch",
+                        if self
+                            .consecutive_command_errors
+                            .is_multiple_of(CONSECUTIVE_COMMAND_ERROR_WARN_EVERY)
+                        {
+                            log::warn!(
+                                "Batch #{}: {} consecutive command errors, still running (systemic problem? e.g. revoked OAuth)",
                                 self.batch_id.unwrap_or(0),
                                 self.consecutive_command_errors
                             );
-                            if let Some(batch_id) = self.batch_id {
-                                let _ = self
-                                    .config
-                                    .set_batch_status(
-                                        "ERROR",
-                                        "Too many consecutive command errors",
-                                        batch_id,
-                                        self.user_id,
-                                    )
-                                    .await;
-                            }
-                            return Ok(false);
                         }
                     }
                 }
@@ -740,7 +735,10 @@ impl QuickStatementsBot {
                 }
                 if let Some(arr) = res["error"]["messages"].as_array() {
                     let throttled = arr.iter().any(|a| {
-                        matches!(a["name"].as_str(), Some("actionthrottledtext" | "ratelimited"))
+                        matches!(
+                            a["name"].as_str(),
+                            Some("actionthrottledtext" | "ratelimited")
+                        )
                     });
                     if throttled {
                         let sleep_ms = self.bump_backoff();

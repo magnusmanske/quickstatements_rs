@@ -10,11 +10,18 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use wikibase::mediawiki::Api;
 
 /// Row layout of the `command` table: (id, batch_id, num, json, status, message, ts_change)
 type CommandRow = (i64, i64, i64, String, String, String, String);
+
+/// A batch that cannot be started (bad site, revoked OAuth, ...) goes back into
+/// the queue rather than being failed, so it must not be retried at full speed.
+/// Delay before the next attempt: base << failures, capped at max.
+const BATCH_START_RETRY_BASE_S: u64 = 60;
+const BATCH_START_RETRY_MAX_S: u64 = 1800;
 
 #[derive(Debug, Clone)]
 pub struct QuickStatements {
@@ -22,6 +29,8 @@ pub struct QuickStatements {
     pool: my::Pool,
     running_batch_ids: Arc<RwLock<HashSet<i64>>>,
     user_counter: Arc<RwLock<HashMap<i64, i64>>>,
+    /// Batches that failed to start: batch_id -> (failures, earliest next attempt)
+    start_cooldown: Arc<RwLock<HashMap<i64, (u32, Instant)>>>,
     max_batches_per_user: i64,
     verbose: bool,
 }
@@ -52,6 +61,7 @@ impl QuickStatements {
             params,
             running_batch_ids: Arc::new(RwLock::new(HashSet::new())),
             user_counter: Arc::new(RwLock::new(HashMap::new())),
+            start_cooldown: Arc::new(RwLock::new(HashMap::new())),
             max_batches_per_user,
             verbose: false,
         };
@@ -141,10 +151,13 @@ impl QuickStatements {
         conn.exec_drop(r#"UPDATE `command` SET `status`="INIT",`message`="",`ts_change`=:ts WHERE `status` IN ("RUN","BLOCKED") AND `batch_id`=:batch_id"#, params!{ts,batch_id}).await.ok()
     }
 
-    pub async fn reset_all_running_batches(&self) -> QsResult<()> {
+    /// Puts batches left behind by a previous process back into the queue:
+    /// `RUN` ones this process now owns nothing of, and `ERROR` ones written by
+    /// older versions (batches are no longer ever set to ERROR).
+    pub async fn reset_stale_batches(&self) -> QsResult<()> {
         let mut conn = self.pool.get_conn().await?;
         let ts = self.timestamp();
-        conn.exec_drop(r#"UPDATE `batch` SET `status`="INIT",`message`="",`ts_last_change`=:ts WHERE `status`="RUN""#, params!{ts}).await?;
+        conn.exec_drop(r#"UPDATE `batch` SET `status`="INIT",`message`="",`ts_last_change`=:ts WHERE `status` IN ("RUN","ERROR")"#, params!{ts}).await?;
         // Commands left mid-execution (status=RUN) are reset per batch by
         // restart_batch() when the batch is picked up again; a global
         // `UPDATE command WHERE status="RUN"` would full-scan the huge
@@ -270,9 +283,15 @@ impl QuickStatements {
     async fn claim_batches(&self, candidates: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
         let mut running = self.running_batch_ids.write().await;
         let mut user_counts = self.user_counter.write().await;
+        let cooldown = self.start_cooldown.read().await;
+        let now = Instant::now();
         let mut ret = vec![];
         for (id, user_id) in candidates {
             if running.contains(&id) {
+                continue;
+            }
+            // Still cooling down after a failed start attempt
+            if cooldown.get(&id).is_some_and(|(_, next)| *next > now) {
                 continue;
             }
             let cnt = user_counts.entry(user_id).or_insert(0);
@@ -336,6 +355,24 @@ impl QuickStatements {
             self.number_of_bots_running().await
         );
         Some(())
+    }
+
+    /// Records a failed start attempt and returns how long the batch is held
+    /// back before it is offered again.
+    pub async fn note_batch_start_failure(&self, batch_id: i64) -> Duration {
+        let mut cooldown = self.start_cooldown.write().await;
+        let entry = cooldown.entry(batch_id).or_insert((0, Instant::now()));
+        entry.0 = entry.0.saturating_add(1);
+        let shift = (entry.0 - 1).min(10);
+        let delay =
+            Duration::from_secs((BATCH_START_RETRY_BASE_S << shift).min(BATCH_START_RETRY_MAX_S));
+        entry.1 = Instant::now() + delay;
+        delay
+    }
+
+    /// Clears the start cooldown after a batch started successfully.
+    pub async fn note_batch_start_success(&self, batch_id: i64) {
+        self.start_cooldown.write().await.remove(&batch_id);
     }
 
     pub async fn set_batch_finished(&self, batch_id: i64, user_id: i64) -> Option<()> {
@@ -476,10 +513,7 @@ impl QuickStatements {
 
     pub async fn get_user_name(&self, user_id: i64) -> Option<String> {
         let auth_db = "s53220__quickstatements_auth";
-        let sql = format!(
-            r#"SELECT name FROM {}.user WHERE id=:user_id"#,
-            auth_db
-        );
+        let sql = format!(r#"SELECT name FROM {}.user WHERE id=:user_id"#, auth_db);
 
         let mut conn = match self.pool.get_conn().await {
             Ok(c) => c,
@@ -598,6 +632,7 @@ impl QuickStatements {
             params,
             running_batch_ids: Arc::new(RwLock::new(HashSet::new())),
             user_counter: Arc::new(RwLock::new(HashMap::new())),
+            start_cooldown: Arc::new(RwLock::new(HashMap::new())),
             max_batches_per_user: 2,
             verbose: false,
         }
@@ -661,6 +696,50 @@ mod tests {
 
     fn test_qs() -> QuickStatements {
         QuickStatements::new_for_tests()
+    }
+
+    // A batch that failed to start goes back into the queue, so it must be held
+    // back for a while — otherwise a permanently broken batch is retried in a
+    // tight loop
+    #[tokio::test]
+    async fn test_start_failure_puts_batch_on_cooldown() {
+        let qs = test_qs();
+
+        let delay = qs.note_batch_start_failure(42).await;
+
+        assert_eq!(delay, Duration::from_secs(BATCH_START_RETRY_BASE_S));
+        assert!(qs.claim_batches(vec![(42, 1)]).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_start_failure_cooldown_grows_and_is_capped() {
+        let qs = test_qs();
+
+        assert_eq!(
+            qs.note_batch_start_failure(42).await,
+            Duration::from_secs(BATCH_START_RETRY_BASE_S)
+        );
+        assert_eq!(
+            qs.note_batch_start_failure(42).await,
+            Duration::from_secs(2 * BATCH_START_RETRY_BASE_S)
+        );
+        for _ in 0..20 {
+            qs.note_batch_start_failure(42).await;
+        }
+        assert_eq!(
+            qs.note_batch_start_failure(42).await,
+            Duration::from_secs(BATCH_START_RETRY_MAX_S)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_successful_start_clears_cooldown() {
+        let qs = test_qs();
+        qs.note_batch_start_failure(42).await;
+
+        qs.note_batch_start_success(42).await;
+
+        assert_eq!(qs.claim_batches(vec![(42, 1)]).await, vec![(42, 1)]);
     }
 
     #[tokio::test]

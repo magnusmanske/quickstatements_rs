@@ -61,19 +61,28 @@ async fn start_batch(config: Arc<QuickStatements>, batch_id: i64, user_id: i64) 
 
     match bot.start().await {
         Ok(_) => {
+            config.note_batch_start_success(batch_id).await;
             tokio::spawn(async move {
                 run_bot_loop(bot).await;
             });
         }
         Err(error) => {
-            error!("Cannot start batch #{}: {}", batch_id, error);
-            // Mark the batch failed so it is not re-tried every cycle — but only
-            // if it is still INIT/RUN; a batch the user stopped in the meantime
-            // keeps its status. If the DB itself is down this check fails, the
-            // batch stays as-is, and it will be picked up again once the DB is back.
+            // Batches are never failed with status ERROR: put it back in the
+            // queue and retry it later, with a growing delay so a permanently
+            // broken batch does not spin. Only touch the status if it is still
+            // INIT/RUN; a batch the user stopped in the meantime keeps its
+            // status, and if the DB is down the batch stays as-is and is picked
+            // up again once the DB is back.
+            let delay = config.note_batch_start_failure(batch_id).await;
+            error!(
+                "Cannot start batch #{}: {} — retrying in {}s",
+                batch_id,
+                error,
+                delay.as_secs()
+            );
             if config.check_batch_not_stopped(batch_id).await.is_ok() {
                 let _ = config
-                    .set_batch_status("ERROR", &error, batch_id, user_id)
+                    .set_batch_status("INIT", &error, batch_id, user_id)
                     .await;
             } else {
                 let _ = config.deactivate_batch_run(batch_id, user_id).await;
@@ -111,13 +120,13 @@ async fn command_bot(verbose: bool, config_file: &str) {
     // Retry DB reset on startup with backoff
     let mut db_retries = 0u32;
     loop {
-        match config.reset_all_running_batches().await {
+        match config.reset_stale_batches().await {
             Ok(_) => break,
             Err(e) => {
                 db_retries += 1;
                 if db_retries >= 10 {
                     error!(
-                        "Cannot reset running batches after {} attempts: {}",
+                        "Cannot reset stale batches after {} attempts: {}",
                         db_retries, e
                     );
                     std::process::exit(1);
