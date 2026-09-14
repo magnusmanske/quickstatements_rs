@@ -307,7 +307,7 @@ impl QuickStatementsBot {
         command: &QuickStatementsCommand,
     ) -> Result<Option<wikibase::Entity>, String> {
         let command_action = command.get_action()?;
-        self.log(format!("[prepare_to_execute] Action '{}'", &command_action));
+        self.log(format!("[prepare_to_execute] Action '{}'", command_action));
         // Form/sense creation: resolve LAST but don't load entity
         if command_action == "create" {
             if let Some(entity_type) = command.json["type"].as_str() {
@@ -612,7 +612,7 @@ impl QuickStatementsBot {
                 v.as_str()
                     .ok_or(format!(
                         "QuickStatementsBot::run_action Can't as_str '{}'",
-                        &v
+                        v
                     ))?
                     .to_string(),
             );

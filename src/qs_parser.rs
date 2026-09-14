@@ -134,7 +134,7 @@ impl QuickStatementsParser {
             let key = caps.get(2).unwrap().as_str();
             let value = match Self::parse_value(parts[2].clone()) {
                 Some(Value::String(s)) => s,
-                _ => return Err(format!("Bad value: '{}'", &parts[2])),
+                _ => return Err(format!("Bad value: '{}'", parts[2])),
             };
             let mut ret = Self::new_blank_with_comment(comment.clone());
             let mut first = parts[0].clone();
@@ -157,7 +157,7 @@ impl QuickStatementsParser {
                     ret.command = CommandType::SetSitelink;
                     ret.sitelink = Some(SiteLink::new(key, &value, vec![]));
                 }
-                _ => return Err(format!("Bad command: '{}'", &parts[1])),
+                _ => return Err(format!("Bad command: '{}'", parts[1])),
             }
             return Ok(ret);
         }
@@ -231,7 +231,7 @@ impl QuickStatementsParser {
             "wikibase-sense",
         ];
         if !valid_datatypes.contains(&datatype.as_str()) {
-            return Err(format!("CREATE_PROPERTY: Unknown datatype '{}'", &datatype));
+            return Err(format!("CREATE_PROPERTY: Unknown datatype '{}'", datatype));
         }
         let mut ret = Self::new_blank_with_comment(comment);
         ret.command = CommandType::CreateProperty;
@@ -284,14 +284,14 @@ impl QuickStatementsParser {
         ret.command = CommandType::EditStatement;
         let mut first = match parts.first() {
             Some(s) => s.trim().to_uppercase(),
-            None => return Err(format!("Missing column 1 in {:?}", &parts)),
+            None => return Err(format!("Missing column 1 in {:?}", parts)),
         };
         ret.modifier = Self::parse_command_modifier(&mut first);
         ret.item = Some(Self::parse_item_id(Some(first.as_str()))?);
 
         let second = match parts.get(1) {
             Some(s) => s.trim().to_string(),
-            None => return Err(format!("Missing column 2 in {:?}", &parts)),
+            None => return Err(format!("Missing column 2 in {:?}", parts)),
         };
 
         if RE_PROPERTY.is_match(&second) {
@@ -304,7 +304,7 @@ impl QuickStatementsParser {
             return Ok(ret);
         }
 
-        Err(format!("Cannot parse commands: {:?}", &parts))
+        Err(format!("Cannot parse commands: {:?}", parts))
     }
 
     fn parse_edit_statement_property(
@@ -341,7 +341,7 @@ impl QuickStatementsParser {
                         let property = self.parse_property_id(&prop_string)?;
                         (subtype, property)
                     }
-                    None => return Err(format!("Bad reference/qualifier key: '{}'", &p)),
+                    None => return Err(format!("Bad reference/qualifier key: '{}'", p)),
                 },
                 None => break,
             };
@@ -353,14 +353,14 @@ impl QuickStatementsParser {
                 None => {
                     return Err(format!(
                         "Qualifier/Reference key without value: '{:?}'",
-                        &property
+                        property
                     ))
                 }
             };
             match subtype.as_str() {
                 "S" => self.references.push(PropertyValue::new(property, value)),
                 "P" => self.qualifiers.push(PropertyValue::new(property, value)),
-                _ => return Err(format!("Bad ref/qual subtype '{}'", &subtype)),
+                _ => return Err(format!("Bad ref/qual subtype '{}'", subtype)),
             }
         }
 
@@ -376,7 +376,7 @@ impl QuickStatementsParser {
             }
         };
         if *ev.entity_type() != EntityType::Property {
-            return Err(format!("{} is not a property", &prop));
+            return Err(format!("{} is not a property", prop));
         }
         Ok(ev)
     }
@@ -629,12 +629,12 @@ impl QuickStatementsParser {
                 if RE_ENTITY_ID.is_match(&id) {
                     let et = match EntityType::new_from_id(&id) {
                         Ok(et) => et,
-                        Err(e) => return Err(format!("{}: {}", &id, &e)),
+                        Err(e) => return Err(format!("{}: {}", id, e)),
                     };
                     let ev = EntityValue::new(et, id);
                     Ok(EntityID::Id(ev))
                 } else {
-                    Err(format!("Not a valid entity ID: {}", &orig_id))
+                    Err(format!("Not a valid entity ID: {}", orig_id))
                 }
             }
             None => Err("Missing value".to_string()),
@@ -648,7 +648,7 @@ impl QuickStatementsParser {
             Ok(j) => match j["query"]["pages"].as_object() {
                 Some(o) => o
                     .iter()
-                    .map(|(page_id, _page_data)| format!("M{}", &page_id))
+                    .map(|(page_id, _page_data)| format!("M{}", page_id))
                     .next(),
                 None => None,
             },
@@ -741,13 +741,13 @@ impl QuickStatementsParser {
         if !RE_QID.is_match(&lang_id) {
             return Err(format!(
                 "CREATE_LEXEME: invalid language item '{}'",
-                &parts[0]
+                parts[0]
             ));
         }
         if !RE_QID.is_match(&cat_id) {
             return Err(format!(
                 "CREATE_LEXEME: invalid lexical category item '{}'",
-                &parts[1]
+                parts[1]
             ));
         }
         ret.lexeme_language = Some(lang_id);
@@ -826,7 +826,7 @@ impl QuickStatementsParser {
         let qid = parts[2].trim().to_uppercase();
         static RE_QID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^Q\d+$"#).unwrap());
         if !RE_QID.is_match(&qid) {
-            return Err(format!("LEXICAL_CATEGORY: invalid Q-id '{}'", &parts[2]));
+            return Err(format!("LEXICAL_CATEGORY: invalid Q-id '{}'", parts[2]));
         }
         ret.lexeme_category = Some(qid);
         Ok(ret)
@@ -842,7 +842,7 @@ impl QuickStatementsParser {
         let qid = parts[2].trim().to_uppercase();
         static RE_QID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^Q\d+$"#).unwrap());
         if !RE_QID.is_match(&qid) {
-            return Err(format!("LANGUAGE: invalid Q-id '{}'", &parts[2]));
+            return Err(format!("LANGUAGE: invalid Q-id '{}'", parts[2]));
         }
         ret.lexeme_language = Some(qid);
         Ok(ret)
@@ -1436,10 +1436,8 @@ impl QuickStatementsParser {
             cd["claims"] = json!([]);
         }
 
-        let mut statement = match merge_command.mainsnak() {
-            Some(mainsnak) => json!({ "mainsnak": mainsnak,"rank":"normal","type":"statement" }),
-            None => return None,
-        };
+        let mainsnak = merge_command.mainsnak()?;
+        let mut statement = json!({ "mainsnak": mainsnak,"rank":"normal","type":"statement" });
         let mut found = false;
         cd["claims"]
             .as_array_mut()

@@ -230,7 +230,7 @@ async fn get_commands(
             Ok(c) => {
                 ret.push(c);
             }
-            Err(e) => error!("\n{}\nCOULD NOT BE PARSED: {}\n", &line, &e),
+            Err(e) => error!("\n{}\nCOULD NOT BE PARSED: {}\n", line, e),
         }
     }
     ret
@@ -379,7 +379,7 @@ async fn command_server(config_file: &str, port: u16) {
 
     let app = qs_server::build_router(config);
     let addr = format!("0.0.0.0:{}", port);
-    println!("QuickStatements server listening on http://{}", &addr);
+    println!("QuickStatements server listening on http://{}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
@@ -397,7 +397,7 @@ async fn command_run(site: &str) {
     }
     .to_owned();
 
-    println!("{}: {}", site, &api_url);
+    println!("{}: {}", site, api_url);
 
     let mut bot = QuickStatementsBot::new(config.clone(), None, 0);
 
@@ -416,7 +416,7 @@ async fn command_run(site: &str) {
         {
             Ok(c) => c.to_json().unwrap(),
             Err(e) => {
-                println!("{}\nCOULD NOT BE PARSED: {}\n", &command_string, &e);
+                println!("{}\nCOULD NOT BE PARSED: {}\n", command_string, e);
                 return;
             }
         };

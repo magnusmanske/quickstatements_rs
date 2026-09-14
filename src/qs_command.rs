@@ -103,7 +103,7 @@ impl QuickStatementsCommand {
 
     fn is_valid_command(&self) -> Result<(), String> {
         if !self.json.is_object() {
-            return Err(format!("Not a valid command: {:?}", &self));
+            return Err(format!("Not a valid command: {:?}", self));
         }
         Ok(())
     }
@@ -640,7 +640,7 @@ impl QuickStatementsCommand {
             "create" => self.action_create_entity(),
             "merge" => self.action_merge_entities(),
             "remove" => self.remove_from_entity(main_item),
-            other => Err(format!("Unknown action '{}'", &other)),
+            other => Err(format!("Unknown action '{}'", other)),
         }
     }
 
@@ -751,7 +751,7 @@ impl QuickStatementsCommand {
                             .id()
                             .ok_or(format!(
                                 "QuickStatementsCommand::get_statement_id batch #{} command {:?}",
-                                &self.batch_id, &self
+                                self.batch_id, self
                             ))?
                             .to_string();
                         //println!("Using statement ID '{}'", &id);
@@ -771,7 +771,7 @@ impl QuickStatementsCommand {
         });
         match RE_PROP.is_match(s) {
             true => Ok(s.to_string()),
-            false => Err(format!("'{}' is not a property", &s)),
+            false => Err(format!("'{}' is not a property", s)),
         }
     }
 
@@ -1084,7 +1084,7 @@ mod tests {
         let dv = json!({"foo":"bar"});
         assert_eq!(
             c.get_snak_type_for_datavalue(&dv),
-            Err(format!("Cannot determine snak type: {}", &dv))
+            Err(format!("Cannot determine snak type: {}", dv))
         );
     }
 
