@@ -1,4 +1,6 @@
 use thiserror::Error;
+use wikimisc::mysql_async;
+use wikimisc::toolforge_db::DatabaseError;
 
 /// Unified error type for the quickstatements crate.
 ///
@@ -64,6 +66,12 @@ impl From<String> for QsError {
 impl From<mysql_async::Error> for QsError {
     fn from(e: mysql_async::Error) -> Self {
         QsError::MysqlAsyncError(e)
+    }
+}
+
+impl From<DatabaseError> for QsError {
+    fn from(e: DatabaseError) -> Self {
+        QsError::DatabaseError(e.to_string())
     }
 }
 

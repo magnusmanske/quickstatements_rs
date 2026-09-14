@@ -329,8 +329,8 @@ fn action_get_batch(params: &ApiParams) -> Value {
 
 // ---- Database helper functions ----
 
-use mysql_async as my;
-use mysql_async::prelude::*;
+use wikimisc::mysql_async as my;
+use wikimisc::mysql_async::prelude::*;
 
 /// Row layout of the `batch` table:
 /// (id, name, user, site, status, message, last_item, ts_last_change)

@@ -104,14 +104,14 @@ async fn run_bot(config: Arc<QuickStatements>) -> usize {
 async fn command_bot(verbose: bool, config_file: &str) {
     info!("{} CPUs available", num_cpus::get());
     let config = match QuickStatements::new_from_config_json(config_file) {
-        Some(mut qs) => {
+        Ok(mut qs) => {
             qs.set_verbose(verbose);
             Arc::new(qs)
         }
-        None => {
+        Err(e) => {
             error!(
-                "Cannot create QuickStatements from config file '{}'",
-                config_file
+                "Cannot create QuickStatements from config file '{}': {}",
+                config_file, e
             );
             std::process::exit(1);
         }
@@ -294,8 +294,8 @@ async fn command_validate() {
 
 async fn command_debug_command(config_file: &str, command_id: i64) {
     let config = match QuickStatements::new_from_config_json(config_file) {
-        Some(qs) => Arc::new(qs),
-        None => panic!("Could not create QuickStatements from config file"),
+        Ok(qs) => Arc::new(qs),
+        Err(e) => panic!("Could not create QuickStatements from config file: {e}"),
     };
 
     // Load the command from DB
@@ -373,8 +373,8 @@ async fn command_debug_command(config_file: &str, command_id: i64) {
 
 async fn command_server(config_file: &str, port: u16) {
     let config = match QuickStatements::new_from_config_json(config_file) {
-        Some(qs) => Arc::new(qs),
-        None => panic!("Could not create QuickStatements from config file"),
+        Ok(qs) => Arc::new(qs),
+        Err(e) => panic!("Could not create QuickStatements from config file: {e}"),
     };
 
     let app = qs_server::build_router(config);
@@ -387,8 +387,8 @@ async fn command_server(config_file: &str, port: u16) {
 async fn command_run(site: &str) {
     // Initialize config
     let config = match QuickStatements::new_from_config_json("config_rs.json") {
-        Some(qs) => Arc::new(qs),
-        None => panic!("Could not create QuickStatements bot from config file"),
+        Ok(qs) => Arc::new(qs),
+        Err(e) => panic!("Could not create QuickStatements bot from config file: {e}"),
     };
 
     let api_url = match config.get_api_for_site(site) {

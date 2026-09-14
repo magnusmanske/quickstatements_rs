@@ -3,9 +3,6 @@ use crate::qs_command::QuickStatementsCommand;
 use chrono::prelude::Utc;
 use config::*;
 use log;
-use mysql_async as my;
-use mysql_async::from_row;
-use mysql_async::prelude::*;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -13,6 +10,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use wikibase::mediawiki::Api;
+use wikimisc::mysql_async as my;
+use wikimisc::mysql_async::from_row;
+use wikimisc::mysql_async::prelude::*;
+use wikimisc::toolforge_credentials::{Credentials, DbService};
+use wikimisc::toolforge_db::{HostSchema, PoolSettings, ToolforgeDB};
+
+/// Name the single database pool is registered under in the `ToolforgeDB`.
+const DB_POOL_KEY: &str = "quickstatements";
 
 /// Row layout of the `command` table: (id, batch_id, num, json, status, message, ts_change)
 type CommandRow = (i64, i64, i64, String, String, String, String);
@@ -36,9 +41,13 @@ pub struct QuickStatements {
 }
 
 impl QuickStatements {
-    pub fn new_from_config_json(filename: &str) -> Option<Self> {
-        let file = File::open(filename).ok()?;
-        let mut params: Value = serde_json::from_reader(file).ok()?;
+    pub fn new_from_config_json(filename: &str) -> QsResult<Self> {
+        let file = File::open(filename).map_err(|e| {
+            QsError::ConfigError(format!("Cannot open config file '{filename}': {e}"))
+        })?;
+        let mut params: Value = serde_json::from_reader(file).map_err(|e| {
+            QsError::ConfigError(format!("Cannot parse config file '{filename}': {e}"))
+        })?;
 
         // Load the PHP/JS config into params as ["config"], or create empty object
         params["config"] = match params["config_file"].as_str() {
@@ -57,7 +66,7 @@ impl QuickStatements {
 
         let max_batches_per_user = params["max_batches_per_user"].as_i64().unwrap_or(2);
         let ret = Self {
-            pool: Self::create_mysql_pool(&params),
+            pool: Self::create_mysql_pool(&params)?,
             params,
             running_batch_ids: Arc::new(RwLock::new(HashSet::new())),
             user_counter: Arc::new(RwLock::new(HashMap::new())),
@@ -65,7 +74,7 @@ impl QuickStatements {
             max_batches_per_user,
             verbose: false,
         };
-        Some(ret)
+        Ok(ret)
     }
 
     pub fn set_verbose(&mut self, verbose: bool) {
@@ -202,23 +211,46 @@ impl QuickStatements {
         Ok(res["query"]["users"][0]["blockid"].is_number())
     }
 
-    fn create_mysql_pool(params: &Value) -> my::Pool {
-        if !params["mysql"].is_object() {
-            panic!("QuickStatementsConfig::create_mysql_pool: No mysql info in params");
-        }
-        let port = params["mysql"]["port"].as_u64().unwrap_or(3306) as u16;
-        let host = params["mysql"]["host"].as_str().expect("No host");
-        let schema = params["mysql"]["schema"].as_str().expect("No schema");
-        let user = params["mysql"]["user"].as_str().expect("No user");
-        let pass = params["mysql"]["pass"].as_str().expect("No pass");
-        let opts = my::OptsBuilder::default()
-            .ip_or_hostname(host)
-            .db_name(Some(schema))
-            .user(Some(user))
-            .pass(Some(pass))
-            .tcp_port(port);
+    /// The database host: `mysql.host` if the config names one, otherwise
+    /// ToolsDB on Toolforge and `127.0.0.1` (SSH tunnel) anywhere else.
+    fn db_host(config: &Value, db: &ToolforgeDB) -> String {
+        config["host"]
+            .as_str()
+            .unwrap_or_else(|| db.get_db_host_for_tool_db())
+            .to_string()
+    }
 
-        mysql_async::Pool::new(opts)
+    /// Builds the pool for the tool's own ToolsDB database from the `mysql`
+    /// section of the config.
+    ///
+    /// Only `schema` is required. Without `host` the pool goes to ToolsDB on
+    /// Toolforge and to `127.0.0.1` elsewhere, so an SSH tunnel just works;
+    /// without `user`/`pass` the tool's own Toolforge credentials are used.
+    /// The pool is sized by `PoolSettings::from_json` from the same object
+    /// (`min_connections`, `max_connections`, `keep_sec`,
+    /// `max_statement_time`), whose defaults stay within the Toolforge
+    /// connection handling policy.
+    ///
+    /// Host names and clusters are wikimisc's business, so a future change to
+    /// the Wiki Replicas or ToolsDB layout is a dependency bump here.
+    fn create_mysql_pool(params: &Value) -> QsResult<my::Pool> {
+        let config = &params["mysql"];
+        let schema = config["schema"]
+            .as_str()
+            .ok_or_else(|| QsError::ConfigError("No mysql.schema in config".to_string()))?;
+        let mut db = ToolforgeDB::default().with_pool_settings(PoolSettings::from_json(config));
+        if let Some(port) = config["port"].as_u64() {
+            db.set_port(port as u16);
+        }
+        let host = Self::db_host(config, &db);
+        let credentials = match (config["user"].as_str(), config["pass"].as_str()) {
+            (Some(user), Some(pass)) => Credentials::new(user, pass),
+            _ => Credentials::for_service(DbService::ToolsDb)?,
+        };
+        db.add_pool_for(DB_POOL_KEY, &HostSchema::new(&host, schema), &credentials)?;
+        db.get_pool(DB_POOL_KEY)
+            .cloned()
+            .ok_or_else(|| QsError::DatabaseError(format!("No pool '{DB_POOL_KEY}'")))
     }
 
     pub async fn get_last_item_from_batch(&self, batch_id: i64) -> Option<String> {
@@ -628,7 +660,7 @@ impl QuickStatements {
     pub(crate) fn new_for_tests() -> Self {
         let params = json!({"mysql":{"host":"127.0.0.1","schema":"s","user":"u","pass":"p"}});
         Self {
-            pool: Self::create_mysql_pool(&params),
+            pool: Self::create_mysql_pool(&params).expect("test pool config is valid"),
             params,
             running_batch_ids: Arc::new(RwLock::new(HashSet::new())),
             user_counter: Arc::new(RwLock::new(HashMap::new())),
@@ -644,6 +676,34 @@ mod tests {
     use super::*;
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn create_mysql_pool_requires_schema() {
+        let err = QuickStatements::create_mysql_pool(&json!({"mysql":{"host":"h"}}))
+            .expect_err("a config without a schema cannot name a database");
+        assert!(matches!(err, QsError::ConfigError(_)), "{err}");
+    }
+
+    #[test]
+    fn create_mysql_pool_with_explicit_credentials() {
+        let params =
+            json!({"mysql":{"host":"127.0.0.1","port":3308,"schema":"s","user":"u","pass":"p"}});
+        assert!(QuickStatements::create_mysql_pool(&params).is_ok());
+    }
+
+    #[test]
+    fn db_host_prefers_the_config() {
+        let db = ToolforgeDB::default();
+        assert_eq!(
+            QuickStatements::db_host(&json!({"host":"127.0.0.1"}), &db),
+            "127.0.0.1"
+        );
+        // Without one, wikimisc decides: ToolsDB on Toolforge, localhost here.
+        assert_eq!(
+            QuickStatements::db_host(&json!({}), &db),
+            db.get_db_host_for_tool_db()
+        );
+    }
 
     async fn mock_api(server: &MockServer) -> Api {
         // Mount siteinfo response for Api::new
