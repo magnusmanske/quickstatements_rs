@@ -58,17 +58,19 @@ Toolforge NFS is not backed up: keep a copy of `archive_dir` elsewhere.
 ### One-off migration of the existing table
 
 `command` is too big to `ALTER`, `OPTIMIZE` or bulk-`DELETE` within the
-ToolsDB limits, so it is replaced instead (see `src/migration.rs`):
+ToolsDB limits, so it is replaced instead (see `src/migration.rs`).
+`./run_job.sh <command> [arguments]` runs `main` as a one-off Toolforge job
+with the image built by `build.sh`; it will not start a job that still exists.
 
-1. Set `archive_dir` in both config files and deploy.
-2. `main --command migrate_copy` (as a one-off job): archives old batches
+1. Set `archive_dir` in both config files, push, and build (`./build.sh`).
+2. `./run_job.sh migrate_copy`: archives old batches
    without touching `command`, and copies all others to `command_new` (no
    redundant `batch_id` index, compressed `json`). The first run takes hours;
    it can be interrupted and repeated. Repeat until it copies few batches.
 3. Stop the bot (`toolforge jobs delete bot`) and the web service, run
-   `main --command migrate_swap`, then start both again. This does a final
+   `./run_job.sh migrate_swap`, wait for it to finish, then start both again. This does a final
    pass and renames `command` to `command_old` and `command_new` to `command`.
-4. `main --command migrate_verify` checks that every batch in `command_old`
+4. `./run_job.sh migrate_verify` checks that every batch in `command_old`
    is live or archived with the same number of commands. Commands without a
    batch row are reported; copy them back with
    `INSERT INTO command SELECT * FROM command_old WHERE batch_id=…`.
