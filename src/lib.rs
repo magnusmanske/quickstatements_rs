@@ -5,6 +5,7 @@ pub mod archive;
 pub mod command_type;
 pub mod entity_id;
 pub mod error;
+pub mod migration;
 pub mod property_value;
 pub mod qs_bot;
 pub mod qs_command;
