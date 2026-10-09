@@ -357,28 +357,30 @@ impl QuickStatements {
         ret
     }
 
-    pub async fn reinitialize_open_batches(&self) -> Option<()> {
+    /// Puts DONE batches that still have INIT commands back into the queue,
+    /// returning how many. The search is a plain read: as an UPDATE, it would
+    /// lock every row of the batch table for its whole (multi-second) run.
+    pub async fn reinitialize_open_batches(&self) -> QsResult<usize> {
         // Legacy PHP-era batches (below this ID) must not be auto-reinitialized
         const MIN_AUTO_REINIT_BATCH_ID: i64 = 12000;
-        let sql = "UPDATE batch SET status='INIT' WHERE status='DONE' AND id IN (SELECT DISTINCT batch_id FROM command WHERE status='INIT' and batch_id>:min_id)";
-        self.pool
-            .get_conn()
-            .await
-            .ok()?
-            .exec_drop(sql, params! {"min_id" => MIN_AUTO_REINIT_BATCH_ID})
-            .await
-            .ok()
+        let mut conn = self.pool.get_conn().await?;
+        let sql = "SELECT id FROM batch WHERE `status`='DONE' AND id>:min_id AND id IN (SELECT batch_id FROM command WHERE `status`='INIT')";
+        let ids: Vec<i64> = conn
+            .exec(sql, params! {"min_id" => MIN_AUTO_REINIT_BATCH_ID})
+            .await?;
+        if !ids.is_empty() {
+            let ids: Vec<String> = ids.iter().map(i64::to_string).collect();
+            let sql = format!(
+                "UPDATE batch SET `status`='INIT' WHERE `status`='DONE' AND id IN ({})",
+                ids.join(",")
+            );
+            conn.query_drop(sql).await?;
+        }
+        Ok(ids.len())
     }
 
     pub async fn set_batch_running(&self, batch_id: i64, user_id: i64) {
         log::info!("Starting batch #{} for user {}", batch_id, user_id);
-
-        if self.reinitialize_open_batches().await.is_none() {
-            log::warn!(
-                "Failed to reinitialize open batches for batch #{}",
-                batch_id
-            );
-        }
 
         // The batch was already claimed (running set + user counter) by
         // get_next_batches(), so there is nothing to mark here.

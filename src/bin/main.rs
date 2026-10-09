@@ -22,6 +22,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 const SLEEP_BETWEEN_BOT_RUNS_MS: u64 = 500;
 const MAX_INACTIVITY_BEFORE_SEPPUKU_SEC: u64 = 60;
 const MAX_COMMAND_RETRIES: u32 = 3;
+const REINITIALIZE_OPEN_BATCHES_INTERVAL: Duration = Duration::from_secs(600);
 
 /// Run the bot loop for a single batch. Returns false when the batch is done or should stop.
 async fn run_bot_loop(mut bot: QuickStatementsBot) -> bool {
@@ -147,7 +148,16 @@ async fn command_bot(verbose: bool, config_file: &str) {
     let last_bot_run = Arc::new(Mutex::new(Instant::now()));
     seppuku(config.clone(), last_bot_run.clone());
 
+    let mut next_reinitialize = Instant::now();
     loop {
+        if Instant::now() >= next_reinitialize {
+            match config.reinitialize_open_batches().await {
+                Ok(0) => {}
+                Ok(n) => info!("Put {n} DONE batches with open commands back into the queue"),
+                Err(e) => error!("Cannot reinitialize open batches: {e}"),
+            }
+            next_reinitialize = Instant::now() + REINITIALIZE_OPEN_BATCHES_INTERVAL;
+        }
         let started = run_bot(config.clone()).await;
         if started > 0 {
             *last_bot_run.lock().await = Instant::now();
