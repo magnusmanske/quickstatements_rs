@@ -29,3 +29,29 @@ The pool defaults follow the Toolforge [connection handling
 policy](https://wikitech.wikimedia.org/wiki/Help:Wiki_Replicas#Connection_handling_policy),
 which the previous hand-rolled pool did not: `mysql_async`'s own defaults hold
 ten connections open while idle and allow up to a hundred.
+
+## Archive
+
+To keep the `command` table small, the commands of batches that have been
+`DONE` or `STOP` for a while are moved to files, one per batch:
+`<archive_dir>/<batch_id / 1000>/<batch_id>.jsonl.gz` (gzipped JSON lines,
+one `command` row per line). `command_archive` holds each archived batch's
+per-status counts for the batch list.
+
+| key (`config_rs.json`) | default |
+| --- | --- |
+| `archive_dir` | unset: archive off, e.g. `/data/project/quickstatements/archive` |
+| `archive_months` | 3 |
+
+Rows in `command` always take precedence over an archive file. Archived
+batches are read from their file for viewing; the bot restores a batch into
+`command` when it is restarted, as does the PHP frontend's "reset errors".
+Set the same `archive_dir` in the PHP frontend's `config.json`.
+
+- `main --command archive` archives (and removes from `command`) every batch
+  that has been DONE/STOP for `archive_months`. Run it daily as a scheduled
+  job; restored batches are archived again once they are old.
+- `main --command restore --id <batch>` restores a batch by hand.
+
+Toolforge NFS is not backed up: keep a copy of `archive_dir` elsewhere.
+

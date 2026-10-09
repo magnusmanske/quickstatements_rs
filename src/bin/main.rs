@@ -1,6 +1,8 @@
 use clap::Parser;
 use futures::FutureExt;
 use log::{error, info};
+use quickstatements::archive::Archive;
+use quickstatements::error::QsResult;
 use quickstatements::qs_bot::QuickStatementsBot;
 use quickstatements::qs_command::QuickStatementsCommand;
 use quickstatements::qs_config::QuickStatements;
@@ -437,6 +439,23 @@ async fn command_run(site: &str) {
     }
 }
 
+fn load_archive(config_file: &str) -> (QuickStatements, Archive) {
+    let qs = QuickStatements::new_from_config_json(config_file)
+        .unwrap_or_else(|e| panic!("Could not create QuickStatements from config file: {e}"));
+    let archive = qs.archive().expect("No archive_dir in config file");
+    (qs, archive)
+}
+
+fn report<T: std::fmt::Debug>(command: &str, result: QsResult<T>) {
+    match result {
+        Ok(result) => info!("{command}: {result:?}"),
+        Err(e) => {
+            error!("{command} failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     author,
@@ -452,7 +471,7 @@ struct Args {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Command [bot|parse|validate|run|server]
+    /// Command [bot|parse|validate|run|server|debug_command|archive|restore]
     #[arg(long)]
     command: String,
 
@@ -464,7 +483,7 @@ struct Args {
     #[arg(short, long, default_value_t = 8080)]
     port: u16,
 
-    /// Command ID for debug_command
+    /// Command ID for debug_command, batch ID for restore
     #[arg(long)]
     id: Option<i64>,
 }
@@ -482,6 +501,15 @@ async fn main() {
         "debug_command" => {
             let id = args.id.expect("--id is required for debug_command");
             command_debug_command(&args.config_file, id).await;
+        }
+        "archive" => {
+            let (qs, archive) = load_archive(&args.config_file);
+            report("archive (batches, commands)", archive.sweep(&qs).await);
+        }
+        "restore" => {
+            let id = args.id.expect("--id is required for restore");
+            let (qs, archive) = load_archive(&args.config_file);
+            report("restored", archive.restore_batch(&qs, id).await);
         }
         x => panic!("Not a valid command: {}", x),
     }

@@ -55,6 +55,12 @@ pub enum QsError {
 
     #[error("No match ID set")]
     NoMatchSetError,
+
+    #[error("I/O error: {0}")]
+    IoError(#[from] std::io::Error),
+
+    #[error("JSON error: {0}")]
+    JsonError(#[from] serde_json::Error),
 }
 
 impl From<String> for QsError {

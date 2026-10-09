@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate serde_json;
 
+pub mod archive;
 pub mod command_type;
 pub mod entity_id;
 pub mod error;

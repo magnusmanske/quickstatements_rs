@@ -1,6 +1,7 @@
+use crate::archive::Archive;
 use crate::error::{QsError, QsResult};
 use crate::qs_command::QuickStatementsCommand;
-use chrono::prelude::Utc;
+use chrono::prelude::{DateTime, Utc};
 use config::*;
 use log;
 use serde_json::Value;
@@ -20,13 +21,21 @@ use wikimisc::toolforge_db::{HostSchema, PoolSettings, ToolforgeDB};
 const DB_POOL_KEY: &str = "quickstatements";
 
 /// Row layout of the `command` table: (id, batch_id, num, json, status, message, ts_change)
-type CommandRow = (i64, i64, i64, String, String, String, String);
+pub(crate) type CommandRow = (i64, i64, i64, String, String, String, String);
 
 /// A batch that cannot be started (bad site, revoked OAuth, ...) goes back into
 /// the queue rather than being failed, so it must not be retried at full speed.
 /// Delay before the next attempt: base << failures, capped at max.
 const BATCH_START_RETRY_BASE_S: u64 = 60;
 const BATCH_START_RETRY_MAX_S: u64 = 1800;
+
+/// Default for `archive_months`: DONE/STOP batches unchanged for this long are archived
+const DEFAULT_ARCHIVE_MONTHS: u32 = 3;
+
+/// Formats a time like the `ts_*` columns: YYYYMMDDHHMMSS
+pub fn db_timestamp(time: DateTime<Utc>) -> String {
+    time.format("%Y%m%d%H%M%S").to_string()
+}
 
 #[derive(Debug, Clone)]
 pub struct QuickStatements {
@@ -112,6 +121,18 @@ impl QuickStatements {
         }
     }
 
+    /// The command archive, if `archive_dir` is configured
+    pub fn archive(&self) -> Option<Archive> {
+        self.params["archive_dir"].as_str().map(Archive::new)
+    }
+
+    pub fn archive_months(&self) -> u32 {
+        self.params["archive_months"]
+            .as_u64()
+            .and_then(|m| u32::try_from(m).ok())
+            .unwrap_or(DEFAULT_ARCHIVE_MONTHS)
+    }
+
     pub fn edit_delay_ms(&self) -> Option<u64> {
         Some(self.params["edit_delay_ms"].as_u64().unwrap_or(1000))
     }
@@ -146,8 +167,7 @@ impl QuickStatements {
     }
 
     pub fn timestamp(&self) -> String {
-        let now = Utc::now();
-        now.format("%Y%m%d%H%M%S").to_string()
+        db_timestamp(Utc::now())
     }
 
     pub async fn restart_batch(&self, batch_id: i64) -> Option<()> {

@@ -79,6 +79,13 @@ impl QuickStatementsBot {
         match self.batch_id {
             Some(batch_id) => {
                 let config = self.config.clone();
+                // A restarted archived batch needs its commands back first
+                if let Some(archive) = config.archive() {
+                    archive
+                        .restore_batch(&config, batch_id)
+                        .await
+                        .map_err(|e| format!("Cannot restore archived batch: {e}"))?;
+                }
                 config
                     .restart_batch(batch_id)
                     .await

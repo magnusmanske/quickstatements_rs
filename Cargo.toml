@@ -31,9 +31,11 @@ rand = "*"
 axum = "*"
 tower-http = { version = "*", features = ["fs", "cors"] }
 serde = { version = "1", features = ["derive"] }
+flate2 = "1"
 
 [dev-dependencies]
 wiremock = "*"
+tempfile = "3"
 
 [profile.release]
 lto = "fat"

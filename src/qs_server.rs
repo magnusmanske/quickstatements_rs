@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tower_http::services::ServeDir;
 
+use crate::archive::StoredCommand;
 use crate::qs_config::QuickStatements;
 use crate::qs_parser::QuickStatementsParser;
 
@@ -306,6 +307,11 @@ async fn action_reset_errors(state: &AppState, params: &ApiParams) -> Value {
         None => return json!({"status": "ERROR: batch_id parameter required"}),
     };
 
+    if let Some(archive) = state.config.archive() {
+        if let Err(e) = archive.restore_batch(&state.config, batch_id).await {
+            return json!({"status": format!("ERROR: {e}")});
+        }
+    }
     let count = reset_error_commands(&state.config, batch_id).await;
     json!({"status": "OK", "init": count})
 }
@@ -365,15 +371,22 @@ async fn get_command_counts(qs: &QuickStatements, batch_id: i64) -> Value {
         "INIT": 0, "RUN": 0, "DONE": 0, "ERROR": 0, "BLOCKED": 0, "STOP": 0
     });
 
+    let mut rows = vec![];
     if let Ok(mut conn) = qs.get_db_conn().await {
-        if let Ok(rows) = conn
-            .exec::<(String, i64), _, _>(sql, my::params! {batch_id})
+        rows = conn
+            .exec::<(String, u64), _, _>(sql, my::params! {batch_id})
             .await
-        {
-            for (status, cnt) in rows {
-                counts[&status] = json!(cnt);
+            .unwrap_or_default();
+    }
+    if rows.is_empty() {
+        if let Some(archive) = qs.archive() {
+            if let Ok(Some(archived)) = archive.status_counts(qs, batch_id).await {
+                rows = archived.into_iter().collect();
             }
         }
+    }
+    for (status, cnt) in rows {
+        counts[&status] = json!(cnt);
     }
     counts
 }
@@ -478,24 +491,47 @@ async fn get_commands(
         Ok(r) => r,
         Err(_) => return json!([]),
     };
+    let mut rows: Vec<StoredCommand> = rows.into_iter().map(StoredCommand::from).collect();
+    if rows.is_empty() {
+        if let Some(Ok(Some(archived))) = qs.archive().map(|a| a.read(batch_id)) {
+            rows = page_of_commands(archived, &filter_statuses, start, limit);
+        }
+    }
 
     let commands: Vec<Value> = rows
         .iter()
         .map(|row| {
-            let cmd_json: Value = serde_json::from_str(&row.3).unwrap_or(json!({}));
+            let cmd_json: Value = serde_json::from_str(&row.json).unwrap_or(json!({}));
             json!({
-                "id": row.0,
-                "batch_id": row.1,
-                "num": row.2,
+                "id": row.id,
+                "batch_id": row.batch_id,
+                "num": row.num,
                 "json": cmd_json,
-                "status": row.4,
-                "message": row.5,
-                "ts_change": row.6,
+                "status": row.status,
+                "message": row.message,
+                "ts_change": row.ts_change,
             })
         })
         .collect();
 
     json!(commands)
+}
+
+/// Filters and paginates commands like the SQL query in `get_commands`
+fn page_of_commands(
+    mut commands: Vec<StoredCommand>,
+    statuses: &[&str],
+    offset: i64,
+    limit: i64,
+) -> Vec<StoredCommand> {
+    commands.retain(|c| statuses.is_empty() || statuses.contains(&c.status.as_str()));
+    commands.sort_by_key(|c| c.num);
+    let commands = commands.into_iter().skip(offset.max(0) as usize);
+    if limit > 0 {
+        commands.take(limit as usize).collect()
+    } else {
+        commands.collect()
+    }
 }
 
 /// Set batch status (for start/stop)
@@ -633,4 +669,38 @@ async fn import_csv(data: &str, compress: bool) -> Value {
     }
 
     import_v1(&v1_lines.join("\n"), compress).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command(num: i64, status: &str) -> StoredCommand {
+        StoredCommand {
+            id: num + 100,
+            batch_id: 1,
+            num,
+            json: "{}".to_string(),
+            status: status.to_string(),
+            message: String::new(),
+            ts_change: String::new(),
+        }
+    }
+
+    #[test]
+    fn page_of_commands_filters_sorts_and_paginates() {
+        let commands = vec![
+            command(3, "DONE"),
+            command(0, "ERROR"),
+            command(2, "ERROR"),
+            command(1, "DONE"),
+        ];
+        let nums = |page: Vec<StoredCommand>| page.iter().map(|c| c.num).collect::<Vec<_>>();
+        assert_eq!(
+            nums(page_of_commands(commands.clone(), &[], 0, 0)),
+            [0, 1, 2, 3]
+        );
+        assert_eq!(nums(page_of_commands(commands.clone(), &[], 1, 2)), [1, 2]);
+        assert_eq!(nums(page_of_commands(commands, &["DONE"], 1, 0)), [3]);
+    }
 }
