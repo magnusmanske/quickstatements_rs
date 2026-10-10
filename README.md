@@ -49,30 +49,17 @@ batches are read from their file for viewing; the bot restores a batch into
 Set the same `archive_dir` in the PHP frontend's `config.json`.
 
 - `main --command archive` archives (and removes from `command`) every batch
-  that has been DONE/STOP for `archive_months`. Run it daily as a scheduled
-  job; restored batches are archived again once they are old.
+  that has been DONE/STOP for `archive_months`. Restored batches are archived
+  again once they are old.
 - `main --command restore --id <batch>` restores a batch by hand.
+
+`./run_job.sh [--schedule "<cron>"] <command> [arguments]` runs `main` as a
+Toolforge job with the image built by `build.sh`, passing on all arguments.
+It will not start a job that still exists. Run the archive daily with:
+
+    ./run_job.sh --schedule "17 3 * * *" archive
+
+To change the schedule, `toolforge jobs delete qs-archive` and run it again.
 
 Toolforge NFS is not backed up: keep a copy of `archive_dir` elsewhere.
 
-### One-off migration of the existing table
-
-`command` is too big to `ALTER`, `OPTIMIZE` or bulk-`DELETE` within the
-ToolsDB limits, so it is replaced instead (see `src/migration.rs`).
-`./run_job.sh <command> [arguments]` runs `main` as a one-off Toolforge job
-with the image built by `build.sh`; it will not start a job that still exists.
-
-1. Set `archive_dir` in both config files, push, and build (`./build.sh`).
-2. `./run_job.sh migrate_copy`: archives old batches
-   without touching `command`, and copies all others to `command_new` (no
-   redundant `batch_id` index, compressed `json`). The first run takes hours;
-   it can be interrupted and repeated. Repeat until it copies few batches.
-3. Stop the bot (`toolforge jobs delete bot`) and the web service, run
-   `./run_job.sh migrate_swap`, wait for it to finish, then start both again. This does a final
-   pass and renames `command` to `command_old` and `command_new` to `command`.
-4. `./run_job.sh migrate_verify` checks that every batch in `command_old`
-   is live or archived with the same number of commands. Commands without a
-   batch row are reported; copy them back with
-   `INSERT INTO command SELECT * FROM command_old WHERE batch_id=…`.
-5. `DROP TABLE command_old, command_migration`, remove `src/migration.rs`,
-   and schedule the daily `archive` job.

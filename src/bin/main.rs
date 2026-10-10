@@ -3,7 +3,6 @@ use futures::FutureExt;
 use log::{error, info};
 use quickstatements::archive::Archive;
 use quickstatements::error::QsResult;
-use quickstatements::migration;
 use quickstatements::qs_bot::QuickStatementsBot;
 use quickstatements::qs_command::QuickStatementsCommand;
 use quickstatements::qs_config::QuickStatements;
@@ -482,7 +481,7 @@ struct Args {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Command [bot|parse|validate|run|server|debug_command|archive|restore|migrate_copy|migrate_swap|migrate_verify]
+    /// Command [bot|parse|validate|run|server|debug_command|archive|restore]
     #[arg(long)]
     command: String,
 
@@ -521,24 +520,6 @@ async fn main() {
             let id = args.id.expect("--id is required for restore");
             let (qs, archive) = load_archive(&args.config_file);
             report("restored", archive.restore_batch(&qs, id).await);
-        }
-        "migrate_copy" => {
-            let (qs, archive) = load_archive(&args.config_file);
-            report(
-                "batches (copied, failed)",
-                migration::copy_pass(&qs, &archive).await,
-            );
-        }
-        "migrate_swap" => {
-            let (qs, archive) = load_archive(&args.config_file);
-            report("swapped", migration::swap(&qs, &archive).await);
-        }
-        "migrate_verify" => {
-            let (qs, archive) = load_archive(&args.config_file);
-            report(
-                "batches with problems",
-                migration::verify(&qs, &archive).await,
-            );
         }
         x => panic!("Not a valid command: {}", x),
     }

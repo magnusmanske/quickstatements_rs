@@ -14,7 +14,7 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -22,9 +22,9 @@ use wikimisc::mysql_async as my;
 use wikimisc::mysql_async::prelude::*;
 
 /// Columns of the `command` table, in `StoredCommand` order
-pub const COLUMNS: &str = "id,batch_id,num,json,`status`,message,ts_change";
+const COLUMNS: &str = "id,batch_id,num,json,`status`,message,ts_change";
 
-pub const CREATE_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS `command_archive` (
+const CREATE_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS `command_archive` (
   `batch_id` int(11) NOT NULL,
   `num_commands` int(11) unsigned NOT NULL,
   `status_counts` varchar(255) NOT NULL,
@@ -65,37 +65,22 @@ impl From<CommandRow> for StoredCommand {
 }
 
 /// DONE/STOP batches last changed before this time are due for archiving
-pub fn cutoff_timestamp(months: u32) -> String {
+fn cutoff_timestamp(months: u32) -> String {
     let cutoff = Utc::now()
         .checked_sub_months(Months::new(months))
         .unwrap_or(DateTime::<Utc>::MIN_UTC); // Archive nothing rather than everything
     db_timestamp(cutoff)
 }
 
-pub fn is_finished(status: &str) -> bool {
+fn is_finished(status: &str) -> bool {
     status == "DONE" || status == "STOP"
 }
 
-/// Per-status command counts of the given batches in `table`
-pub(crate) async fn batch_status_counts(
-    q: &mut impl Queryable,
-    table: &str,
-    batch_ids: &[i64],
-) -> QsResult<HashMap<i64, StatusCounts>> {
-    let mut ret: HashMap<i64, StatusCounts> = HashMap::new();
-    if batch_ids.is_empty() {
-        return Ok(ret);
-    }
-    let ids: Vec<String> = batch_ids.iter().map(i64::to_string).collect();
-    let sql = format!(
-        "SELECT batch_id,`status`,COUNT(*) FROM {table} WHERE batch_id IN ({}) GROUP BY batch_id,`status`",
-        ids.join(",")
-    );
-    let rows: Vec<(i64, String, u64)> = q.query(sql).await?;
-    for (batch_id, status, count) in rows {
-        ret.entry(batch_id).or_default().insert(status, count);
-    }
-    Ok(ret)
+/// Per-status counts of a batch's rows in `command`
+async fn live_status_counts(q: &mut impl Queryable, batch_id: i64) -> QsResult<StatusCounts> {
+    let sql = "SELECT `status`,COUNT(*) FROM command WHERE batch_id=:batch_id GROUP BY `status`";
+    let rows: Vec<(String, u64)> = q.exec(sql, params! {batch_id}).await?;
+    Ok(rows.into_iter().collect())
 }
 
 async fn has_live_rows(q: &mut impl Queryable, batch_id: i64) -> QsResult<bool> {
@@ -262,15 +247,10 @@ impl Archive {
         result
     }
 
-    /// Archives the commands of a batch and returns their number. Unless
-    /// `keep_live_rows` is set, the rows are then removed from `command`,
-    /// provided the batch is still DONE/STOP and its commands are unchanged.
-    pub async fn archive_batch(
-        &self,
-        qs: &QuickStatements,
-        batch_id: i64,
-        keep_live_rows: bool,
-    ) -> QsResult<u64> {
+    /// Archives the commands of a batch and returns their number. The rows are
+    /// then removed from `command`, provided the batch is still DONE/STOP and
+    /// its commands are unchanged.
+    pub async fn archive_batch(&self, qs: &QuickStatements, batch_id: i64) -> QsResult<u64> {
         // Taken before reading, so any later change to the batch is newer
         let ts_archived = qs.timestamp();
         let mut conn = qs.get_db_conn().await?;
@@ -282,15 +262,14 @@ impl Archive {
 
         // Dropping the transaction early rolls it back
         let mut tx = conn.start_transaction(my::TxOpts::default()).await?;
-        if !keep_live_rows {
-            let sql = "SELECT `status` FROM batch WHERE id=:batch_id FOR UPDATE";
-            let status: Option<String> = tx.exec_first(sql, params! {batch_id}).await?;
-            let live = batch_status_counts(&mut tx, "command", &[batch_id]).await?;
-            if !status.as_deref().is_some_and(is_finished) || live.get(&batch_id) != Some(&counts) {
-                return Err(QsError::StringError(format!(
-                    "Batch #{batch_id} changed while archiving, kept live"
-                )));
-            }
+        let sql = "SELECT `status` FROM batch WHERE id=:batch_id FOR UPDATE";
+        let status: Option<String> = tx.exec_first(sql, params! {batch_id}).await?;
+        if !status.as_deref().is_some_and(is_finished)
+            || live_status_counts(&mut tx, batch_id).await? != counts
+        {
+            return Err(QsError::StringError(format!(
+                "Batch #{batch_id} changed while archiving, kept live"
+            )));
         }
         let status_counts = serde_json::to_string(&counts)?;
         tx.exec_drop(
@@ -298,13 +277,11 @@ impl Archive {
             params! {batch_id, num_commands, status_counts, ts_archived},
         )
         .await?;
-        if !keep_live_rows {
-            tx.exec_drop(
-                "DELETE FROM command WHERE batch_id=:batch_id",
-                params! {batch_id},
-            )
-            .await?;
-        }
+        tx.exec_drop(
+            "DELETE FROM command WHERE batch_id=:batch_id",
+            params! {batch_id},
+        )
+        .await?;
         tx.commit().await?;
         Ok(num_commands)
     }
@@ -341,10 +318,6 @@ impl Archive {
     /// Returns the number of batches and commands archived.
     pub async fn sweep(&self, qs: &QuickStatements) -> QsResult<(usize, u64)> {
         let mut conn = qs.get_db_conn().await?;
-        let migrating: Option<String> = conn.query_first("SHOW TABLES LIKE 'command_new'").await?;
-        if migrating.is_some() {
-            return Err("Migration in progress (command_new exists), see README".into());
-        }
         conn.query_drop(CREATE_TABLE_SQL).await?;
         let cutoff = cutoff_timestamp(qs.archive_months());
         let sql = "SELECT id FROM batch WHERE `status` IN ('DONE','STOP') AND ts_last_change<:cutoff AND EXISTS (SELECT 1 FROM command WHERE command.batch_id=batch.id) ORDER BY id";
@@ -353,7 +326,7 @@ impl Archive {
 
         let (mut batches, mut commands) = (0, 0);
         for batch_id in batch_ids {
-            match self.archive_batch(qs, batch_id, false).await {
+            match self.archive_batch(qs, batch_id).await {
                 Ok(n) => {
                     batches += 1;
                     commands += n;
