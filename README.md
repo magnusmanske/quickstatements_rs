@@ -63,3 +63,25 @@ To change the schedule, `toolforge jobs delete qs-archive` and run it again.
 
 Toolforge NFS is not backed up: keep a copy of `archive_dir` elsewhere.
 
+
+## Telemetry
+
+The `bot` and `server` commands push their health and metrics to the
+[service dashboard](https://magnustools.toolforge.org/buggregator/#/dashboard)
+as components `bot` and `web` (see `wikimisc::telemetry`). It is configured
+by an optional `telemetry` block in `config_rs.json`:
+
+```json
+"telemetry": { "token": "…", "url": "…" }
+```
+
+| key (`telemetry`) | default |
+| --- | --- |
+| `token` | `$DASHBOARD_TOKEN`; without either, telemetry is off |
+| `url` | `$DASHBOARD_URL`, then the Buggregator ingest endpoint |
+
+Besides process memory/CPU/panics and (`web`) request counts and latency, the
+bot reports `qs_batches_running`, `qs_batches_finished_total`,
+`qs_batch_start_failures_total`, `qs_commands_total{result=done|error}` and
+`qs_backoffs_total{reason=maxlag|throttle}`, plus an event when a batch is
+released after repeated errors. Telemetry never blocks or prevents startup.

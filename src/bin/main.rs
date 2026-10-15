@@ -14,6 +14,7 @@ use std::io::prelude::*;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
+use wikimisc::telemetry::{ExitReason, Level, Telemetry, TelemetryError};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -43,10 +44,12 @@ async fn run_bot_loop(mut bot: QuickStatementsBot) -> bool {
                     e
                 );
                 if consecutive_errors >= MAX_COMMAND_RETRIES {
-                    error!(
+                    let message = format!(
                         "Batch #{}: too many consecutive errors, releasing batch",
                         bot.batch_id().unwrap_or(0)
                     );
+                    error!("{message}");
+                    wikimisc::telemetry::event(Level::Warn, message);
                     bot.release_batch("Too many consecutive errors").await;
                     return false;
                 }
@@ -104,6 +107,25 @@ async fn run_bot(config: Arc<QuickStatements>) -> usize {
     count
 }
 
+/// Pushes metrics to the service dashboard; never prevents startup.
+fn start_telemetry(component: &str, config: &QuickStatements) {
+    let result = Telemetry::builder(component)
+        .config(&config.telemetry_config())
+        .version(env!("CARGO_PKG_VERSION"))
+        .install();
+    match result {
+        Ok(_) => info!("Telemetry enabled for component '{component}'"),
+        Err(TelemetryError::NoToken) => info!("Telemetry disabled: no token configured"),
+        Err(e) => error!("Telemetry disabled: {e}"),
+    }
+}
+
+/// Sends the final telemetry push, then exits with status 1.
+async fn exit_with(reason: ExitReason) -> ! {
+    wikimisc::telemetry::shutdown(reason).await;
+    std::process::exit(1);
+}
+
 async fn command_bot(verbose: bool, config_file: &str) {
     info!("{} CPUs available", num_cpus::get());
     let config = match QuickStatements::new_from_config_json(config_file) {
@@ -119,6 +141,7 @@ async fn command_bot(verbose: bool, config_file: &str) {
             std::process::exit(1);
         }
     };
+    start_telemetry("bot", &config);
 
     // Retry DB reset on startup with backoff
     let mut db_retries = 0u32;
@@ -128,11 +151,10 @@ async fn command_bot(verbose: bool, config_file: &str) {
             Err(e) => {
                 db_retries += 1;
                 if db_retries >= 10 {
-                    error!(
-                        "Cannot reset stale batches after {} attempts: {}",
-                        db_retries, e
-                    );
-                    std::process::exit(1);
+                    let message =
+                        format!("Cannot reset stale batches after {db_retries} attempts: {e}");
+                    error!("{message}");
+                    exit_with(ExitReason::Other(message)).await;
                 }
                 let delay = (db_retries as u64).min(6) * 5_000;
                 error!(
@@ -179,11 +201,11 @@ fn seppuku(config: Arc<QuickStatements>, last_bot_run: Arc<Mutex<Instant>>) {
                 if idle && !config.db_ping().await {
                     failed_pings += 1;
                     if failed_pings >= 2 {
-                        error!(
-                            "DB unreachable after {}s of inactivity — committing seppuku",
-                            MAX_INACTIVITY_BEFORE_SEPPUKU_SEC
+                        let reason = format!(
+                            "DB unreachable after {MAX_INACTIVITY_BEFORE_SEPPUKU_SEC}s of inactivity"
                         );
-                        std::process::exit(1);
+                        error!("{reason} — committing seppuku");
+                        exit_with(ExitReason::Watchdog(reason)).await;
                     }
                 } else {
                     failed_pings = 0;
@@ -200,7 +222,7 @@ fn seppuku(config: Arc<QuickStatements>, last_bot_run: Arc<Mutex<Instant>>) {
                 .or_else(|| e.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
             error!("Seppuku monitor panicked: {} — exiting", msg);
-            std::process::exit(1);
+            exit_with(ExitReason::Panic(format!("seppuku monitor: {msg}"))).await;
         }
     });
 }
@@ -388,6 +410,7 @@ async fn command_server(config_file: &str, port: u16) {
         Ok(qs) => Arc::new(qs),
         Err(e) => panic!("Could not create QuickStatements from config file: {e}"),
     };
+    start_telemetry("web", &config);
 
     let app = qs_server::build_router(config);
     let addr = format!("0.0.0.0:{}", port);

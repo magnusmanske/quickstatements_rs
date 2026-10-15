@@ -14,6 +14,7 @@ use wikibase::mediawiki::Api;
 use wikimisc::mysql_async as my;
 use wikimisc::mysql_async::from_row;
 use wikimisc::mysql_async::prelude::*;
+use wikimisc::telemetry::TelemetryConfig;
 use wikimisc::toolforge_credentials::{Credentials, DbService};
 use wikimisc::toolforge_db::{HostSchema, PoolSettings, ToolforgeDB};
 
@@ -31,6 +32,10 @@ const BATCH_START_RETRY_MAX_S: u64 = 1800;
 
 /// Default for `archive_months`: DONE/STOP batches unchanged for this long are archived
 const DEFAULT_ARCHIVE_MONTHS: u32 = 3;
+
+fn set_running_gauge(running: &HashSet<i64>) {
+    wikimisc::metrics::gauge!("qs_batches_running").set(running.len() as f64);
+}
 
 /// Formats a time like the `ts_*` columns: YYYYMMDDHHMMSS
 pub fn db_timestamp(time: DateTime<Utc>) -> String {
@@ -119,6 +124,17 @@ impl QuickStatements {
             Ok(mut conn) => conn.query_drop("SELECT 1").await.is_ok(),
             Err(_) => false,
         }
+    }
+
+    /// The optional `telemetry` block; an invalid one is ignored, so it never
+    /// prevents startup.
+    pub fn telemetry_config(&self) -> TelemetryConfig {
+        serde_json::from_value::<Option<TelemetryConfig>>(self.params["telemetry"].clone())
+            .unwrap_or_else(|e| {
+                log::warn!("Ignoring invalid `telemetry` config: {e}");
+                None
+            })
+            .unwrap_or_default()
     }
 
     /// The command archive, if `archive_dir` is configured
@@ -354,6 +370,7 @@ impl QuickStatements {
             running.insert(id);
             ret.push((id, user_id));
         }
+        set_running_gauge(&running);
         ret
     }
 
@@ -394,8 +411,12 @@ impl QuickStatements {
     /// Idempotent: only adjusts the user counter if the batch was actually running,
     /// so multiple deactivations (e.g. BLOCKED then STOP) can't leak slots.
     pub async fn deactivate_batch_run(&self, batch_id: i64, user_id: i64) -> Option<()> {
-        if !self.running_batch_ids.write().await.remove(&batch_id) {
-            return Some(());
+        {
+            let mut running = self.running_batch_ids.write().await;
+            if !running.remove(&batch_id) {
+                return Some(());
+            }
+            set_running_gauge(&running);
         }
         // Read-modify-write under a single write lock, or concurrent
         // deactivations lose updates and leak user slots.
@@ -414,6 +435,7 @@ impl QuickStatements {
     /// Records a failed start attempt and returns how long the batch is held
     /// back before it is offered again.
     pub async fn note_batch_start_failure(&self, batch_id: i64) -> Duration {
+        wikimisc::metrics::counter!("qs_batch_start_failures_total").increment(1);
         let mut cooldown = self.start_cooldown.write().await;
         let entry = cooldown.entry(batch_id).or_insert((0, Instant::now()));
         entry.0 = entry.0.saturating_add(1);
@@ -431,7 +453,9 @@ impl QuickStatements {
 
     pub async fn set_batch_finished(&self, batch_id: i64, user_id: i64) -> Option<()> {
         log::info!("Batch #{} finished", batch_id);
-        self.set_batch_status("DONE", "", batch_id, user_id).await
+        self.set_batch_status("DONE", "", batch_id, user_id).await?;
+        wikimisc::metrics::counter!("qs_batches_finished_total").increment(1);
+        Some(())
     }
 
     pub async fn check_batch_not_stopped(&self, batch_id: i64) -> QsResult<()> {
@@ -778,6 +802,20 @@ mod tests {
 
     fn test_qs() -> QuickStatements {
         QuickStatements::new_for_tests()
+    }
+
+    // The `telemetry` block is optional, and a broken one must not stop startup
+    #[test]
+    fn test_telemetry_config() {
+        let mut qs = test_qs();
+        let config = qs.telemetry_config();
+        assert!(config.url.is_none() && config.token.is_none());
+
+        qs.params["telemetry"] = json!({"token": "secret"});
+        assert_eq!(qs.telemetry_config().token.as_deref(), Some("secret"));
+
+        qs.params["telemetry"] = json!("not an object");
+        assert!(qs.telemetry_config().token.is_none());
     }
 
     // A batch that failed to start goes back into the queue, so it must be held

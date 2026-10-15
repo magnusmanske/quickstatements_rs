@@ -64,7 +64,9 @@ impl QuickStatementsBot {
 
     /// API pushback: double the adaptive delay (starting at the minimum
     /// backoff) and return it as the pre-retry sleep in milliseconds.
-    fn bump_backoff(&mut self) -> u64 {
+    /// `reason` (`maxlag` or `throttle`) labels the backoff metric.
+    fn bump_backoff(&mut self, reason: &'static str) -> u64 {
+        wikimisc::metrics::counter!("qs_backoffs_total", "reason" => reason).increment(1);
         self.adaptive_delay_ms =
             (self.adaptive_delay_ms * 2).clamp(THROTTLE_BACKOFF_MIN_MS, THROTTLE_BACKOFF_MAX_MS);
         self.adaptive_delay_ms
@@ -721,7 +723,7 @@ impl QuickStatementsBot {
                 if error_code == "maxlag" {
                     let lag = res["error"]["lag"].as_f64().unwrap_or(5.0);
                     let lag_ms = (lag.ceil() as u64 + 1) * 1000;
-                    let sleep_ms = self.bump_backoff().max(lag_ms);
+                    let sleep_ms = self.bump_backoff("maxlag").max(lag_ms);
                     log::warn!(
                         "Batch #{}: Maxlag exceeded (lag: {}s), sleeping {}ms",
                         self.batch_id.unwrap_or(0),
@@ -731,7 +733,7 @@ impl QuickStatementsBot {
                     return Ok(Some(Duration::from_millis(sleep_ms)));
                 }
                 if matches!(error_code, "ratelimited" | "actionthrottled") {
-                    let sleep_ms = self.bump_backoff();
+                    let sleep_ms = self.bump_backoff("throttle");
                     log::warn!(
                         "Batch #{}: Rate limited by API (code: {}), sleeping {}ms",
                         self.batch_id.unwrap_or(0),
@@ -748,7 +750,7 @@ impl QuickStatementsBot {
                         )
                     });
                     if throttled {
-                        let sleep_ms = self.bump_backoff();
+                        let sleep_ms = self.bump_backoff("throttle");
                         log::warn!(
                             "Batch #{}: Throttled by API, sleeping {}ms",
                             self.batch_id.unwrap_or(0),
@@ -804,6 +806,12 @@ impl QuickStatementsBot {
                 self.batch_id.unwrap() // Safe
             ))?;
 
+        let result = match status {
+            "DONE" => "done",
+            "ERROR" => "error",
+            _ => return Ok(()),
+        };
+        wikimisc::metrics::counter!("qs_commands_total", "result" => result).increment(1);
         Ok(())
     }
 }
@@ -895,10 +903,10 @@ mod tests {
         bot.min_delay_ms = 0;
         bot.adaptive_delay_ms = 0;
 
-        assert_eq!(bot.bump_backoff(), THROTTLE_BACKOFF_MIN_MS);
-        assert_eq!(bot.bump_backoff(), 2 * THROTTLE_BACKOFF_MIN_MS);
+        assert_eq!(bot.bump_backoff("throttle"), THROTTLE_BACKOFF_MIN_MS);
+        assert_eq!(bot.bump_backoff("throttle"), 2 * THROTTLE_BACKOFF_MIN_MS);
         for _ in 0..10 {
-            bot.bump_backoff();
+            bot.bump_backoff("throttle");
         }
         assert_eq!(bot.adaptive_delay_ms, THROTTLE_BACKOFF_MAX_MS);
 

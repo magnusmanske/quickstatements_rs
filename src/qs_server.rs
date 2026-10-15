@@ -1,4 +1,5 @@
-use axum::extract::{Query, State};
+use axum::extract::{Query, Request, State};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Redirect, Response};
 use axum::routing::get;
 use axum::Router;
@@ -6,6 +7,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tower_http::services::ServeDir;
 
 use crate::archive::StoredCommand;
@@ -30,7 +32,16 @@ pub fn build_router(config: Arc<QuickStatements>) -> Router {
     Router::new()
         .merge(api)
         .fallback_service(ServeDir::new("public_html"))
+        .layer(middleware::from_fn(record_request))
         .with_state(state)
+}
+
+/// Reports every request's status and duration to telemetry (a no-op without it).
+async fn record_request(request: Request, next: Next) -> Response {
+    let start = Instant::now();
+    let response = next.run(request).await;
+    wikimisc::telemetry::record_http_request(response.status().as_u16(), start.elapsed());
+    response
 }
 
 // ---- Query parameter structs ----
