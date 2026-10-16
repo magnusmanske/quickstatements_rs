@@ -435,7 +435,6 @@ impl QuickStatements {
     /// Records a failed start attempt and returns how long the batch is held
     /// back before it is offered again.
     pub async fn note_batch_start_failure(&self, batch_id: i64) -> Duration {
-        wikimisc::metrics::counter!("qs_batch_start_failures_total").increment(1);
         let mut cooldown = self.start_cooldown.write().await;
         let entry = cooldown.entry(batch_id).or_insert((0, Instant::now()));
         entry.0 = entry.0.saturating_add(1);
@@ -443,6 +442,24 @@ impl QuickStatements {
         let delay =
             Duration::from_secs((BATCH_START_RETRY_BASE_S << shift).min(BATCH_START_RETRY_MAX_S));
         entry.1 = Instant::now() + delay;
+        delay
+    }
+
+    /// Frees the slot of a batch that could not be started or whose run panicked,
+    /// and returns how long it is held back. Batches are never failed with status
+    /// ERROR: a batch still INIT/RUN goes back into the queue, with a growing delay
+    /// so a permanently broken batch does not spin. A batch the user stopped in the
+    /// meantime keeps its status, and if the DB is down the batch stays as-is and
+    /// is picked up again once the DB is back.
+    pub async fn requeue_batch(&self, batch_id: i64, user_id: i64, message: &str) -> Duration {
+        let delay = self.note_batch_start_failure(batch_id).await;
+        if self.check_batch_not_stopped(batch_id).await.is_ok() {
+            let _ = self
+                .set_batch_status("INIT", message, batch_id, user_id)
+                .await;
+        } else {
+            let _ = self.deactivate_batch_run(batch_id, user_id).await;
+        }
         delay
     }
 
@@ -925,6 +942,19 @@ mod tests {
 
         assert!(!qs.running_batch_ids.read().await.contains(&10));
         assert_eq!(*qs.user_counter.read().await.get(&1).unwrap(), 0);
+    }
+
+    // Uses the unconnected test pool: even without a DB, the slot must be freed
+    #[tokio::test]
+    async fn test_requeue_batch_frees_slot_and_holds_batch_back() {
+        let qs = test_qs();
+        assert_eq!(qs.claim_batches(vec![(10, 1)]).await, vec![(10, 1)]);
+
+        qs.requeue_batch(10, 1, "panicked").await;
+
+        assert!(!qs.running_batch_ids.read().await.contains(&10));
+        assert_eq!(*qs.user_counter.read().await.get(&1).unwrap(), 0);
+        assert!(qs.claim_batches(vec![(10, 1)]).await.is_empty());
     }
 
     #[tokio::test]

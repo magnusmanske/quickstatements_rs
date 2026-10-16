@@ -9,8 +9,10 @@ use quickstatements::qs_config::QuickStatements;
 use quickstatements::qs_parser::QuickStatementsParser;
 use quickstatements::qs_server;
 use serde_json::json;
+use std::future::Future;
 use std::io;
 use std::io::prelude::*;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -68,33 +70,38 @@ async fn start_batch(config: Arc<QuickStatements>, batch_id: i64, user_id: i64) 
     match bot.start().await {
         Ok(_) => {
             config.note_batch_start_success(batch_id).await;
+            // A panic only ends this task, as tokio runs it on a worker thread,
+            // but must still free the batch's slot.
             tokio::spawn(async move {
-                run_bot_loop(bot).await;
+                if let Err(panic) = catch_panic(run_bot_loop(bot)).await {
+                    let message = format!("Batch #{batch_id} panicked: {panic}");
+                    error!("{message}");
+                    config.requeue_batch(batch_id, user_id, &message).await;
+                }
             });
         }
         Err(error) => {
-            // Batches are never failed with status ERROR: put it back in the
-            // queue and retry it later, with a growing delay so a permanently
-            // broken batch does not spin. Only touch the status if it is still
-            // INIT/RUN; a batch the user stopped in the meantime keeps its
-            // status, and if the DB is down the batch stays as-is and is picked
-            // up again once the DB is back.
-            let delay = config.note_batch_start_failure(batch_id).await;
+            wikimisc::metrics::counter!("qs_batch_start_failures_total").increment(1);
+            let delay = config.requeue_batch(batch_id, user_id, &error).await;
             error!(
                 "Cannot start batch #{}: {} — retrying in {}s",
                 batch_id,
                 error,
                 delay.as_secs()
             );
-            if config.check_batch_not_stopped(batch_id).await.is_ok() {
-                let _ = config
-                    .set_batch_status("INIT", &error, batch_id, user_id)
-                    .await;
-            } else {
-                let _ = config.deactivate_batch_run(batch_id, user_id).await;
-            }
         }
     }
+}
+
+/// Runs `future`, turning a panic into an error carrying the panic message.
+/// Only for spawned tasks: a panic on the main thread ends the process anyway.
+async fn catch_panic<F: Future>(future: F) -> Result<F::Output, String> {
+    AssertUnwindSafe(future).catch_unwind().await.map_err(|e| {
+        e.downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| e.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".to_string())
+    })
 }
 
 /// Start all available batches in one go, returning the number started.
@@ -191,7 +198,7 @@ async fn command_bot(verbose: bool, config_file: &str) {
 /// This does NOT exit just because the bot is idle.
 fn seppuku(config: Arc<QuickStatements>, last_bot_run: Arc<Mutex<Instant>>) {
     tokio::spawn(async move {
-        let result: Result<(), _> = std::panic::AssertUnwindSafe(async {
+        let result = catch_panic(async {
             // Require two consecutive failed pings, so a single transient
             // connection failure does not kill the process
             let mut failed_pings = 0u32;
@@ -213,14 +220,8 @@ fn seppuku(config: Arc<QuickStatements>, last_bot_run: Arc<Mutex<Instant>>) {
                 tokio::time::sleep(Duration::from_secs(MAX_INACTIVITY_BEFORE_SEPPUKU_SEC)).await;
             }
         })
-        .catch_unwind()
         .await;
-        if let Err(e) = result {
-            let msg = e
-                .downcast_ref::<&str>()
-                .map(|s| s.to_string())
-                .or_else(|| e.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "unknown panic".to_string());
+        if let Err(msg) = result {
             error!("Seppuku monitor panicked: {} — exiting", msg);
             exit_with(ExitReason::Panic(format!("seppuku monitor: {msg}"))).await;
         }
@@ -556,3 +557,17 @@ toolforge jobs run --image golang1.11 --continuous --mem 1500Mi --command '/data
 
 clear ; toolforge-jobs list ; tail ~/bot.err ~/bot.out
 */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn catch_panic_returns_output_or_panic_message() {
+        assert_eq!(catch_panic(async { 7 }).await, Ok(7));
+        let static_message = catch_panic(async { panic!("boom") }).await;
+        assert_eq!(static_message, Err::<(), _>("boom".to_string()));
+        let formatted = catch_panic(async { panic!("boom #{}", 1) }).await;
+        assert_eq!(formatted, Err::<(), _>("boom #1".to_string()));
+    }
+}

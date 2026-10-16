@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::services::ServeDir;
 
 use crate::archive::StoredCommand;
@@ -29,11 +30,18 @@ pub fn build_router(config: Arc<QuickStatements>) -> Router {
         .route("/config.json", get(serve_config));
 
     // Combine: API first, then static file serving for everything else
-    Router::new()
+    let router = Router::new()
         .merge(api)
-        .fallback_service(ServeDir::new("public_html"))
+        .fallback_service(ServeDir::new("public_html"));
+    add_middleware(router).with_state(state)
+}
+
+/// A panicking handler answers 500 instead of dropping the connection. Later
+/// layers wrap earlier ones, so `record_request` still sees that 500.
+fn add_middleware<S: Clone + Send + Sync + 'static>(router: Router<S>) -> Router<S> {
+    router
+        .layer(CatchPanicLayer::new())
         .layer(middleware::from_fn(record_request))
-        .with_state(state)
 }
 
 /// Reports every request's status and duration to telemetry (a no-op without it).
@@ -713,5 +721,26 @@ mod tests {
         );
         assert_eq!(nums(page_of_commands(commands.clone(), &[], 1, 2)), [1, 2]);
         assert_eq!(nums(page_of_commands(commands, &["DONE"], 1, 0)), [3]);
+    }
+
+    #[tokio::test]
+    async fn panicking_handler_returns_500() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        async fn panics() -> &'static str {
+            panic!("test panic")
+        }
+        let router: Router = add_middleware(Router::new().route("/panic", get(panics)));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(b"GET /panic HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        assert!(response.starts_with("HTTP/1.1 500"), "{response}");
     }
 }

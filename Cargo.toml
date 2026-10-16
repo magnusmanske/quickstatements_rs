@@ -30,7 +30,7 @@ async-recursion = "1"
 thiserror = "2"
 rand = "*"
 axum = "*"
-tower-http = { version = "*", features = ["fs", "cors"] }
+tower-http = { version = "*", features = ["fs", "cors", "catch-panic"] }
 serde = { version = "1", features = ["derive"] }
 flate2 = "1"
 
