@@ -46,12 +46,15 @@ async fn run_bot_loop(mut bot: QuickStatementsBot) -> bool {
                     e
                 );
                 if consecutive_errors >= MAX_COMMAND_RETRIES {
-                    let message = format!(
+                    error!(
                         "Batch #{}: too many consecutive errors, releasing batch",
                         bot.batch_id().unwrap_or(0)
                     );
-                    error!("{message}");
-                    wikimisc::telemetry::event(Level::Warn, message);
+                    // No batch id: batches are public and name their user.
+                    wikimisc::telemetry::event(
+                        Level::Warn,
+                        "A batch was released after too many consecutive errors",
+                    );
                     bot.release_batch("Too many consecutive errors").await;
                     return false;
                 }
@@ -158,10 +161,12 @@ async fn command_bot(verbose: bool, config_file: &str) {
             Err(e) => {
                 db_retries += 1;
                 if db_retries >= 10 {
-                    let message =
-                        format!("Cannot reset stale batches after {db_retries} attempts: {e}");
-                    error!("{message}");
-                    exit_with(ExitReason::Other(message)).await;
+                    error!("Cannot reset stale batches after {db_retries} attempts: {e}");
+                    // The error text stays in the log; exit details are shown publicly.
+                    exit_with(ExitReason::Other(format!(
+                        "Cannot reset stale batches after {db_retries} attempts"
+                    )))
+                    .await;
                 }
                 let delay = (db_retries as u64).min(6) * 5_000;
                 error!(
@@ -223,7 +228,7 @@ fn seppuku(config: Arc<QuickStatements>, last_bot_run: Arc<Mutex<Instant>>) {
         .await;
         if let Err(msg) = result {
             error!("Seppuku monitor panicked: {} — exiting", msg);
-            exit_with(ExitReason::Panic(format!("seppuku monitor: {msg}"))).await;
+            exit_with(ExitReason::Panic("in the seppuku monitor".to_string())).await;
         }
     });
 }
