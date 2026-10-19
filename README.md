@@ -9,21 +9,24 @@ QuickStatements only ever talks to its own ToolsDB databases
 user names). It does not query the Wiki Replicas, so wiki database changes such
 as the [2026 Commons links tables
 split](https://wikitech.wikimedia.org/wiki/News/2026_Commons_links_tables_database_split)
-do not affect it. Should a replica query ever be needed, use
-`wikimisc::toolforge_db`, which knows which cluster holds which tables
-(`add_replica_pool("commons", "commonswiki", &["page", "pagelinks"])` lands on
-`links.commonswiki…`) and refuses a query that would join across a split.
+do not affect it. Should a replica query ever be needed, use the `toolforge`
+crate (re-exported as `wikimisc::toolforge`): `WikiPool::connect_for_tables`
+picks the database that holds the tables, e.g. `links.commonswiki…` for
+`pagelinks`, and refuses a query that would join across a split.
 
 The pool is built by `QuickStatements::create_mysql_pool` from the `mysql`
-section of the config file. Only `schema` is required:
+section of the config file. Only `schema` is required; whatever else is left
+out comes from the `toolforge` crate:
 
 | key | default |
 | --- | --- |
 | `schema` | — (required), e.g. `s53220__quickstatements_p` |
-| `host` | ToolsDB on Toolforge, `127.0.0.1` elsewhere (SSH tunnel) |
-| `port` | 3306 |
+| `host` | ToolsDB; `127.0.0.1` in local mode (`local='true'` in `replica.my.cnf`) |
+| `port` | 3306; in local mode, the `toolsdb` port in the `[tunnels]` section of `replica.my.cnf` |
 | `user`, `pass` | the tool's Toolforge credentials, from `TOOL_TOOLSDB_*` or `replica.my.cnf` |
 | `min_connections`, `max_connections`, `keep_sec`, `max_statement_time` | 0, 10, 1s, unset |
+
+A config that gives `host`, `user` and `pass` needs no Toolforge credentials.
 
 The pool defaults follow the Toolforge [connection handling
 policy](https://wikitech.wikimedia.org/wiki/Help:Wiki_Replicas#Connection_handling_policy),

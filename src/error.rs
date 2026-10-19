@@ -1,6 +1,6 @@
 use thiserror::Error;
 use wikimisc::mysql_async;
-use wikimisc::toolforge_db::DatabaseError;
+use wikimisc::toolforge;
 
 /// Unified error type for the quickstatements crate.
 ///
@@ -75,9 +75,13 @@ impl From<mysql_async::Error> for QsError {
     }
 }
 
-impl From<DatabaseError> for QsError {
-    fn from(e: DatabaseError) -> Self {
-        QsError::DatabaseError(e.to_string())
+impl From<toolforge::Error> for QsError {
+    fn from(e: toolforge::Error) -> Self {
+        match e {
+            // Kept apart, as the bot treats MySQL errors as transient
+            toolforge::Error::MysqlError(e) => QsError::MysqlAsyncError(e),
+            e => QsError::DatabaseError(e.to_string()),
+        }
     }
 }
 
@@ -95,3 +99,18 @@ impl From<&str> for QsError {
 
 /// Convenience alias used throughout the crate.
 pub type QsResult<T> = Result<T, QsError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toolforge_mysql_errors_stay_mysql_errors() {
+        // The bot retries on MySQL errors, so they must not become DatabaseError
+        let e =
+            toolforge::Error::MysqlError(mysql_async::Error::Url(mysql_async::UrlError::Invalid));
+        assert!(matches!(QsError::from(e), QsError::MysqlAsyncError(_)));
+        let e = toolforge::Error::InvalidPoolMax(0);
+        assert!(matches!(QsError::from(e), QsError::DatabaseError(_)));
+    }
+}

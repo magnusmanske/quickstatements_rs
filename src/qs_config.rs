@@ -15,11 +15,8 @@ use wikimisc::mysql_async as my;
 use wikimisc::mysql_async::from_row;
 use wikimisc::mysql_async::prelude::*;
 use wikimisc::telemetry::TelemetryConfig;
-use wikimisc::toolforge_credentials::{Credentials, DbService};
-use wikimisc::toolforge_db::{HostSchema, PoolSettings, ToolforgeDB};
-
-/// Name the single database pool is registered under in the `ToolforgeDB`.
-const DB_POOL_KEY: &str = "quickstatements";
+use wikimisc::toolforge::db;
+use wikimisc::toolforge::pool::CustomPool;
 
 /// Row layout of the `command` table: (id, batch_id, num, json, status, message, ts_change)
 pub(crate) type CommandRow = (i64, i64, i64, String, String, String, String);
@@ -45,7 +42,7 @@ pub fn db_timestamp(time: DateTime<Utc>) -> String {
 #[derive(Debug, Clone)]
 pub struct QuickStatements {
     params: Value,
-    pool: my::Pool,
+    pool: CustomPool,
     running_batch_ids: Arc<RwLock<HashSet<i64>>>,
     user_counter: Arc<RwLock<HashMap<i64, i64>>>,
     /// Batches that failed to start: batch_id -> (failures, earliest next attempt)
@@ -115,12 +112,12 @@ impl QuickStatements {
 
     /// Get a database connection from the pool
     pub async fn get_db_conn(&self) -> QsResult<my::Conn> {
-        Ok(self.pool.get_conn().await?)
+        Ok(self.pool.connect().await?)
     }
 
     /// Lightweight check: can we reach the database at all?
     pub async fn db_ping(&self) -> bool {
-        match self.pool.get_conn().await {
+        match self.pool.connect().await {
             Ok(mut conn) => conn.query_drop("SELECT 1").await.is_ok(),
             Err(_) => false,
         }
@@ -169,7 +166,7 @@ impl QuickStatements {
         let sql = r#"SELECT site FROM batch WHERE id=:batch_id"#;
         let rows = self
             .pool
-            .get_conn()
+            .connect()
             .await?
             .exec_iter(sql, params! {batch_id})
             .await?
@@ -187,7 +184,7 @@ impl QuickStatements {
     }
 
     pub async fn restart_batch(&self, batch_id: i64) -> Option<()> {
-        let mut conn = self.pool.get_conn().await.ok()?;
+        let mut conn = self.pool.connect().await.ok()?;
         let ts = self.timestamp();
         // Only (re)start batches that are still INIT or RUN, so a user STOP issued
         // between batch selection and this update is not overwritten.
@@ -200,7 +197,7 @@ impl QuickStatements {
     /// `RUN` ones this process now owns nothing of, and `ERROR` ones written by
     /// older versions (batches are no longer ever set to ERROR).
     pub async fn reset_stale_batches(&self) -> QsResult<()> {
-        let mut conn = self.pool.get_conn().await?;
+        let mut conn = self.pool.connect().await?;
         let ts = self.timestamp();
         conn.exec_drop(r#"UPDATE `batch` SET `status`="INIT",`message`="",`ts_last_change`=:ts WHERE `status` IN ("RUN","ERROR")"#, params!{ts}).await?;
         // Commands left mid-execution (status=RUN) are reset per batch by
@@ -247,52 +244,61 @@ impl QuickStatements {
         Ok(res["query"]["users"][0]["blockid"].is_number())
     }
 
-    /// The database host: `mysql.host` if the config names one, otherwise
-    /// ToolsDB on Toolforge and `127.0.0.1` (SSH tunnel) anywhere else.
-    fn db_host(config: &Value, db: &ToolforgeDB) -> String {
-        config["host"]
-            .as_str()
-            .unwrap_or_else(|| db.get_db_host_for_tool_db())
-            .to_string()
-    }
-
     /// Builds the pool for the tool's own ToolsDB database from the `mysql`
     /// section of the config.
     ///
-    /// Only `schema` is required. Without `host` the pool goes to ToolsDB on
-    /// Toolforge and to `127.0.0.1` elsewhere, so an SSH tunnel just works;
-    /// without `user`/`pass` the tool's own Toolforge credentials are used.
-    /// The pool is sized by `PoolSettings::from_json` from the same object
-    /// (`min_connections`, `max_connections`, `keep_sec`,
-    /// `max_statement_time`), whose defaults stay within the Toolforge
+    /// Only `schema` is required. `host`, `port` and `user`/`pass` override
+    /// what the `toolforge` crate looks up: ToolsDB (or its SSH tunnel, in
+    /// local mode) and the tool's credentials. A config naming all of them
+    /// needs no Toolforge credentials at all. The pool is sized by
+    /// `min_connections`, `max_connections`, `keep_sec` and
+    /// `max_statement_time`; the defaults stay within the Toolforge
     /// connection handling policy.
-    ///
-    /// Host names and clusters are wikimisc's business, so a future change to
-    /// the Wiki Replicas or ToolsDB layout is a dependency bump here.
-    fn create_mysql_pool(params: &Value) -> QsResult<my::Pool> {
+    fn create_mysql_pool(params: &Value) -> QsResult<CustomPool> {
         let config = &params["mysql"];
         let schema = config["schema"]
             .as_str()
             .ok_or_else(|| QsError::ConfigError("No mysql.schema in config".to_string()))?;
-        let mut db = ToolforgeDB::default().with_pool_settings(PoolSettings::from_json(config));
-        if let Some(port) = config["port"].as_u64() {
-            db.set_port(port as u16);
+        let credentials = config["user"].as_str().zip(config["pass"].as_str());
+        let mut builder = match (config["host"].as_str(), credentials) {
+            (Some(host), Some((user, pass))) => CustomPool::builder(host, user, pass),
+            (host, credentials) => {
+                let toolsdb = db::toolsdb(schema)?;
+                let (user, pass) = credentials.unwrap_or((&toolsdb.user, &toolsdb.password));
+                match host {
+                    Some(host) => CustomPool::builder(host, user, pass),
+                    None => CustomPool::builder(&toolsdb.host, user, pass).port(toolsdb.port),
+                }
+            }
         }
-        let host = Self::db_host(config, &db);
-        let credentials = match (config["user"].as_str(), config["pass"].as_str()) {
-            (Some(user), Some(pass)) => Credentials::new(user, pass),
-            _ => Credentials::for_service(DbService::ToolsDb)?,
-        };
-        db.add_pool_for(DB_POOL_KEY, &HostSchema::new(&host, schema), &credentials)?;
-        db.get_pool(DB_POOL_KEY)
-            .cloned()
-            .ok_or_else(|| QsError::DatabaseError(format!("No pool '{DB_POOL_KEY}'")))
+        .database(schema);
+        if let Some(port) = config["port"].as_u64() {
+            let port = u16::try_from(port)
+                .map_err(|_| QsError::ConfigError(format!("Invalid mysql.port {port}")))?;
+            builder = builder.port(port);
+        }
+        if let Some(min) = config["min_connections"].as_u64() {
+            builder = builder.pool_min(min as usize);
+        }
+        if let Some(max) = config["max_connections"].as_u64() {
+            builder = builder.pool_max(max as usize);
+        }
+        if let Some(keep_sec) = config["keep_sec"].as_u64() {
+            builder = builder.inactive_connection_ttl(Duration::from_secs(keep_sec));
+        }
+        if let Some(limit) = config["max_statement_time"]
+            .as_f64()
+            .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
+        {
+            builder = builder.max_statement_time(limit);
+        }
+        Ok(builder.build()?)
     }
 
     pub async fn get_last_item_from_batch(&self, batch_id: i64) -> Option<String> {
         let sql = r#"SELECT last_item FROM batch WHERE `id`=:batch_id"#;
         self.pool
-            .get_conn()
+            .connect()
             .await
             .ok()?
             .exec_iter(sql, params! {batch_id})
@@ -324,7 +330,7 @@ impl QuickStatements {
         let sql =
             "SELECT id,user FROM batch WHERE `status` IN ('INIT','RUN') ORDER BY `ts_last_change`";
 
-        let results: Vec<(i64, i64)> = match self.pool.get_conn().await {
+        let results: Vec<(i64, i64)> = match self.pool.connect().await {
             Ok(mut conn) => match conn.exec_iter(sql, ()).await {
                 Ok(result) => result
                     .map_and_drop(from_row::<(i64, i64)>)
@@ -380,7 +386,7 @@ impl QuickStatements {
     pub async fn reinitialize_open_batches(&self) -> QsResult<usize> {
         // Legacy PHP-era batches (below this ID) must not be auto-reinitialized
         const MIN_AUTO_REINIT_BATCH_ID: i64 = 12000;
-        let mut conn = self.pool.get_conn().await?;
+        let mut conn = self.pool.connect().await?;
         let sql = "SELECT id FROM batch WHERE `status`='DONE' AND id>:min_id AND id IN (SELECT batch_id FROM command WHERE `status`='INIT')";
         let ids: Vec<i64> = conn
             .exec(sql, params! {"min_id" => MIN_AUTO_REINIT_BATCH_ID})
@@ -480,7 +486,7 @@ impl QuickStatements {
 
         let results = self
             .pool
-            .get_conn()
+            .connect()
             .await?
             .exec_iter(sql, params! {batch_id})
             .await?
@@ -505,7 +511,7 @@ impl QuickStatements {
         let ts = self.timestamp();
         let sql = r#"UPDATE `batch` SET `status`=:status,`message`=:message,`ts_last_change`=:ts WHERE id=:batch_id"#;
         self.pool
-            .get_conn()
+            .connect()
             .await
             .ok()?
             .exec_drop(sql, params! {status,message,ts,batch_id})
@@ -522,7 +528,7 @@ impl QuickStatements {
     ) -> QsResult<Option<QuickStatementsCommand>> {
         let rows = self
             .pool
-            .get_conn()
+            .connect()
             .await?
             .exec_iter(sql, params)
             .await?
@@ -568,7 +574,7 @@ impl QuickStatements {
         let ts = self.timestamp();
         let sql = r#"UPDATE `command` SET `ts_change`=:ts,`json`=:json,`status`=:new_status,`message`=:message WHERE `id`=:command_id"#;
         self.pool
-            .get_conn()
+            .connect()
             .await
             .ok()?
             .exec_drop(
@@ -588,7 +594,7 @@ impl QuickStatements {
         let ts = self.timestamp();
         let sql = r#"UPDATE `batch` SET `ts_last_change`=:ts,`last_item`=:last_item WHERE `id`=:batch_id"#;
         self.pool
-            .get_conn()
+            .connect()
             .await
             .ok()?
             .exec_drop(sql, params! {ts,last_item,batch_id})
@@ -610,7 +616,7 @@ impl QuickStatements {
         let auth_db = "s53220__quickstatements_auth";
         let sql = format!(r#"SELECT name FROM {}.user WHERE id=:user_id"#, auth_db);
 
-        let mut conn = match self.pool.get_conn().await {
+        let mut conn = match self.pool.connect().await {
             Ok(c) => c,
             Err(e) => {
                 log::error!(
@@ -649,7 +655,7 @@ impl QuickStatements {
 
         let rows = self
             .pool
-            .get_conn()
+            .connect()
             .await?
             .exec_iter(sql, params! {batch_id})
             .await?
@@ -755,17 +761,23 @@ mod tests {
     }
 
     #[test]
-    fn db_host_prefers_the_config() {
-        let db = ToolforgeDB::default();
-        assert_eq!(
-            QuickStatements::db_host(&json!({"host":"127.0.0.1"}), &db),
-            "127.0.0.1"
-        );
-        // Without one, wikimisc decides: ToolsDB on Toolforge, localhost here.
-        assert_eq!(
-            QuickStatements::db_host(&json!({}), &db),
-            db.get_db_host_for_tool_db()
-        );
+    fn create_mysql_pool_uses_the_config() {
+        let mysql =
+            json!({"host":"db.example","port":3308,"schema":"s","user":"u","pass":"s3cr3t"});
+        let pool = QuickStatements::create_mysql_pool(&json!({ "mysql": mysql })).unwrap();
+        assert_eq!(pool.server(), "db.example:3308");
+        assert!(!format!("{pool:?}").contains("s3cr3t"));
+    }
+
+    #[test]
+    fn create_mysql_pool_rejects_invalid_settings() {
+        for mysql in [
+            json!({"host":"h","schema":"s","user":"u","pass":"p","port":70000}),
+            json!({"host":"h","schema":"s","user":"u","pass":"p","max_connections":0}),
+            json!({"host":"h","schema":"s","user":"u","pass":"p","min_connections":11}),
+        ] {
+            assert!(QuickStatements::create_mysql_pool(&json!({ "mysql": mysql })).is_err());
+        }
     }
 
     async fn mock_api(server: &MockServer) -> Api {
