@@ -1,7 +1,6 @@
 use crate::archive::Archive;
 use crate::error::{QsError, QsResult};
 use crate::qs_command::QuickStatementsCommand;
-use chrono::prelude::{DateTime, Utc};
 use config::*;
 use log;
 use serde_json::Value;
@@ -10,11 +9,12 @@ use std::fs::File;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use wikibase::mediawiki::Api;
+use wikimisc::mediawiki::Api;
 use wikimisc::mysql_async as my;
 use wikimisc::mysql_async::from_row;
 use wikimisc::mysql_async::prelude::*;
 use wikimisc::telemetry::TelemetryConfig;
+use wikimisc::timestamp::TimeStamp;
 use wikimisc::toolforge::db;
 use wikimisc::toolforge::pool::CustomPool;
 
@@ -32,11 +32,6 @@ const DEFAULT_ARCHIVE_MONTHS: u32 = 3;
 
 fn set_running_gauge(running: &HashSet<i64>) {
     wikimisc::metrics::gauge!("qs_batches_running").set(running.len() as f64);
-}
-
-/// Formats a time like the `ts_*` columns: YYYYMMDDHHMMSS
-pub fn db_timestamp(time: DateTime<Utc>) -> String {
-    time.format("%Y%m%d%H%M%S").to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -180,7 +175,7 @@ impl QuickStatements {
     }
 
     pub fn timestamp(&self) -> String {
-        db_timestamp(Utc::now())
+        TimeStamp::now()
     }
 
     pub async fn restart_batch(&self, batch_id: i64) -> Option<()> {
@@ -646,7 +641,7 @@ impl QuickStatements {
     async fn get_oauth_for_batch(
         &self,
         batch_id: i64,
-    ) -> QsResult<Option<wikibase::mediawiki::api::OAuthParams>> {
+    ) -> QsResult<Option<wikimisc::mediawiki::api::OAuthParams>> {
         let auth_db = "s53220__quickstatements_auth";
         let sql = format!(
             r#"SELECT serialized_json FROM {}.batch_oauth WHERE batch_id=:batch_id"#,
@@ -668,14 +663,14 @@ impl QuickStatements {
         let j = serde_json::from_str(first).map_err(|e| {
             QsError::ConfigError(format!("Corrupt OAuth JSON for batch #{}: {}", batch_id, e))
         })?;
-        Ok(Some(wikibase::mediawiki::api::OAuthParams::new_from_json(
+        Ok(Some(wikimisc::mediawiki::api::OAuthParams::new_from_json(
             &j,
         )))
     }
 
     pub async fn set_bot_api_auth(
         &self,
-        mw_api: &mut wikibase::mediawiki::api::Api,
+        mw_api: &mut wikimisc::mediawiki::api::Api,
         batch_id: i64,
     ) -> Result<(), String> {
         let oauth_params = self

@@ -9,7 +9,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
-use wikibase;
+use wikimisc::wikibase;
 
 /// A failing command never stops its batch — it is marked ERROR and the batch
 /// moves on. Runs of consecutive failures (which suggest a systemic problem,
@@ -30,7 +30,7 @@ pub struct QuickStatementsBot {
     batch_id: Option<i64>,
     user_id: i64,
     config: Arc<QuickStatements>,
-    mw_api: Option<wikibase::mediawiki::api::Api>,
+    mw_api: Option<wikimisc::mediawiki::api::Api>,
     pub entities: wikibase::entity_container::EntityContainer,
     last_state: LastEntityState,
     current_entity_id: Option<String>,
@@ -101,7 +101,7 @@ impl QuickStatementsBot {
                 self.last_state = config.get_last_state_from_batch(batch_id).await;
                 match config.get_api_url(batch_id).await {
                     Some(url) => {
-                        let mut mw_api = wikibase::mediawiki::api::Api::new(url)
+                        let mut mw_api = wikimisc::mediawiki::api::Api::new(url)
                             .await
                             .map_err(|e| format!("{:?}", e))?;
                         // Edit pacing is done adaptively by this bot (see
@@ -140,7 +140,7 @@ impl QuickStatementsBot {
         }
     }
 
-    pub fn set_mw_api(&mut self, mw_api: wikibase::mediawiki::api::Api) {
+    pub fn set_mw_api(&mut self, mw_api: wikimisc::mediawiki::api::Api) {
         self.mw_api = Some(mw_api);
     }
 
@@ -652,7 +652,7 @@ impl QuickStatementsBot {
                 // Usually an HTML rate-limit page, i.e. the edit was rejected. If the
                 // edit was applied and only the response was lost, this retry may
                 // duplicate it; MediaWiki offers no idempotency token to prevent that.
-                Err(wikibase::mediawiki::MediaWikiError::Serde(_))
+                Err(wikimisc::mediawiki::MediaWikiError::Serde(_))
                     if json_retries < MAX_JSON_RETRIES =>
                 {
                     json_retries += 1;

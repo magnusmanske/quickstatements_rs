@@ -1,8 +1,9 @@
 use regex::Regex;
 use std::sync::LazyLock;
-use wikibase::mediawiki::api::Api;
-use wikibase::{
-    Coordinate, EntityType, EntityValue, LocaleString, MonoLingualText, SiteLink, TimeValue,
+use wikimisc::entity_id::{EntityId, EntityKind, ItemId, MediaInfoId, PropertyId};
+use wikimisc::mediawiki::api::Api;
+use wikimisc::wikibase::{
+    self, Coordinate, EntityType, EntityValue, LocaleString, MonoLingualText, SiteLink, TimeValue,
 };
 
 use crate::command_type::{CommandModifier, CommandType};
@@ -277,9 +278,6 @@ impl QuickStatementsParser {
     }
 
     fn new_edit_statement(parts: Vec<String>, comment: Option<String>) -> Result<Self, String> {
-        static RE_PROPERTY: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r#"^!?[Pp]\d+$"#).unwrap());
-
         let mut ret = Self::new_blank_with_comment(comment);
         ret.command = CommandType::EditStatement;
         let mut first = match parts.first() {
@@ -294,12 +292,13 @@ impl QuickStatementsParser {
             None => return Err(format!("Missing column 2 in {:?}", parts)),
         };
 
-        if RE_PROPERTY.is_match(&second) {
-            let mut prop_str = second.to_uppercase();
-            if prop_str.starts_with('!') {
-                ret.new_statement = true;
-                prop_str = prop_str[1..].to_string();
-            }
+        // A leading ! forces a new statement
+        let (new_statement, prop_str) = match second.strip_prefix('!') {
+            Some(prop) => (true, prop.to_uppercase()),
+            None => (false, second.to_uppercase()),
+        };
+        if prop_str.parse::<PropertyId>().is_ok() {
+            ret.new_statement = new_statement;
             ret.parse_edit_statement_property(parts, prop_str)?;
             return Ok(ret);
         }
@@ -595,65 +594,55 @@ impl QuickStatementsParser {
         None
     }
 
+    /// Parses an entity ID (case-insensitively, surrounding whitespace allowed)
+    /// or one of the LAST placeholders.
     fn parse_item_id(id: Option<&str>) -> Result<EntityID, String> {
-        static RE_ENTITY_ID: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r#"^[A-Z]\d+$"#)
-                .expect("QuickStatementsParser::parse_item_id:RE_ENTITY_ID does not compile")
-        });
-        static RE_FORM_ID: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r#"^L\d+-F\d+$"#)
-                .expect("QuickStatementsParser::parse_item_id:RE_FORM_ID does not compile")
-        });
-        static RE_SENSE_ID: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r#"^L\d+-S\d+$"#)
-                .expect("QuickStatementsParser::parse_item_id:RE_SENSE_ID does not compile")
-        });
-        match id {
-            Some(orig_id) => {
-                let id = orig_id.trim().to_uppercase();
-                if id == "LAST" {
-                    return Ok(EntityID::Last);
-                }
-                if id == "LAST_FORM" {
-                    return Ok(EntityID::LastForm);
-                }
-                if id == "LAST_SENSE" {
-                    return Ok(EntityID::LastSense);
-                }
-                // Support L123-F1 (form) and L123-S1 (sense) sub-entity IDs
-                if RE_FORM_ID.is_match(&id) || RE_SENSE_ID.is_match(&id) {
-                    // Use Lexeme entity type for the base lexeme, store full sub-entity ID
-                    let ev = EntityValue::new(EntityType::Lexeme, id);
-                    return Ok(EntityID::Id(ev));
-                }
-                if RE_ENTITY_ID.is_match(&id) {
-                    let et = match EntityType::new_from_id(&id) {
-                        Ok(et) => et,
-                        Err(e) => return Err(format!("{}: {}", id, e)),
-                    };
-                    let ev = EntityValue::new(et, id);
-                    Ok(EntityID::Id(ev))
-                } else {
-                    Err(format!("Not a valid entity ID: {}", orig_id))
-                }
-            }
-            None => Err("Missing value".to_string()),
+        let orig_id = id.ok_or("Missing value")?;
+        let id = orig_id.trim().to_uppercase();
+        match id.as_str() {
+            "LAST" => return Ok(EntityID::Last),
+            "LAST_FORM" => return Ok(EntityID::LastForm),
+            "LAST_SENSE" => return Ok(EntityID::LastSense),
+            _ => {}
         }
+        let parsed: EntityId = id
+            .parse()
+            .map_err(|_| format!("Not a valid entity ID: {}", orig_id))?;
+        let entity_type = match parsed.kind() {
+            // Forms and senses (L123-F1, L123-S1) keep the lexeme type, with the
+            // full sub-entity ID; `Value::to_json` tells them apart by the ID.
+            EntityKind::Form | EntityKind::Sense => EntityType::Lexeme,
+            EntityKind::EntitySchema => {
+                return Err(format!("{}: entity schemas are not supported", id))
+            }
+            kind => kind.into(),
+        };
+        Ok(EntityID::Id(EntityValue::new(entity_type, id)))
     }
 
-    /// Returns the Commons MediaInfo ID for a given file
+    /// Parses an item ID ("Q5"), case-insensitively.
+    fn parse_qid(qid: &str) -> Option<String> {
+        let qid: ItemId = qid.trim().to_uppercase().parse().ok()?;
+        Some(qid.to_string())
+    }
+
+    /// Parses a comma-separated list of item IDs ("Q1,Q2"), case-insensitively.
+    fn parse_qid_list(qids: &str) -> Option<Vec<String>> {
+        qids.trim()
+            .to_uppercase()
+            .split(',')
+            .map(|qid| Some(qid.parse::<ItemId>().ok()?.to_string()))
+            .collect()
+    }
+
+    /// Returns the Commons MediaInfo ID for a given file, or None if the file
+    /// does not exist (the API reports a missing page under a negative ID)
     async fn get_entity_id_from_title_commons(title: &str, api: &Api) -> Option<String> {
         let params = api.params_into(&[("action", "query"), ("prop", "info"), ("titles", title)]);
-        match api.get_query_api_json(&params).await {
-            Ok(j) => match j["query"]["pages"].as_object() {
-                Some(o) => o
-                    .iter()
-                    .map(|(page_id, _page_data)| format!("M{}", page_id))
-                    .next(),
-                None => None,
-            },
-            _ => None,
-        }
+        let j = api.get_query_api_json(&params).await.ok()?;
+        let page_id = j["query"]["pages"].as_object()?.keys().next()?;
+        let page_id = page_id.parse::<u64>().ok()?;
+        Some(MediaInfoId::from_page_id(page_id).to_string())
     }
 
     /// Returns the Wikidata item ID for the given title
@@ -682,7 +671,7 @@ impl QuickStatementsParser {
     async fn get_entity_id_from_title(title: &str, api: Option<&Api>) -> Option<String> {
         match api {
             Some(api) => {
-                let mw_title = wikibase::mediawiki::title::Title::new_from_full(title, api);
+                let mw_title = wikimisc::mediawiki::title::Title::new_from_full(title, api);
                 if api.api_url() == COMMONS_API && mw_title.namespace_id() == 6 {
                     // File => Mxxx
                     Self::get_entity_id_from_title_commons(title, api).await
@@ -700,8 +689,6 @@ impl QuickStatementsParser {
     fn parse_lexeme_args(parts: &[String]) -> Result<(Vec<MonoLingualText>, Vec<String>), String> {
         static RE_MONO: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r#"^([a-z][a-z0-9_-]*):"(.*)"$"#).unwrap());
-        static RE_QIDS_COMMA: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r#"^Q\d+(,Q\d+)*$"#).unwrap());
         let mut texts = vec![];
         let mut qids = vec![];
         for part in parts {
@@ -713,10 +700,8 @@ impl QuickStatementsParser {
                 let lang = caps.get(1).unwrap().as_str();
                 let text = caps.get(2).unwrap().as_str();
                 texts.push(MonoLingualText::new(text, lang));
-            } else if RE_QIDS_COMMA.is_match(&trimmed.to_uppercase()) {
-                for qid in trimmed.to_uppercase().split(',') {
-                    qids.push(qid.to_string());
-                }
+            } else if let Some(list) = Self::parse_qid_list(trimmed) {
+                qids.extend(list);
             } else {
                 return Err(format!("Cannot parse lexeme argument: '{}'", trimmed));
             }
@@ -735,21 +720,18 @@ impl QuickStatementsParser {
         ret.command = CommandType::CreateLexeme;
 
         // First two args must be Q-ids (language and lexical category)
-        let lang_id = parts[0].trim().to_uppercase();
-        let cat_id = parts[1].trim().to_uppercase();
-        static RE_QID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^Q\d+$"#).unwrap());
-        if !RE_QID.is_match(&lang_id) {
+        let Some(lang_id) = Self::parse_qid(&parts[0]) else {
             return Err(format!(
                 "CREATE_LEXEME: invalid language item '{}'",
                 parts[0]
             ));
-        }
-        if !RE_QID.is_match(&cat_id) {
+        };
+        let Some(cat_id) = Self::parse_qid(&parts[1]) else {
             return Err(format!(
                 "CREATE_LEXEME: invalid lexical category item '{}'",
                 parts[1]
             ));
-        }
+        };
         ret.lexeme_language = Some(lang_id);
         ret.lexeme_category = Some(cat_id);
 
@@ -823,11 +805,9 @@ impl QuickStatementsParser {
         let mut ret = Self::new_blank_with_comment(comment);
         ret.command = CommandType::SetLexicalCategory;
         ret.item = Some(Self::parse_item_id(Some(&parts[0].trim().to_uppercase()))?);
-        let qid = parts[2].trim().to_uppercase();
-        static RE_QID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^Q\d+$"#).unwrap());
-        if !RE_QID.is_match(&qid) {
+        let Some(qid) = Self::parse_qid(&parts[2]) else {
             return Err(format!("LEXICAL_CATEGORY: invalid Q-id '{}'", parts[2]));
-        }
+        };
         ret.lexeme_category = Some(qid);
         Ok(ret)
     }
@@ -839,11 +819,9 @@ impl QuickStatementsParser {
         let mut ret = Self::new_blank_with_comment(comment);
         ret.command = CommandType::SetLanguage;
         ret.item = Some(Self::parse_item_id(Some(&parts[0].trim().to_uppercase()))?);
-        let qid = parts[2].trim().to_uppercase();
-        static RE_QID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^Q\d+$"#).unwrap());
-        if !RE_QID.is_match(&qid) {
+        let Some(qid) = Self::parse_qid(&parts[2]) else {
             return Err(format!("LANGUAGE: invalid Q-id '{}'", parts[2]));
-        }
+        };
         ret.lexeme_language = Some(qid);
         Ok(ret)
     }
@@ -873,16 +851,13 @@ impl QuickStatementsParser {
         let mut ret = Self::new_blank_with_comment(comment);
         ret.command = CommandType::SetGrammaticalFeature;
         ret.item = Some(Self::parse_item_id(Some(&entity.trim().to_uppercase()))?);
-        static RE_QIDS_COMMA: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r#"^Q\d+(,Q\d+)*$"#).unwrap());
-        let val = value.trim().to_uppercase();
-        if !RE_QIDS_COMMA.is_match(&val) {
+        let Some(features) = Self::parse_qid_list(value) else {
             return Err(format!(
                 "GRAMMATICAL_FEATURE: invalid Q-id list '{}'",
                 value
             ));
-        }
-        ret.grammatical_features = val.split(',').map(|s| s.to_string()).collect();
+        };
+        ret.grammatical_features = features;
         Ok(ret)
     }
 
@@ -1873,12 +1848,47 @@ mod tests {
             .is_err());
     }
 
+    async fn mock_commons_page_info(server: &MockServer, pages: serde_json::Value) -> Api {
+        Mock::given(method("GET"))
+            .and(query_param("action", "query"))
+            .and(query_param("prop", "info"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"query": {"pages": pages}})),
+            )
+            .mount(server)
+            .await;
+        mock_enwiki_api(server).await
+    }
+
+    #[tokio::test]
+    async fn file_title_to_mediainfo_id() {
+        let server = MockServer::start().await;
+        let pages = serde_json::json!({"82397052": {"ns": 6, "title": "File:X.jpg"}});
+        let api = mock_commons_page_info(&server, pages).await;
+        assert_eq!(
+            QuickStatementsParser::get_entity_id_from_title_commons("File:X.jpg", &api).await,
+            Some("M82397052".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_file_has_no_mediainfo_id() {
+        let server = MockServer::start().await;
+        let pages = serde_json::json!({"-1": {"ns": 6, "title": "File:X.jpg", "missing": ""}});
+        let api = mock_commons_page_info(&server, pages).await;
+        assert_eq!(
+            QuickStatementsParser::get_entity_id_from_title_commons("File:X.jpg", &api).await,
+            None
+        );
+    }
+
     #[tokio::test]
     #[ignore]
     async fn file2mediainfo() {
         let command =
             "File:Ruins_of_the_Dower_House,_Fawsley_Park,_Northamptonshire.jpg\tP123\tQ456";
-        let api = wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php")
+        let api = wikimisc::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php")
             .await
             .unwrap();
         let expected = EntityID::Id(EntityValue::new(EntityType::MediaInfo, "M82397052"));
@@ -3565,5 +3575,56 @@ mod tests {
         // This tests the current behavior - we should match PHP
         let result = QuickStatementsParser::parse_value("en:\"hello\"".to_string());
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn parse_item_id_rejects_invalid_numbers() {
+        for id in ["Q0", "Q0123", "P0", "L1-F0", "Q", "Q12a", "E10", "X5"] {
+            assert!(
+                QuickStatementsParser::parse_item_id(Some(id)).is_err(),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_item_id_trims_whitespace() {
+        assert_eq!(
+            QuickStatementsParser::parse_item_id(Some(" q42 ")),
+            Ok(EntityID::Id(EntityValue::new(EntityType::Item, "Q42")))
+        );
+    }
+
+    #[test]
+    fn parse_qid_list() {
+        assert_eq!(
+            QuickStatementsParser::parse_qid_list(" q1,Q2 "),
+            Some(vec!["Q1".to_string(), "Q2".to_string()])
+        );
+        for list in ["", "Q1,", "Q1, Q2", "Q1,P2", "Q01"] {
+            assert_eq!(QuickStatementsParser::parse_qid_list(list), None, "{list}");
+        }
+    }
+
+    #[tokio::test]
+    async fn parse_force_new_statement_lowercase() {
+        let qsp = QuickStatementsParser::new_from_line("Q123\t!p31\tQ5", None)
+            .await
+            .unwrap();
+        assert!(qsp.new_statement);
+        assert_eq!(qsp.property.unwrap().id(), "P31");
+    }
+
+    #[tokio::test]
+    async fn parse_invalid_property_is_rejected() {
+        for prop in ["P0", "!P012", "P"] {
+            let command = format!("Q123\t{prop}\tQ5");
+            assert!(
+                QuickStatementsParser::new_from_line(&command, None)
+                    .await
+                    .is_err(),
+                "{prop}"
+            );
+        }
     }
 }

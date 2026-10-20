@@ -8,7 +8,7 @@
 //! format in sync with it.
 
 use crate::error::{QsError, QsResult};
-use crate::qs_config::{db_timestamp, CommandRow, QuickStatements};
+use crate::qs_config::{CommandRow, QuickStatements};
 use chrono::{DateTime, Months, Utc};
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -20,6 +20,7 @@ use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use wikimisc::mysql_async as my;
 use wikimisc::mysql_async::prelude::*;
+use wikimisc::timestamp::TimeStamp;
 
 /// Columns of the `command` table, in `StoredCommand` order
 const COLUMNS: &str = "id,batch_id,num,json,`status`,message,ts_change";
@@ -69,7 +70,7 @@ fn cutoff_timestamp(months: u32) -> String {
     let cutoff = Utc::now()
         .checked_sub_months(Months::new(months))
         .unwrap_or(DateTime::<Utc>::MIN_UTC); // Archive nothing rather than everything
-    db_timestamp(cutoff)
+    TimeStamp::datetime(&cutoff)
 }
 
 fn is_finished(status: &str) -> bool {
@@ -404,7 +405,7 @@ mod tests {
 
     #[test]
     fn cutoff_is_in_the_past() {
-        let now = db_timestamp(Utc::now());
+        let now = TimeStamp::now();
         let cutoff = cutoff_timestamp(3);
         assert_eq!(cutoff.len(), 14);
         assert!(cutoff < now);

@@ -1,5 +1,5 @@
 use std::fmt;
-use wikibase::EntityValue;
+use wikimisc::wikibase::EntityValue;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EntityID {

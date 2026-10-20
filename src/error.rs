@@ -47,7 +47,7 @@ pub enum QsError {
 
     /// Error from the mediawiki crate.
     #[error("MediaWiki error: {0}")]
-    MediaWikiError(wikibase::mediawiki::MediaWikiError),
+    MediaWikiError(wikimisc::mediawiki::MediaWikiError),
 
     /// Batch status error
     #[error("Batch #{0} is not RUN or INIT")]
@@ -85,8 +85,8 @@ impl From<toolforge::Error> for QsError {
     }
 }
 
-impl From<wikibase::mediawiki::MediaWikiError> for QsError {
-    fn from(e: wikibase::mediawiki::MediaWikiError) -> Self {
+impl From<wikimisc::mediawiki::MediaWikiError> for QsError {
+    fn from(e: wikimisc::mediawiki::MediaWikiError) -> Self {
         QsError::MediaWikiError(e)
     }
 }

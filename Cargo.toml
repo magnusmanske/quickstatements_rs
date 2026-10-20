@@ -6,15 +6,16 @@ edition = "2021"
 
 [dependencies]
 mimalloc = { version = "0.1", features = ["secure"] }
-#wikibase = "*"
-#wikibase = { path = "../wikibase_rs" }
-wikibase = { git = "https://gitlab.com/tobias47n9e/wikibase_rs" }
 
-# `mysql_async` comes from wikimisc (re-exported as `wikimisc::mysql_async`),
-# so both crates always agree on the version.
+# `mysql_async`, `wikibase` and `mediawiki` come from wikimisc (re-exported as
+# `wikimisc::mysql_async` etc.), so all crates always agree on the versions.
 wikimisc = { git = "https://github.com/magnusmanske/wikimisc", default-features = false, features = [
     "database",
+    "date",
+    "entity-id",
+    "seppuku",
     "telemetry",
+    "wikibase",
 ] }
 serde_json = "1"
 config = "*"

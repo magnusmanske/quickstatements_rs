@@ -1,7 +1,7 @@
 use regex::Regex;
 use serde_json::{json, Value};
 use std::sync::LazyLock;
-use wikibase::*;
+use wikimisc::wikibase::{self, *};
 
 /// Holds the current LAST / LAST_FORM / LAST_SENSE entity IDs.
 /// Mirrors the PHP fields last_item / last_form / last_sense.

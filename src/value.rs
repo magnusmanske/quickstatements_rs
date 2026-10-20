@@ -1,5 +1,5 @@
 use std::fmt;
-use wikibase::{Coordinate, MonoLingualText, QuantityValue, TimeValue};
+use wikimisc::wikibase::{self, Coordinate, MonoLingualText, QuantityValue, TimeValue};
 
 use crate::entity_id::EntityID;
 

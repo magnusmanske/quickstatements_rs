@@ -1,4 +1,4 @@
-use wikibase::EntityValue;
+use wikimisc::wikibase::EntityValue;
 
 use crate::value::Value;
 

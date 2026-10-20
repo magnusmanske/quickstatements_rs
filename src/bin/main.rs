@@ -16,7 +16,8 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
-use wikimisc::telemetry::{ExitReason, Level, Telemetry, TelemetryError};
+use wikimisc::seppuku::{Seppuku, Verdict};
+use wikimisc::telemetry::{ExitReason, Level, Telemetry};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -119,15 +120,10 @@ async fn run_bot(config: Arc<QuickStatements>) -> usize {
 
 /// Pushes metrics to the service dashboard; never prevents startup.
 fn start_telemetry(component: &str, config: &QuickStatements) {
-    let result = Telemetry::builder(component)
+    Telemetry::builder(component)
         .config(&config.telemetry_config())
         .version(env!("CARGO_PKG_VERSION"))
-        .install();
-    match result {
-        Ok(_) => info!("Telemetry enabled for component '{component}'"),
-        Err(TelemetryError::NoToken) => info!("Telemetry disabled: no token configured"),
-        Err(e) => error!("Telemetry disabled: {e}"),
-    }
+        .install_or_log();
 }
 
 /// Sends the final telemetry push, then exits with status 1.
@@ -200,41 +196,30 @@ async fn command_bot(verbose: bool, config_file: &str) {
 }
 
 /// Exit the process if the DB is genuinely unreachable for too long.
-/// This does NOT exit just because the bot is idle.
+/// This does NOT exit just because the bot is idle. Two consecutive failed
+/// pings are required, so a single transient connection failure does not kill
+/// the process.
 fn seppuku(config: Arc<QuickStatements>, last_bot_run: Arc<Mutex<Instant>>) {
-    tokio::spawn(async move {
-        let result = catch_panic(async {
-            // Require two consecutive failed pings, so a single transient
-            // connection failure does not kill the process
-            let mut failed_pings = 0u32;
-            loop {
-                let last = *last_bot_run.lock().await;
-                let idle = last.elapsed().as_secs() > MAX_INACTIVITY_BEFORE_SEPPUKU_SEC;
-                if idle && !config.db_ping().await {
-                    failed_pings += 1;
-                    if failed_pings >= 2 {
-                        let reason = format!(
-                            "DB unreachable after {MAX_INACTIVITY_BEFORE_SEPPUKU_SEC}s of inactivity"
-                        );
-                        error!("{reason} — committing seppuku");
-                        exit_with(ExitReason::Watchdog(reason)).await;
-                    }
-                } else {
-                    failed_pings = 0;
-                }
-                tokio::time::sleep(Duration::from_secs(MAX_INACTIVITY_BEFORE_SEPPUKU_SEC)).await;
+    let interval = Duration::from_secs(MAX_INACTIVITY_BEFORE_SEPPUKU_SEC);
+    Seppuku::watch(interval, 2, move || {
+        let config = config.clone();
+        let last_bot_run = last_bot_run.clone();
+        async move {
+            let idle =
+                last_bot_run.lock().await.elapsed().as_secs() > MAX_INACTIVITY_BEFORE_SEPPUKU_SEC;
+            if idle && !config.db_ping().await {
+                Verdict::Dead(format!(
+                    "DB unreachable after {MAX_INACTIVITY_BEFORE_SEPPUKU_SEC}s of inactivity"
+                ))
+            } else {
+                Verdict::Alive
             }
-        })
-        .await;
-        if let Err(msg) = result {
-            error!("Seppuku monitor panicked: {} — exiting", msg);
-            exit_with(ExitReason::Panic("in the seppuku monitor".to_string())).await;
         }
     });
 }
 
 async fn get_php_commands(
-    api: &wikibase::mediawiki::api::Api,
+    api: &wikimisc::mediawiki::api::Api,
     lines: String,
 ) -> Vec<serde_json::Value> {
     let params = api.params_into(&[
@@ -261,7 +246,7 @@ async fn get_php_commands(
 }
 
 async fn get_commands(
-    api: &wikibase::mediawiki::api::Api,
+    api: &wikimisc::mediawiki::api::Api,
     lines: &[String],
 ) -> Vec<QuickStatementsParser> {
     let mut ret: Vec<QuickStatementsParser> = vec![];
@@ -278,7 +263,7 @@ async fn get_commands(
 
 async fn command_parse() {
     let stdin = io::stdin();
-    let api = wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php")
+    let api = wikimisc::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php")
         .await
         .unwrap();
     let mut lines = vec![];
@@ -302,7 +287,7 @@ async fn command_parse() {
 
 async fn command_validate() {
     let stdin = io::stdin();
-    let api = wikibase::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php")
+    let api = wikimisc::mediawiki::api::Api::new("https://commons.wikimedia.org/w/api.php")
         .await
         .unwrap();
     let mut lines = vec![];
@@ -362,7 +347,7 @@ async fn command_debug_command(config_file: &str, command_id: i64) {
         .unwrap_or_else(|| panic!("No API URL for batch #{}", command.batch_id));
 
     // Set up a bot with API + auth
-    let mut mw_api = wikibase::mediawiki::api::Api::new(api_url)
+    let mut mw_api = wikimisc::mediawiki::api::Api::new(api_url)
         .await
         .unwrap_or_else(|e| panic!("Could not create API: {:?}", e));
     config
@@ -471,8 +456,8 @@ async fn command_run(site: &str) {
             let mut command = QuickStatementsCommand::new_from_json(&json_command);
 
             // Run command
-            bot.set_mw_api(wikibase::mediawiki::api::Api::new(&api_url).await.unwrap());
-            //bot.set_mw_api(wikibase::mediawiki::api::Api::new("https://test.wikidata.org/w/api.php").unwrap());
+            bot.set_mw_api(wikimisc::mediawiki::api::Api::new(&api_url).await.unwrap());
+            //bot.set_mw_api(wikimisc::mediawiki::api::Api::new("https://test.wikidata.org/w/api.php").unwrap());
             bot.execute_command(&mut command).await.unwrap();
         }
     }
