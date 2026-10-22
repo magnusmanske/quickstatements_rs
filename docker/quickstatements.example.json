@@ -1,0 +1,32 @@
+{
+	"mysql": {
+		"host": "db",
+		"port": 3306,
+		"schema": "quickstatements",
+		"user": "quickstatements",
+		"pass": "quickstatements"
+	},
+	"cookie_secret": "",
+	"tmp_dir": "/tmp/quickstatements",
+	"edit_delay_ms": 0,
+	"maxlag_s": 5,
+	"config": {
+		"site": "mywikibase",
+		"sites": {
+			"mywikibase": {
+				"label": "My Wikibase",
+				"api": "https://mywikibase.wikibase.cloud/w/api.php",
+				"pageBase": "https://mywikibase.wikibase.cloud/wiki/",
+				"entityBase": "https://mywikibase.wikibase.cloud/entity/",
+				"toolBase": "http://localhost:8000/",
+				"types": {
+					"Q": { "type": "item", "ns": 120, "ns_prefix": "Item:" },
+					"P": { "type": "property", "ns": 122, "ns_prefix": "Property:" }
+				},
+				"oauth": {
+					"mwOAuthUrl": "https://mywikibase.wikibase.cloud/w/index.php?title=Special:OAuth"
+				}
+			}
+		}
+	}
+}

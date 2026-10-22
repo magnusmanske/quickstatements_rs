@@ -1,0 +1,6 @@
+target/
+.git/
+.claude/
+config.*
+config_rs.json
+docker/quickstatements.json

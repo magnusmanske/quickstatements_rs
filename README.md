@@ -1,12 +1,69 @@
-This is a partial re-implementation in Rust of the PHP [QuickStatements](http://tools.wmflabs.org/quickstatements/) tool, specifically the background batch processing.
+A re-implementation in Rust of the PHP [QuickStatements](https://quickstatements.toolforge.org/) tool:
+the background batch processing (`main --command bot`) and the web service
+(`main --command server`), which serves the Vue frontend of the
+[PHP repo](https://github.com/magnusmanske/quickstatements) (copied to
+`public_html`, and built into the binary) and its `api.php`. It runs on
+Toolforge for Wikidata and Commons, or in Docker for a Wikibase of your own.
 
 [![Build Status](https://travis-ci.org/magnusmanske/quickstatements_rs.svg?branch=master)](https://travis-ci.org/magnusmanske/quickstatements_rs)
+
+## Web service
+
+`main --command server --port 8000` serves the frontend and `api.php`, with
+the same actions, parameters and responses as the PHP version, so other tools
+and bots keep working. Users log in with OAuth 1.0a; the bot then edits with
+the credentials stored for each batch.
+
+It is configured by the frontend config (`config_file`, the PHP
+`config.json`, or `config` inline in `config_rs.json`) and these keys:
+
+| key (`config_rs.json`) | default |
+| --- | --- |
+| `cookie_secret` | unset: users are logged out on every restart; at least 32 characters |
+| `tmp_dir` | `quickstatements` in the system's temporary directory; temporary batches (imports opened by URL), kept for two days |
+
+The OAuth consumer is that of the default site: `MW_CONSUMER_TOKEN` and
+`MW_CONSUMER_SECRET`, or else `consumerKey`/`consumerSecret`/`agent` from the
+site's `oauth.ini_file`, as in PHP. MediaWiki sends users back to
+`<toolBase>api.php`; set `MW_CONSUMER_CALLBACK_OOB=1` for a consumer with a
+fixed callback URL. Without a consumer, batches can be viewed, but no one can
+log in. `/config.json` only shows the public part of the frontend config.
+
+Changes on behalf of the logged-in user must come from the tool's own pages
+(by `Sec-Fetch-Site`, or else `Origin`, which may also be one of
+`valid_origin`). The session is kept in encrypted, `HttpOnly`, `SameSite=Lax`
+cookies.
+
+On Toolforge, `Procfile` starts the web service:
+`toolforge webservice buildservice start --mount=all` (after `./build.sh`).
+Set `cookie_secret` and `tmp_dir` (e.g. `/data/project/quickstatements/public_html/tmp`,
+where PHP kept them) in `config_rs.json` first.
+
+### Running your own
+
+For a Wikibase of your own (e.g. on [wikibase.cloud](https://www.wikibase.cloud/)),
+`docker compose` runs the web service, the bot and a MariaDB:
+
+1. Register an OAuth 1.0a consumer on your wiki
+   (`Special:OAuthConsumerRegistration/propose`), with the callback URL
+   `<toolBase>api.php` and the grants "High-volume editing", "Edit existing
+   pages" and "Create, edit, and move pages". It must be approved on the wiki.
+2. Copy `docker/quickstatements.example.json` to `docker/quickstatements.json`,
+   set your wiki's URLs and `toolBase` (where QuickStatements is reached, e.g.
+   `http://localhost:8000/`), and a `cookie_secret` (`openssl rand -hex 32`).
+   If the server reaches the wiki under a different URL than the browser,
+   set `publicApi` and `oauth.publicMwOAuthUrl` to the browser's.
+3. `MW_CONSUMER_TOKEN=… MW_CONSUMER_SECRET=… docker compose up -d`
+
+All tables are in one database (`docker/schema.sql`); set `DB_PASSWORD` and
+the `mysql.pass` to match for anything beyond a local test.
 
 ## Database
 
 QuickStatements only ever talks to its own ToolsDB databases
 (`…__quickstatements_p` for batches and commands, `…__quickstatements_auth` for
-user names). It does not query the Wiki Replicas, so wiki database changes such
+users and OAuth credentials; for a schema not ending in `_p`, both are in the
+schema itself). It does not query the Wiki Replicas, so wiki database changes such
 as the [2026 Commons links tables
 split](https://wikitech.wikimedia.org/wiki/News/2026_Commons_links_tables_database_split)
 do not affect it. Should a replica query ever be needed, use the `toolforge`

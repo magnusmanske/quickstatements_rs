@@ -1,0 +1,51 @@
+# QuickStatements for a Wikibase of your own, e.g. on wikibase.cloud.
+# Copy docker/quickstatements.example.json to docker/quickstatements.json
+# and adapt it, then: MW_CONSUMER_TOKEN=… MW_CONSUMER_SECRET=… docker compose up -d
+# See "Running your own" in the README.
+
+x-quickstatements: &quickstatements
+  build: .
+  image: quickstatements
+  restart: unless-stopped
+  volumes:
+    - ./docker/quickstatements.json:/config/quickstatements.json:ro
+  depends_on:
+    db:
+      condition: service_healthy
+
+services:
+  web:
+    <<: *quickstatements
+    command: ["--command", "server", "--port", "8000"]
+    environment:
+      MW_CONSUMER_TOKEN: ${MW_CONSUMER_TOKEN:?the OAuth consumer token}
+      MW_CONSUMER_SECRET: ${MW_CONSUMER_SECRET:?the OAuth consumer secret}
+    ports:
+      - "${QS_PORT:-8000}:8000"
+    volumes:
+      - ./docker/quickstatements.json:/config/quickstatements.json:ro
+      - tmp:/tmp/quickstatements
+
+  bot:
+    <<: *quickstatements
+    command: ["--command", "bot"]
+
+  db:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: quickstatements
+      MARIADB_USER: quickstatements
+      MARIADB_PASSWORD: ${DB_PASSWORD:-quickstatements}
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+    volumes:
+      - db:/var/lib/mysql
+      - ./docker/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      retries: 20
+
+volumes:
+  db:
+  tmp:
