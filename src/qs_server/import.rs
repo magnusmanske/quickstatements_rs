@@ -3,7 +3,7 @@
 
 use super::{random_string, AppState};
 use crate::error::QsResult;
-use crate::qs_parser::QuickStatementsParser;
+use crate::qs_parser::{QuickStatementsParser, WIKIDATA_ENTITY_BASE};
 use axum::extract::{Path as UrlPath, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -12,8 +12,6 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// The parser writes quantity units as Wikidata entity URIs
-const WIKIDATA_ENTITY_BASE: &str = "http://www.wikidata.org/entity/";
 /// Temporary batches are kept this long (as PHP's cron job did)
 const TEMPORARY_MAX_AGE: Duration = Duration::from_secs(2 * 24 * 3600);
 

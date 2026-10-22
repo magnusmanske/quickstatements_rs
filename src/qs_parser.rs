@@ -3,15 +3,17 @@ use std::sync::LazyLock;
 use wikimisc::entity_id::{EntityId, EntityKind, ItemId, MediaInfoId, PropertyId};
 use wikimisc::mediawiki::api::Api;
 use wikimisc::wikibase::{
-    self, Coordinate, EntityType, EntityValue, LocaleString, MonoLingualText, SiteLink, TimeValue,
+    Coordinate, EntityType, EntityValue, LocaleString, MonoLingualText, SiteLink, TimeValue,
 };
 
 use crate::command_type::{CommandModifier, CommandType};
 use crate::entity_id::EntityID;
 use crate::property_value::PropertyValue;
-use crate::value::Value;
+use crate::value::{Quantity, Value};
 
 pub const COMMONS_API: &str = "https://commons.wikimedia.org/w/api.php";
+/// Prefix of Wikidata's entity URIs, as used in quantity units
+pub const WIKIDATA_ENTITY_BASE: &str = "http://www.wikidata.org/entity/";
 const GREGORIAN_CALENDAR: &str = "http://www.wikidata.org/entity/Q1985727";
 const JULIAN_CALENDAR: &str = "http://www.wikidata.org/entity/Q1985786";
 const GLOBE_EARTH: &str = "http://www.wikidata.org/entity/Q2";
@@ -50,7 +52,7 @@ impl QuickStatementsParser {
     /// Uses api to translate page titles into entity IDs, if given
     pub async fn new_from_line(line: &str, api: Option<&Api>) -> Result<Self, String> {
         static RE_META: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r#"^ *([LDAS]) *([a-z_-]+) *$"#).unwrap());
+            LazyLock::new(|| Regex::new(r#"(?i)^ *([LDAS]) *([a-z_-]+) *$"#).unwrap());
 
         let (line, comment) = Self::parse_comment(line);
         let trimmed = line.trim();
@@ -80,11 +82,15 @@ impl QuickStatementsParser {
                     comment,
                 )
             }
-            "STATEMENT" => {
-                if parts.len() >= 2 {
-                    return Self::new_statement_by_id(&parts[1], comment);
+            "STATEMENT" | "-STATEMENT" => {
+                let Some(id) = parts.get(1) else {
+                    return Err("STATEMENT requires a statement ID".to_string());
+                };
+                let mut ret = Self::new_statement_by_id(id, comment)?;
+                if parts[0].starts_with('-') {
+                    ret.modifier = Some(CommandModifier::Remove);
                 }
-                return Err("STATEMENT requires a statement ID".to_string());
+                return Ok(ret);
             }
             _ => {}
         }
@@ -135,7 +141,7 @@ impl QuickStatementsParser {
         }
 
         if let Some(caps) = RE_META.captures(&parts[1]) {
-            let key = caps.get(2).unwrap().as_str();
+            let key = &caps.get(2).unwrap().as_str().to_lowercase();
             let value = match Self::parse_value(parts[2].clone()) {
                 Some(Value::String(s)) => s,
                 _ => return Err(format!("Bad value: '{}'", parts[2])),
@@ -144,7 +150,7 @@ impl QuickStatementsParser {
             let mut first = parts[0].clone();
             ret.modifier = Self::parse_command_modifier(&mut first);
             ret.item = Some(Self::parse_item_id(Some(first.as_str()))?);
-            match caps.get(1).unwrap().as_str() {
+            match caps.get(1).unwrap().as_str().to_uppercase().as_str() {
                 "L" => {
                     ret.command = CommandType::SetLabel;
                     ret.locale_string = Some(LocaleString::new(key, &value));
@@ -277,6 +283,14 @@ impl QuickStatementsParser {
         ) {
             return Err("MERGE does not allow LAST".to_string());
         }
+        // Like PHP, always merge the newer entity (`target_item`) into the older one
+        let number = |id: &Option<EntityID>| match id {
+            Some(EntityID::Id(ev)) => ev.id()[1..].parse::<u64>().unwrap_or_default(),
+            _ => 0,
+        };
+        if number(&ret.item) > number(&ret.target_item) {
+            std::mem::swap(&mut ret.item, &mut ret.target_item);
+        }
         Ok(ret)
     }
 
@@ -326,7 +340,7 @@ impl QuickStatementsParser {
         // References and qualifiers
 
         static RE_REF_QUAL: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r#"^(!?[PS])(\d+)$"#).unwrap());
+            LazyLock::new(|| Regex::new(r#"(?i)^(!?[PS])(\d+)$"#).unwrap());
         let mut i = parts.iter();
         i.next();
         i.next();
@@ -338,7 +352,7 @@ impl QuickStatementsParser {
                     Some(caps) => {
                         let subtype_raw = caps.get(1).unwrap().as_str().to_string();
                         // !S is treated like S (new source group marker handled at execution time)
-                        let subtype = subtype_raw.replace('!', "");
+                        let subtype = subtype_raw.replace('!', "").to_uppercase();
                         let prop_string = "P".to_string() + caps.get(2).unwrap().as_str();
                         let property = self.parse_property_id(&prop_string)?;
                         (subtype, property)
@@ -471,63 +485,23 @@ impl QuickStatementsParser {
         )))
     }
 
+    /// `amount`, `amount~tolerance` or `amount[lower,upper]`, then optionally `U<unit item>`
     fn parse_quantity(value: &str) -> Option<Value> {
-        static RE_QUANTITY_UNIT: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r#"^(.+)U(\d+)$"#).unwrap());
-        static RE_QUANTITY_PLAIN: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r#"^([-+]{0,1}\d+\.{0,1}\d*)$"#).unwrap());
-        static RE_QUANTITY_TOLERANCE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r#"^([-+]{0,1}\d+\.{0,1}\d*)~(\d+\.{0,1}\d*)$"#).unwrap());
-        static RE_QUANTITY_RANGE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(
-                r#"^([-+]{0,1}\d+\.{0,1}\d*)\[([-+]{0,1}\d+\.{0,1}\d*),([-+]{0,1}\d+\.{0,1}\d*)\]$"#,
-            )
+        static RE_QUANTITY: LazyLock<Regex> = LazyLock::new(|| {
+            let number = r"[-+]?\d+\.?\d*";
+            Regex::new(&format!(
+                r"^({number})(?:\s*~\s*({number})|\[({number}),({number})\])?(?:U(\d+))?$"
+            ))
             .unwrap()
         });
-
-        let value = value.to_string();
-        let (value, unit) = match RE_QUANTITY_UNIT.captures(&value) {
-            Some(caps) => {
-                let value = caps.get(1)?.as_str().to_string();
-                let unit = format!("http://www.wikidata.org/entity/Q{}", caps.get(2)?.as_str());
-                (value, unit)
-            }
-            None => (value, "1".to_string()),
+        let caps = RE_QUANTITY.captures(value)?;
+        let text = |i: usize| caps.get(i).map(|m| m.as_str());
+        let unit = match text(5) {
+            Some(id) => format!("{WIKIDATA_ENTITY_BASE}Q{id}"),
+            None => "1".to_string(),
         };
-
-        if let Some(caps) = RE_QUANTITY_PLAIN.captures(&value) {
-            return Some(Value::Quantity(wikibase::QuantityValue::new(
-                caps.get(1)?.as_str().parse::<f64>().ok()?,
-                None,
-                unit,
-                None,
-            )));
-        }
-
-        if let Some(caps) = RE_QUANTITY_TOLERANCE.captures(&value) {
-            let amount = caps.get(1)?.as_str().parse::<f64>().ok()?;
-            let tolerance = caps.get(2)?.as_str().parse::<f64>().ok()?;
-            return Some(Value::Quantity(wikibase::QuantityValue::new(
-                amount,
-                Some(amount - tolerance),
-                unit,
-                Some(amount + tolerance),
-            )));
-        }
-
-        if let Some(caps) = RE_QUANTITY_RANGE.captures(&value) {
-            let amount = caps.get(1)?.as_str().parse::<f64>().ok()?;
-            let lower = caps.get(2)?.as_str().parse::<f64>().ok()?;
-            let upper = caps.get(3)?.as_str().parse::<f64>().ok()?;
-            return Some(Value::Quantity(wikibase::QuantityValue::new(
-                amount,
-                Some(lower),
-                unit,
-                Some(upper),
-            )));
-        }
-
-        None
+        let quantity = Quantity::new(text(1)?, text(2), text(3).zip(text(4)), unit)?;
+        Some(Value::Quantity(quantity))
     }
 
     /// Parses a V1 value (e.g. `Q5`, `"text"`, `+2001-00-00T00:00:00Z/9`) into
@@ -575,13 +549,14 @@ impl QuickStatementsParser {
         if let Some(caps) = RE_MONOLINGUAL_STRING.captures(value) {
             // Yes, order 2 then 1 is correct!
             return Some(Value::MonoLingualText(MonoLingualText::new(
-                caps.get(2)?.as_str(),
+                caps.get(2)?.as_str().trim(),
                 caps.get(1)?.as_str(),
             )));
         }
 
+        // Trimmed, as Wikibase does, so existing values are recognized
         if let Some(caps) = RE_STRING.captures(value) {
-            return Some(Value::String(caps.get(1)?.as_str().to_string()));
+            return Some(Value::String(caps.get(1)?.as_str().trim().to_string()));
         }
 
         if let Ok(id) = Self::parse_item_id(Some(value)) {
@@ -1028,7 +1003,18 @@ impl QuickStatementsParser {
         }
     }
 
+    /// The command JSON; the comment (`/* … */`) is the summary of every command
     pub fn to_json(&self) -> Result<Vec<serde_json::Value>, String> {
+        let mut commands = self.commands_json()?;
+        if let Some(comment) = &self.comment {
+            for command in &mut commands {
+                command["summary"] = json!(comment);
+            }
+        }
+        Ok(commands)
+    }
+
+    fn commands_json(&self) -> Result<Vec<serde_json::Value>, String> {
         match &self.command {
             CommandType::EditStatement => {
                 let mut ret = vec![];
@@ -1036,11 +1022,7 @@ impl QuickStatementsParser {
                 // STATEMENT command: operate on existing statement by ID
                 if self.item.is_none() && self.property.is_none() {
                     if let Some(Value::String(id)) = &self.value {
-                        let mut base =
-                            json!({"action":self.get_action(),"what":"statement","id":id});
-                        if let Some(comment) = &self.comment {
-                            base["summary"] = json!(comment);
-                        }
+                        let base = json!({"action":self.get_action(),"what":"statement","id":id});
                         return Ok(vec![base]);
                     }
                 }
@@ -1048,9 +1030,6 @@ impl QuickStatementsParser {
                 let mut base = json!({"action":self.get_action(),"what":"statement"});
                 if self.new_statement {
                     base["new_statement"] = json!(1);
-                }
-                if let Some(comment) = &self.comment {
-                    base["summary"] = json!(comment)
                 }
                 match &self.item {
                     Some(id) => base["item"] = json!(id.to_string()),
@@ -1124,28 +1103,28 @@ impl QuickStatementsParser {
                 ),
             },
             CommandType::SetLabel => match (self.item.as_ref(), self.locale_string.as_ref()) {
-                (Some(EntityID::Id(item)), Some(ls)) => Ok(vec![
-                    json!({"action":self.get_action(),"item":item.id(),"language":ls.language(),"value":ls.value(),"what":"label"}),
+                (Some(item), Some(ls)) => Ok(vec![
+                    json!({"action":self.get_action(),"item":item.to_string(),"language":ls.language(),"value":ls.value(),"what":"label"}),
                 ]),
                 _ => Err("Label issue".to_string()),
             },
             CommandType::SetDescription => {
                 match (self.item.as_ref(), self.locale_string.as_ref()) {
-                    (Some(EntityID::Id(item)), Some(ls)) => Ok(vec![
-                        json!({"action":self.get_action(),"item":item.id(),"language":ls.language(),"value":ls.value(),"what":"description"}),
+                    (Some(item), Some(ls)) => Ok(vec![
+                        json!({"action":self.get_action(),"item":item.to_string(),"language":ls.language(),"value":ls.value(),"what":"description"}),
                     ]),
                     _ => Err("Description issue".to_string()),
                 }
             }
             CommandType::SetAlias => match (self.item.as_ref(), self.locale_string.as_ref()) {
-                (Some(EntityID::Id(item)), Some(ls)) => Ok(vec![
-                    json!({"action":self.get_action(),"item":item.id(),"language":ls.language(),"value":ls.value(),"what":"alias"}),
+                (Some(item), Some(ls)) => Ok(vec![
+                    json!({"action":self.get_action(),"item":item.to_string(),"language":ls.language(),"value":ls.value(),"what":"alias"}),
                 ]),
                 _ => Err("Alias issue".to_string()),
             },
             CommandType::SetSitelink => match (self.item.as_ref(), self.sitelink.as_ref()) {
-                (Some(EntityID::Id(item)), Some(sl)) => Ok(vec![
-                    json!({"action":self.get_action(),"item":item.id(),"site":sl.site(),"value":sl.title(),"what":"sitelink"}),
+                (Some(item), Some(sl)) => Ok(vec![
+                    json!({"action":self.get_action(),"item":item.to_string(),"site":sl.site(),"value":sl.title(),"what":"sitelink"}),
                 ]),
                 _ => Err("Sitelink issue".to_string()),
             },
@@ -1155,10 +1134,7 @@ impl QuickStatementsParser {
                     .as_ref()
                     .ok_or("No datatype set for CREATE_PROPERTY")?;
                 let data = json!({"datatype": datatype});
-                let mut ret = json!({"action":"create","type":"property","data":data});
-                if let Some(comment) = &self.comment {
-                    ret["summary"] = json!(comment);
-                }
+                let ret = json!({"action":"create","type":"property","data":data});
                 Ok(vec![ret])
             }
             CommandType::CreateLexeme => {
@@ -1180,18 +1156,16 @@ impl QuickStatementsParser {
                     "language": lang,
                     "lexicalCategory": cat,
                 });
-                if let Some(cd) = &self.create_data {
-                    // Merge any compressed create data
-                    if let Some(obj) = cd.as_object() {
-                        for (k, v) in obj {
-                            data[k] = v.clone();
+                // Merge the compressed create data, e.g. more lemmas
+                if let Some(cd) = self.create_data.as_ref().and_then(|cd| cd.as_object()) {
+                    for (k, v) in cd {
+                        match (data[k].as_object_mut(), v.as_object()) {
+                            (Some(existing), Some(more)) => existing.extend(more.clone()),
+                            _ => data[k] = v.clone(),
                         }
                     }
                 }
-                let mut ret = json!({"action":"create","type":"lexeme","data":data});
-                if let Some(comment) = &self.comment {
-                    ret["summary"] = json!(comment);
-                }
+                let ret = json!({"action":"create","type":"lexeme","data":data});
                 Ok(vec![ret])
             }
             CommandType::AddForm => {
@@ -1200,19 +1174,13 @@ impl QuickStatementsParser {
                     representations[rep.language()] =
                         json!({"language": rep.language(), "value": rep.text()});
                 }
-                let mut data = json!({"representations": representations});
-                if !self.grammatical_features.is_empty() {
-                    data["grammaticalFeatures"] = json!(self.grammatical_features);
-                }
+                let data = json!({"representations": representations, "grammaticalFeatures": self.grammatical_features});
                 let item_str = self
                     .item
                     .as_ref()
                     .ok_or("No item set for ADD_FORM")?
                     .to_string();
-                let mut ret = json!({"action":"create","type":"form","item":item_str,"data":data});
-                if let Some(comment) = &self.comment {
-                    ret["summary"] = json!(comment);
-                }
+                let ret = json!({"action":"create","type":"form","item":item_str,"data":data});
                 Ok(vec![ret])
             }
             CommandType::AddSense => {
@@ -1227,10 +1195,7 @@ impl QuickStatementsParser {
                     .as_ref()
                     .ok_or("No item set for ADD_SENSE")?
                     .to_string();
-                let mut ret = json!({"action":"create","type":"sense","item":item_str,"data":data});
-                if let Some(comment) = &self.comment {
-                    ret["summary"] = json!(comment);
-                }
+                let ret = json!({"action":"create","type":"sense","item":item_str,"data":data});
                 Ok(vec![ret])
             }
             CommandType::SetLemma => {
@@ -1243,10 +1208,7 @@ impl QuickStatementsParser {
                     .as_ref()
                     .ok_or("No item set for SetLemma")?
                     .to_string();
-                let mut ret = json!({"action":"add","what":"lemma","item":item_str,"language":ls.language(),"value":ls.value()});
-                if let Some(comment) = &self.comment {
-                    ret["summary"] = json!(comment);
-                }
+                let ret = json!({"action":"add","what":"lemma","item":item_str,"language":ls.language(),"value":ls.value()});
                 Ok(vec![ret])
             }
             CommandType::SetLexicalCategory => {
@@ -1259,11 +1221,8 @@ impl QuickStatementsParser {
                     .as_ref()
                     .ok_or("No item set for SetLexicalCategory")?
                     .to_string();
-                let mut ret =
+                let ret =
                     json!({"action":"add","what":"lexical_category","item":item_str,"value":cat});
-                if let Some(comment) = &self.comment {
-                    ret["summary"] = json!(comment);
-                }
                 Ok(vec![ret])
             }
             CommandType::SetLanguage => {
@@ -1276,11 +1235,7 @@ impl QuickStatementsParser {
                     .as_ref()
                     .ok_or("No item set for SetLanguage")?
                     .to_string();
-                let mut ret =
-                    json!({"action":"add","what":"language","item":item_str,"value":lang});
-                if let Some(comment) = &self.comment {
-                    ret["summary"] = json!(comment);
-                }
+                let ret = json!({"action":"add","what":"language","item":item_str,"value":lang});
                 Ok(vec![ret])
             }
             CommandType::SetFormRepresentation => {
@@ -1293,10 +1248,7 @@ impl QuickStatementsParser {
                     .as_ref()
                     .ok_or("No item set for SetFormRepresentation")?
                     .to_string();
-                let mut ret = json!({"action":"add","what":"representation","item":item_str,"language":ls.language(),"value":ls.value()});
-                if let Some(comment) = &self.comment {
-                    ret["summary"] = json!(comment);
-                }
+                let ret = json!({"action":"add","what":"representation","item":item_str,"language":ls.language(),"value":ls.value()});
                 Ok(vec![ret])
             }
             CommandType::SetGrammaticalFeature => {
@@ -1305,10 +1257,7 @@ impl QuickStatementsParser {
                     .as_ref()
                     .ok_or("No item set for SetGrammaticalFeature")?
                     .to_string();
-                let mut ret = json!({"action":"add","what":"grammatical_feature","item":item_str,"value":self.grammatical_features.clone()});
-                if let Some(comment) = &self.comment {
-                    ret["summary"] = json!(comment);
-                }
+                let ret = json!({"action":"add","what":"grammatical_feature","item":item_str,"value":self.grammatical_features.clone()});
                 Ok(vec![ret])
             }
             CommandType::SetSenseGloss => {
@@ -1321,10 +1270,7 @@ impl QuickStatementsParser {
                     .as_ref()
                     .ok_or("No item set for SetSenseGloss")?
                     .to_string();
-                let mut ret = json!({"action":"add","what":"gloss","item":item_str,"language":ls.language(),"value":ls.value()});
-                if let Some(comment) = &self.comment {
-                    ret["summary"] = json!(comment);
-                }
+                let ret = json!({"action":"add","what":"gloss","item":item_str,"language":ls.language(),"value":ls.value()});
                 Ok(vec![ret])
             }
             CommandType::Unknown => {
@@ -1349,7 +1295,8 @@ impl QuickStatementsParser {
                     && command.get_action() == "add"
                 {
                     let mut data = create.create_data.take().unwrap_or(json!({}));
-                    let was_merged = Self::compress_command_pair(&mut data, &command);
+                    let was_merged =
+                        Self::compress_command_pair(&create.command, &mut data, &command);
                     if was_merged || data != json!({}) {
                         create.create_data = Some(data);
                     }
@@ -1414,7 +1361,12 @@ impl QuickStatementsParser {
             cd["claims"] = json!([]);
         }
         let claims = cd["claims"].as_array_mut().expect("just made an array");
-        match claims.iter_mut().find(|s| s["mainsnak"] == mainsnak) {
+        // `!P` asks for a statement of its own
+        let existing = match merge_command.new_statement {
+            true => None,
+            false => claims.iter_mut().find(|s| s["mainsnak"] == mainsnak),
+        };
+        match existing {
             Some(statement) => {
                 Self::compress_add_references_and_qualifiers(statement, merge_command)
             }
@@ -1429,7 +1381,20 @@ impl QuickStatementsParser {
     }
 
     /// Merges the command into the CREATE's data `cd`; false if it cannot be merged
-    fn compress_command_pair(cd: &mut serde_json::Value, merge_command: &Self) -> bool {
+    fn compress_command_pair(
+        create: &CommandType,
+        cd: &mut serde_json::Value,
+        merge_command: &Self,
+    ) -> bool {
+        // Lexemes have lemmas, items have labels etc.; both have statements
+        let fits = match merge_command.command {
+            CommandType::EditStatement => true,
+            CommandType::SetLemma => *create == CommandType::CreateLexeme,
+            _ => *create == CommandType::Create,
+        };
+        if !fits {
+            return false;
+        }
         match merge_command.command {
             CommandType::EditStatement => Self::compress_edit_statement(cd, merge_command),
             CommandType::SetLabel => match &merge_command.locale_string {
@@ -1707,79 +1672,60 @@ mod tests {
         )
     }
 
+    fn quantity(amount: &str, bounds: Option<(&str, &str)>, unit: &str) -> Option<Value> {
+        Some(Value::Quantity(Quantity {
+            amount: amount.to_string(),
+            bounds: bounds.map(|(l, u)| (l.to_string(), u.to_string())),
+            unit: unit.to_string(),
+        }))
+    }
+
+    fn parse(value: &str) -> Option<Value> {
+        QuickStatementsParser::parse_value(value.to_string())
+    }
+
     #[test]
     fn parse_quantity_plain() {
+        assert_eq!(parse("-0.123"), quantity("-0.123", None, "1"));
+        assert_eq!(parse("+007"), quantity("7", None, "1"));
+        // Beyond what an f64 holds
         assert_eq!(
-            QuickStatementsParser::parse_value("-0.123".to_string()),
-            Some(Value::Quantity(wikibase::QuantityValue::new(
-                -0.123, None, "1", None
-            )))
-        )
+            parse("12345678901234567890"),
+            quantity("12345678901234567890", None, "1")
+        );
     }
 
     #[test]
     fn parse_quantity_unit() {
-        assert_eq!(
-            QuickStatementsParser::parse_value("-0.123U11573".to_string()),
-            Some(Value::Quantity(wikibase::QuantityValue::new(
-                -0.123,
-                None,
-                "http://www.wikidata.org/entity/Q11573",
-                None
-            )))
-        )
+        let unit = "http://www.wikidata.org/entity/Q11573";
+        assert_eq!(parse("-0.123U11573"), quantity("-0.123", None, unit));
     }
 
     #[test]
     fn parse_quantity_tolerance() {
-        assert_eq!(
-            QuickStatementsParser::parse_value("-0.321~0.045".to_string()),
-            Some(Value::Quantity(wikibase::QuantityValue::new(
-                -0.321,
-                Some(-0.366),
-                "1",
-                Some(-0.276)
-            )))
-        )
-    }
-
-    #[test]
-    fn parse_quantity_tolerance_unit() {
-        assert_eq!(
-            QuickStatementsParser::parse_value("-0.321~0.045U123".to_string()),
-            Some(Value::Quantity(wikibase::QuantityValue::new(
-                -0.321,
-                Some(-0.366),
-                "http://www.wikidata.org/entity/Q123",
-                Some(-0.276)
-            )))
-        )
+        let bounds = Some(("-0.366", "-0.276"));
+        assert_eq!(parse("-0.321~0.045"), quantity("-0.321", bounds, "1"));
+        assert_eq!(parse("-0.321 ~ 0.045"), quantity("-0.321", bounds, "1"));
+        let unit = "http://www.wikidata.org/entity/Q123";
+        assert_eq!(parse("-0.321~0.045U123"), quantity("-0.321", bounds, unit));
     }
 
     #[test]
     fn parse_quantity_range() {
+        let bounds = Some(("-1.23", "7.89"));
+        assert_eq!(parse("4.56[-1.23,7.89]"), quantity("4.56", bounds, "1"));
+        let unit = "http://www.wikidata.org/entity/Q456";
         assert_eq!(
-            QuickStatementsParser::parse_value("4.56[-1.23,7.89]".to_string()),
-            Some(Value::Quantity(wikibase::QuantityValue::new(
-                4.56,
-                Some(-1.23),
-                "1",
-                Some(7.89)
-            )))
-        )
+            parse("4.56[-1.23,7.89]U456"),
+            quantity("4.56", bounds, unit)
+        );
     }
 
     #[test]
-    fn parse_quantity_range_unit() {
-        assert_eq!(
-            QuickStatementsParser::parse_value("4.56[-1.23,7.89]U456".to_string()),
-            Some(Value::Quantity(wikibase::QuantityValue::new(
-                4.56,
-                Some(-1.23),
-                "http://www.wikidata.org/entity/Q456",
-                Some(7.89)
-            )))
-        )
+    fn parse_quantity_bounds_in_json() {
+        let json = parse("123~2").unwrap().to_json().unwrap();
+        assert_eq!(json["value"]["lowerBound"], "121");
+        assert_eq!(json["value"]["upperBound"], "125");
     }
 
     #[tokio::test]
@@ -2412,6 +2358,114 @@ mod tests {
             commands[3].create_data.as_ref().unwrap()["labels"]["en"]["value"],
             "x"
         );
+    }
+
+    async fn json_of(lines: &[&str], compress: bool) -> Vec<serde_json::Value> {
+        let mut commands = vec![];
+        for line in lines {
+            commands.push(
+                QuickStatementsParser::new_from_line(line, None)
+                    .await
+                    .unwrap(),
+            );
+        }
+        if compress {
+            QuickStatementsParser::compress(&mut commands);
+        }
+        commands.iter().flat_map(|c| c.to_json().unwrap()).collect()
+    }
+
+    // The following match the PHP parser
+
+    #[tokio::test]
+    async fn terms_on_last() {
+        let json = json_of(
+            &[
+                "CREATE",
+                "Q1\tLen\t\"x\"",
+                "LAST\tLen\t\"y\"",
+                "LAST\tSenwiki\t\"Z\"",
+            ],
+            true,
+        )
+        .await;
+        assert_eq!(json.len(), 4);
+        assert_eq!(
+            json[2],
+            json!({"action":"add","item":"LAST","language":"en","value":"y","what":"label"})
+        );
+        assert_eq!(json[3]["what"], "sitelink");
+    }
+
+    #[tokio::test]
+    async fn merge_newer_into_older() {
+        for line in ["MERGE\tQ1\tQ2", "MERGE\tQ2\tQ1"] {
+            let json = json_of(&[line], false).await;
+            assert_eq!(json[0]["item1"], "Q2", "{line}");
+            assert_eq!(json[0]["item2"], "Q1", "{line}");
+        }
+    }
+
+    #[tokio::test]
+    async fn comments_are_summaries_of_all_commands() {
+        let json = json_of(&["CREATE /* new */", "Q1\tLen\t\"x\" /* label */"], false).await;
+        assert_eq!(json[0]["summary"], "new");
+        assert_eq!(json[1]["summary"], "label");
+    }
+
+    #[tokio::test]
+    async fn keys_are_case_insensitive() {
+        let json = json_of(
+            &["Q1\tLEN\t\"x\"", "Q1\tP31\tQ5\ts143\tQ328\tp580\tQ1"],
+            false,
+        )
+        .await;
+        assert_eq!(json[0]["language"], "en");
+        assert_eq!(json[2]["what"], "qualifier");
+        assert_eq!(json[3]["sources"][0]["prop"], "P143");
+    }
+
+    #[tokio::test]
+    async fn strings_are_trimmed() {
+        let json = json_of(&["Q1\tP1\t\" a \"", "Q1\tP2\ten:\" b \""], false).await;
+        assert_eq!(json[0]["datavalue"]["value"], "a");
+        assert_eq!(json[1]["datavalue"]["value"]["text"], "b");
+    }
+
+    #[tokio::test]
+    async fn add_form_always_has_grammatical_features() {
+        let json = json_of(&["L1\tADD_FORM\ten:\"cats\""], false).await;
+        assert_eq!(json[0]["data"]["grammaticalFeatures"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn compress_fits_the_entity_type() {
+        // Lemmas go to lexemes, keeping the first one; labels to items
+        let json = json_of(
+            &[
+                "CREATE_LEXEME\tQ1\tQ2\ten:\"a\"",
+                "LAST\tLemma_de\t\"b\"",
+                "LAST\tLen\t\"c\"",
+            ],
+            true,
+        )
+        .await;
+        assert_eq!(json.len(), 2);
+        assert_eq!(json[0]["data"]["lemmas"].as_object().unwrap().len(), 2);
+        assert_eq!(json[1]["what"], "label");
+        let json = json_of(&["CREATE", "LAST\tLemma_de\t\"b\""], true).await;
+        assert_eq!(json.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn compress_keeps_forced_new_statements_apart() {
+        let lines = [
+            "CREATE",
+            "LAST\t!P1\tQ5\tP2\t\"1\"",
+            "LAST\t!P1\tQ5\tP2\t\"2\"",
+        ];
+        let json = json_of(&lines, true).await;
+        assert_eq!(json[0]["data"]["claims"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -3539,11 +3593,15 @@ mod tests {
     #[tokio::test]
     async fn parse_remove_statement_by_id() {
         let command = "-STATEMENT\tQ123$some-guid-here";
-        // STATEMENT doesn't support - prefix (first column is STATEMENT, not entity)
-        // But should not crash
-        let result = QuickStatementsParser::new_from_line(command, None).await;
-        // -STATEMENT is not a recognized command
-        assert!(result.is_err());
+        let json = QuickStatementsParser::new_from_line(command, None)
+            .await
+            .unwrap()
+            .to_json()
+            .unwrap();
+        assert_eq!(
+            json,
+            vec![json!({"action":"remove","what":"statement","id":"Q123$some-guid-here"})]
+        );
     }
 
     // ========== Single pipe separator tests ==========
