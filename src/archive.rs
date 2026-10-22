@@ -23,7 +23,7 @@ use wikimisc::mysql_async::prelude::*;
 use wikimisc::timestamp::TimeStamp;
 
 /// Columns of the `command` table, in `StoredCommand` order
-const COLUMNS: &str = "id,batch_id,num,json,`status`,message,ts_change";
+pub(crate) const COLUMNS: &str = "id,batch_id,num,json,`status`,message,ts_change";
 
 const CREATE_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS `command_archive` (
   `batch_id` int(11) NOT NULL,

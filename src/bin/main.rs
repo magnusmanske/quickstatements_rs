@@ -402,12 +402,10 @@ async fn command_server(config_file: &str, port: u16) {
         Err(e) => panic!("Could not create QuickStatements from config file: {e}"),
     };
     start_telemetry("web", &config);
-
-    let app = qs_server::build_router(config);
-    let addr = format!("0.0.0.0:{}", port);
-    println!("QuickStatements server listening on http://{}", addr);
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    if let Err(e) = qs_server::serve(config, port).await {
+        error!("Web service failed: {e}");
+        exit_with(ExitReason::Other(format!("Web service failed: {e}"))).await;
+    }
 }
 
 async fn command_run(site: &str) {

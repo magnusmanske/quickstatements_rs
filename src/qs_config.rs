@@ -160,6 +160,16 @@ impl QuickStatements {
             .unwrap_or(DEFAULT_ARCHIVE_MONTHS)
     }
 
+    /// Key material for the web service's session cookies
+    pub fn cookie_secret(&self) -> Option<&str> {
+        self.params["cookie_secret"].as_str()
+    }
+
+    /// Where the web service keeps temporary batches
+    pub fn tmp_dir(&self) -> Option<&str> {
+        self.params["tmp_dir"].as_str()
+    }
+
     pub fn edit_delay_ms(&self) -> Option<u64> {
         Some(self.params["edit_delay_ms"].as_u64().unwrap_or(1000))
     }
