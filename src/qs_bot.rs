@@ -148,6 +148,10 @@ impl QuickStatementsBot {
         self.last_state = state;
     }
 
+    pub fn last_state(&self) -> &LastEntityState {
+        &self.last_state
+    }
+
     /// Execute a command for debugging: prepare params, call the API, and return
     /// both the request params and the full API response (or error).
     pub async fn debug_command(
@@ -589,10 +593,18 @@ impl QuickStatementsBot {
         params: &mut HashMap<String, String>,
         command: &mut QuickStatementsCommand,
     ) {
-        let summary: String = format!(
-            "[[:toollabs:quickstatements/#/batch/{}|batch #{}]]",
-            command.batch_id, command.batch_id
-        );
+        let summary: String = match self.batch_id {
+            Some(_) => format!(
+                "[[:toollabs:quickstatements/#/batch/{}|batch #{}]]",
+                command.batch_id, command.batch_id
+            ),
+            // Run from the browser: the frontend sets the summary, with the
+            // temporary batch ID for EditGroups
+            None => match command.json["summary"].as_str() {
+                Some(summary) => summary.to_string(),
+                None => return,
+            },
+        };
         let new_summary = match &params.get("summary") {
             Some(s) => s.to_string() + "; " + &summary,
             None => summary,
@@ -823,6 +835,25 @@ mod tests {
     fn test_bot() -> QuickStatementsBot {
         let config = Arc::new(QuickStatements::new_for_tests());
         QuickStatementsBot::new(config, Some(1), 0)
+    }
+
+    #[test]
+    fn add_summary_links_batch_or_uses_command_summary() {
+        let mut command =
+            QuickStatementsCommand::new_from_json(&json!({"summary":"#temporary_batch_1"}));
+        command.batch_id = 7;
+        let mut params = HashMap::new();
+        test_bot().add_summary(&mut params, &mut command);
+        assert_eq!(
+            params["summary"],
+            "[[:toollabs:quickstatements/#/batch/7|batch #7]]"
+        );
+
+        let config = Arc::new(QuickStatements::new_for_tests());
+        let browser_bot = QuickStatementsBot::new(config, None, 0);
+        let mut params = HashMap::new();
+        browser_bot.add_summary(&mut params, &mut command);
+        assert_eq!(params["summary"], "#temporary_batch_1");
     }
 
     #[test]

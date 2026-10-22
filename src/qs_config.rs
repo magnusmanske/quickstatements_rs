@@ -38,6 +38,8 @@ fn set_running_gauge(running: &HashSet<i64>) {
 pub struct QuickStatements {
     params: Value,
     pool: CustomPool,
+    /// Database of the `user` and `batch_oauth` tables
+    auth_db: String,
     running_batch_ids: Arc<RwLock<HashSet<i64>>>,
     user_counter: Arc<RwLock<HashMap<i64, i64>>>,
     /// Batches that failed to start: batch_id -> (failures, earliest next attempt)
@@ -55,7 +57,7 @@ impl QuickStatements {
             QsError::ConfigError(format!("Cannot parse config file '{filename}': {e}"))
         })?;
 
-        // Load the PHP/JS config into params as ["config"], or create empty object
+        // The PHP/JS config, from `config_file` or given inline as `config`
         params["config"] = match params["config_file"].as_str() {
             Some(filename) => match File::open(filename) {
                 Ok(file) => serde_json::from_reader(file).unwrap_or(json!({})),
@@ -67,12 +69,15 @@ impl QuickStatements {
                     json!({})
                 }
             },
-            None => json!({}),
+            None => Some(params["config"].take())
+                .filter(Value::is_object)
+                .unwrap_or(json!({})),
         };
 
         let max_batches_per_user = params["max_batches_per_user"].as_i64().unwrap_or(2);
         let ret = Self {
             pool: Self::create_mysql_pool(&params)?,
+            auth_db: Self::auth_db_name(&params),
             params,
             running_batch_ids: Arc::new(RwLock::new(HashSet::new())),
             user_counter: Arc::new(RwLock::new(HashMap::new())),
@@ -89,6 +94,20 @@ impl QuickStatements {
 
     pub fn verbose(&self) -> bool {
         self.verbose
+    }
+
+    /// Like PHP: `…_p` has its auth tables in `…_auth`, any other schema in itself.
+    fn auth_db_name(params: &Value) -> String {
+        let schema = params["mysql"]["schema"].as_str().unwrap_or_default();
+        match schema.strip_suffix("_p") {
+            Some(base) => format!("{base}_auth"),
+            None => schema.to_string(),
+        }
+    }
+
+    /// Database of the `user` and `batch_oauth` tables
+    pub fn auth_db(&self) -> &str {
+        &self.auth_db
     }
 
     pub fn get_api_for_site(&self, site: &str) -> Option<&str> {
@@ -608,8 +627,7 @@ impl QuickStatements {
     }
 
     pub async fn get_user_name(&self, user_id: i64) -> Option<String> {
-        let auth_db = "s53220__quickstatements_auth";
-        let sql = format!(r#"SELECT name FROM {}.user WHERE id=:user_id"#, auth_db);
+        let sql = format!("SELECT name FROM `{}`.user WHERE id=:user_id", self.auth_db);
 
         let mut conn = match self.pool.connect().await {
             Ok(c) => c,
@@ -642,10 +660,9 @@ impl QuickStatements {
         &self,
         batch_id: i64,
     ) -> QsResult<Option<wikimisc::mediawiki::api::OAuthParams>> {
-        let auth_db = "s53220__quickstatements_auth";
         let sql = format!(
-            r#"SELECT serialized_json FROM {}.batch_oauth WHERE batch_id=:batch_id"#,
-            auth_db
+            "SELECT serialized_json FROM `{}`.batch_oauth WHERE batch_id=:batch_id",
+            self.auth_db
         );
 
         let rows = self
@@ -725,6 +742,7 @@ impl QuickStatements {
         let params = json!({"mysql":{"host":"127.0.0.1","schema":"s","user":"u","pass":"p"}});
         Self {
             pool: Self::create_mysql_pool(&params).expect("test pool config is valid"),
+            auth_db: Self::auth_db_name(&params),
             params,
             running_batch_ids: Arc::new(RwLock::new(HashSet::new())),
             user_counter: Arc::new(RwLock::new(HashMap::new())),
@@ -740,6 +758,14 @@ mod tests {
     use super::*;
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn auth_db_name_follows_php() {
+        let name =
+            |schema: &str| QuickStatements::auth_db_name(&json!({"mysql":{"schema":schema}}));
+        assert_eq!(name("s1__quickstatements_p"), "s1__quickstatements_auth");
+        assert_eq!(name("quickstatements"), "quickstatements");
+    }
 
     #[test]
     fn create_mysql_pool_requires_schema() {

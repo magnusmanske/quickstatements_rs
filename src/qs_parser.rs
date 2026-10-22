@@ -527,6 +527,12 @@ impl QuickStatementsParser {
         None
     }
 
+    /// Parses a V1 value (e.g. `Q5`, `"text"`, `+2001-00-00T00:00:00Z/9`) into
+    /// datavalue JSON, as used in command JSON
+    pub fn parse_datavalue(value: &str) -> Option<serde_json::Value> {
+        Self::parse_value(value.to_string())?.to_json().ok()
+    }
+
     fn parse_value(value: String) -> Option<Value> {
         static RE_STRING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^"(.*)"$"#).unwrap());
         static RE_MONOLINGUAL_STRING: LazyLock<Regex> =
@@ -2065,6 +2071,15 @@ mod tests {
     async fn parse_too_few_parts() {
         let result = QuickStatementsParser::new_from_line("Q123\tP456", None).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_datavalue() {
+        assert_eq!(
+            QuickStatementsParser::parse_datavalue("\"x\""),
+            Some(json!({"type":"string","value":"x"}))
+        );
+        assert_eq!(QuickStatementsParser::parse_datavalue("not a value"), None);
     }
 
     #[test]
