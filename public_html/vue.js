@@ -38,14 +38,6 @@ $(document).ready ( function () {
 		syncDocumentDirection(this.value) ;
 	}) ;
     vue_components.toolname = 'quickstatements' ;
-	// XAMPP serves the magnustools checkout beside QuickStatements. Use those
-	// templates for private-network previews, where tools-static may be blocked.
-	if ( /^(localhost|127\.0\.0\.1|::1|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname) ) {
-		vue_components.components_base_url = '../../magnustools/public_html/resources/vue/' ;
-		vue_components.serial_loading = true ;
-		vue_components.fetch_timeout_ms = 5000 ;
-		vue_components.fetch_retries = 2 ;
-	}
     $.ajaxSetup ( { cache:false } ) ;
 //    vue_components.components_base_url = 'https://tools.wmflabs.org/magnustools/resources/vue/' ; // For testing; turn off to use tools-static
     Promise.all ( [
