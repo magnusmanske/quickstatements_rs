@@ -16,6 +16,9 @@ const GREGORIAN_CALENDAR: &str = "http://www.wikidata.org/entity/Q1985727";
 const JULIAN_CALENDAR: &str = "http://www.wikidata.org/entity/Q1985786";
 const GLOBE_EARTH: &str = "http://www.wikidata.org/entity/Q2";
 const PHP_COMPATIBILITY: bool = true; // TODO
+/// Commands merged into one CREATE at most; the rest run on their own.
+/// Keeps `compress` linear, as merging a statement searches the ones before.
+const MAX_MERGED_INTO_CREATE: usize = 500;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QuickStatementsParser {
@@ -1330,37 +1333,36 @@ impl QuickStatementsParser {
         }
     }
 
+    /// Merges the `LAST` commands right after a CREATE into its data, so
+    /// the new entity is created in one edit. One pass, as an import can
+    /// have many thousands of commands.
     pub fn compress(commands: &mut Vec<Self>) {
-        let mut id_to_merge = 1;
-
-        loop {
-            if id_to_merge >= commands.len() {
-                break;
-            }
-            if commands[id_to_merge].item != Some(EntityID::Last)
-                || commands[id_to_merge].get_action() != "add"
-            {
-                id_to_merge += 1;
-                continue;
-            }
-            let create_id = id_to_merge - 1;
-            if commands[create_id].command != CommandType::Create
-                && commands[create_id].command != CommandType::CreateLexeme
-            {
-                id_to_merge += 1;
-                continue;
-            }
-
-            match Self::compress_command_pair(&commands[create_id], &commands[id_to_merge]) {
-                Some(create_data) => {
-                    commands[create_id].create_data = Some(create_data);
-                    commands.remove(id_to_merge);
-                }
-                None => {
-                    id_to_merge += 1;
+        let mut ret: Vec<Self> = Vec::with_capacity(commands.len());
+        let mut merged = 0;
+        for command in commands.drain(..) {
+            let create = ret
+                .last_mut()
+                .filter(|c| matches!(c.command, CommandType::Create | CommandType::CreateLexeme));
+            if let Some(create) = create {
+                if merged < MAX_MERGED_INTO_CREATE
+                    && command.item == Some(EntityID::Last)
+                    && command.get_action() == "add"
+                {
+                    let mut data = create.create_data.take().unwrap_or(json!({}));
+                    let was_merged = Self::compress_command_pair(&mut data, &command);
+                    if was_merged || data != json!({}) {
+                        create.create_data = Some(data);
+                    }
+                    if was_merged {
+                        merged += 1;
+                        continue;
+                    }
                 }
             }
+            merged = 0;
+            ret.push(command);
         }
+        *commands = ret;
     }
 
     fn mainsnak(&self) -> Option<serde_json::Value> {
@@ -1404,63 +1406,45 @@ impl QuickStatementsParser {
         }
     }
 
-    fn compress_edit_statement(
-        cd: serde_json::Value,
-        merge_command: &Self,
-    ) -> Option<serde_json::Value> {
-        let _j = match merge_command.to_json() {
-            Ok(j) => j,
-            _ => return None,
+    fn compress_edit_statement(cd: &mut serde_json::Value, merge_command: &Self) -> bool {
+        let Some(mainsnak) = merge_command.mainsnak() else {
+            return false;
         };
-        let mut cd = cd;
         if !cd["claims"].is_array() {
             cd["claims"] = json!([]);
         }
-
-        let mainsnak = merge_command.mainsnak()?;
-        let mut statement = json!({ "mainsnak": mainsnak,"rank":"normal","type":"statement" });
-        let mut found = false;
-        cd["claims"]
-            .as_array_mut()
-            .unwrap()
-            .iter_mut()
-            .for_each(|s| {
-                if s["mainsnak"] != statement["mainsnak"] {
-                    return;
-                }
-                found = true;
-                Self::compress_add_references_and_qualifiers(s, merge_command);
-            });
-        if !found {
-            Self::compress_add_references_and_qualifiers(&mut statement, merge_command);
-            cd["claims"].as_array_mut().unwrap().push(statement);
+        let claims = cd["claims"].as_array_mut().expect("just made an array");
+        match claims.iter_mut().find(|s| s["mainsnak"] == mainsnak) {
+            Some(statement) => {
+                Self::compress_add_references_and_qualifiers(statement, merge_command)
+            }
+            None => {
+                let mut statement =
+                    json!({ "mainsnak": mainsnak,"rank":"normal","type":"statement" });
+                Self::compress_add_references_and_qualifiers(&mut statement, merge_command);
+                claims.push(statement);
+            }
         }
-        Some(cd)
+        true
     }
 
-    fn compress_command_pair(
-        create_command: &Self,
-        merge_command: &Self,
-    ) -> Option<serde_json::Value> {
-        let mut cd = match &create_command.create_data {
-            Some(cd) => cd.clone(),
-            None => json!({}),
-        };
+    /// Merges the command into the CREATE's data `cd`; false if it cannot be merged
+    fn compress_command_pair(cd: &mut serde_json::Value, merge_command: &Self) -> bool {
         match merge_command.command {
             CommandType::EditStatement => Self::compress_edit_statement(cd, merge_command),
             CommandType::SetLabel => match &merge_command.locale_string {
                 Some(s) => {
                     cd["labels"][s.language()] = json!(s);
-                    Some(cd)
+                    true
                 }
-                None => None,
+                None => false,
             },
             CommandType::SetDescription => match &merge_command.locale_string {
                 Some(s) => {
                     cd["descriptions"][s.language()] = json!(s);
-                    Some(cd)
+                    true
                 }
-                None => None,
+                None => false,
             },
             CommandType::SetAlias => match &merge_command.locale_string {
                 Some(s) => {
@@ -1472,26 +1456,26 @@ impl QuickStatementsParser {
                     } else {
                         cd["aliases"][s.language()] = json!([s]);
                     }
-                    Some(cd)
+                    true
                 }
-                None => None,
+                None => false,
             },
             CommandType::SetSitelink => match &merge_command.sitelink {
                 Some(s) => {
                     cd["sitelinks"][s.site()] = json!({"site":s.site(),"title":s.title()});
-                    Some(cd)
+                    true
                 }
-                None => None,
+                None => false,
             },
             CommandType::SetLemma => match &merge_command.locale_string {
                 Some(s) => {
                     cd["lemmas"][s.language()] =
                         json!({"language": s.language(), "value": s.value()});
-                    Some(cd)
+                    true
                 }
-                None => None,
+                None => false,
             },
-            _ => None,
+            _ => false,
         }
     }
 }
@@ -2400,6 +2384,49 @@ mod tests {
         let data = commands[0].create_data.as_ref().unwrap();
         assert!(data["claims"].is_array());
         assert_eq!(data["claims"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn compress_caps_merges_into_one_create() {
+        let mut lines = vec!["CREATE".to_string()];
+        lines.extend((0..MAX_MERGED_INTO_CREATE + 2).map(|i| format!("LAST\tP31\tQ{}", i + 1)));
+        lines.push("CREATE".to_string());
+        lines.push("LAST\tLen\t\"x\"".to_string());
+        let mut commands = vec![];
+        for line in &lines {
+            commands.push(
+                QuickStatementsParser::new_from_line(line, None)
+                    .await
+                    .unwrap(),
+            );
+        }
+        QuickStatementsParser::compress(&mut commands);
+        // CREATE with the capped number of statements, two left over, then CREATE with a label
+        assert_eq!(commands.len(), 4);
+        let claims = commands[0].create_data.as_ref().unwrap()["claims"]
+            .as_array()
+            .unwrap();
+        assert_eq!(claims.len(), MAX_MERGED_INTO_CREATE);
+        assert_eq!(commands[1].item, Some(EntityID::Last));
+        assert_eq!(
+            commands[3].create_data.as_ref().unwrap()["labels"]["en"]["value"],
+            "x"
+        );
+    }
+
+    #[tokio::test]
+    async fn compress_keeps_create_without_data() {
+        let mut commands = vec![
+            QuickStatementsParser::new_from_line("CREATE", None)
+                .await
+                .unwrap(),
+            QuickStatementsParser::new_from_line("MERGE\tQ1\tQ2", None)
+                .await
+                .unwrap(),
+        ];
+        QuickStatementsParser::compress(&mut commands);
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].create_data, None);
     }
 
     #[tokio::test]

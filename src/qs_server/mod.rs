@@ -55,8 +55,8 @@ pub struct AppState {
     cookie_key: Key,
     /// Only send cookies over HTTPS, if the tool is served over HTTPS
     secure_cookies: bool,
-    /// Origins that may make changes for the logged-in user (CSRF protection)
-    origins: Vec<String>,
+    /// The tool's origin, for CSRF protection in browsers without Fetch Metadata
+    origin: Option<String>,
     tmp_dir: PathBuf,
     default_site: String,
     default_api: String,
@@ -113,7 +113,9 @@ impl AppState {
             oauth,
             cookie_key,
             secure_cookies: tool_base.starts_with("https://"),
-            origins: allowed_origins(config, &tool_base),
+            origin: Url::parse(&tool_base)
+                .ok()
+                .map(|url| url.origin().ascii_serialization()),
             tmp_dir,
             entity_base: site["entityBase"].as_str().unwrap_or_default().to_string(),
             public_config: Arc::new(public_config(config)),
@@ -123,23 +125,6 @@ impl AppState {
             qs,
         })
     }
-}
-
-/// `valid_origin` from the frontend config (a string or a list), and the tool's own origin
-fn allowed_origins(config: &Value, tool_base: &str) -> Vec<String> {
-    let mut origins: Vec<String> = match &config["valid_origin"] {
-        Value::String(origin) => vec![origin.clone()],
-        Value::Array(origins) => origins
-            .iter()
-            .filter_map(|o| Some(o.as_str()?.to_string()))
-            .collect(),
-        _ => vec![],
-    };
-    if let Ok(url) = Url::parse(tool_base) {
-        origins.push(url.origin().ascii_serialization());
-    }
-    origins.retain(|o| !o.is_empty());
-    origins
 }
 
 fn public_config(config: &Value) -> Value {
@@ -231,16 +216,6 @@ mod tests {
             public_config(&config),
             json!({"site": "wikidata", "sites": {"wikidata": {"label": "Wikidata", "api": "https://w/api.php"}}})
         );
-    }
-
-    #[test]
-    fn allowed_origins_include_the_tool() {
-        let config = json!({"valid_origin": ["https://a.example", ""]});
-        assert_eq!(
-            allowed_origins(&config, "https://qs.example/"),
-            ["https://a.example", "https://qs.example"]
-        );
-        assert!(allowed_origins(&json!({}), "./").is_empty());
     }
 
     #[test]

@@ -84,7 +84,7 @@ async fn live_status_counts(q: &mut impl Queryable, batch_id: i64) -> QsResult<S
     Ok(rows.into_iter().collect())
 }
 
-async fn has_live_rows(q: &mut impl Queryable, batch_id: i64) -> QsResult<bool> {
+pub(crate) async fn has_live_rows(q: &mut impl Queryable, batch_id: i64) -> QsResult<bool> {
     let sql = "SELECT id FROM command WHERE batch_id=:batch_id LIMIT 1";
     let row: Option<i64> = q.exec_first(sql, params! {batch_id}).await?;
     Ok(row.is_some())
@@ -197,8 +197,21 @@ impl Archive {
 
     /// The archived commands of a batch, or `None` if it has no archive file
     pub fn read(&self, batch_id: i64) -> QsResult<Option<Vec<StoredCommand>>> {
+        self.read_filtered(batch_id, |_| true)
+    }
+
+    /// Like `read`, but only the commands that `keep` accepts
+    pub fn read_filtered(
+        &self,
+        batch_id: i64,
+        mut keep: impl FnMut(&StoredCommand) -> bool,
+    ) -> QsResult<Option<Vec<StoredCommand>>> {
         match read_file(&self.path(batch_id)) {
-            Ok(commands) => Ok(Some(commands.collect::<QsResult<_>>()?)),
+            Ok(commands) => Ok(Some(
+                commands
+                    .filter(|c| c.as_ref().map_or(true, &mut keep))
+                    .collect::<QsResult<_>>()?,
+            )),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
         }

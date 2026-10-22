@@ -9,7 +9,7 @@ use crate::error::QsError;
 use crate::qs_command::LastEntityState;
 use crate::qs_config::QuickStatements;
 use axum::extract::{FromRequest, Multipart, Request, State};
-use axum::http::{header, HeaderMap};
+use axum::http::{header, HeaderMap, Method};
 use axum::response::{Html, IntoResponse, Json, Redirect, Response};
 use axum_extra::extract::cookie::PrivateCookieJar;
 use serde_json::{json, Map, Value};
@@ -66,11 +66,13 @@ pub async fn handle(
     request: Request,
 ) -> Response {
     let headers = request.headers().clone();
+    let method = request.method().clone();
     match read_params(request).await {
         Ok(params) => {
             Call {
                 state,
                 jar,
+                method,
                 headers,
                 params,
             }
@@ -134,6 +136,7 @@ fn json_response(result: ApiResult) -> Response {
 struct Call {
     state: AppState,
     jar: PrivateCookieJar,
+    method: Method,
     headers: HeaderMap,
     params: HashMap<String, String>,
 }
@@ -209,20 +212,11 @@ impl Call {
             .ok_or_else(|| "Not logged in".into())
     }
 
-    /// Changes on behalf of the logged-in user must come from this tool's own
-    /// pages (protection against cross-site request forgery)
-    fn require_same_origin(&self) -> Result<(), ApiError> {
-        let header = |name| self.headers.get(name).and_then(|v| v.to_str().ok());
-        let allowed = match header("sec-fetch-site") {
-            Some(site) => site == "same-origin" || site == "none",
-            None => {
-                header("origin").is_none_or(|origin| self.state.origins.iter().any(|o| o == origin))
-            }
-        };
-        if allowed {
-            Ok(())
-        } else {
-            Err("Invalid origin".into())
+    /// Changes on behalf of the logged-in user (CSRF protection)
+    fn require_own_page(&self) -> Result<(), ApiError> {
+        match is_own_page(&self.method, &self.headers, self.state.origin.as_deref()) {
+            true => Ok(()),
+            false => Err("Changes must be POSTed from QuickStatements itself".into()),
         }
     }
 
@@ -336,7 +330,7 @@ impl Call {
     }
 
     fn logout(self) -> Response {
-        if let Err(e) = self.require_same_origin() {
+        if let Err(e) = self.require_own_page() {
             return json_response(Err(e));
         }
         let response = json_response(Ok(json!({ "data": { "is_logged_in": false } })));
@@ -370,7 +364,7 @@ impl Call {
     }
 
     async fn get_token(&self) -> ApiResult {
-        self.require_same_origin()?;
+        self.require_own_page()?;
         let Some(user) = self.logged_in_user().await? else {
             return Ok(json!({ "data": { "is_logged_in": false } }));
         };
@@ -416,7 +410,7 @@ impl Call {
     /// All commands of a batch, by number, with their row as `_meta`
     async fn get_batch(&self) -> ApiResult {
         let batch_id = self.int("id").unwrap_or(0);
-        let commands: Map<String, Value> = batches::commands(self.qs(), batch_id, 0, None, &[])
+        let commands: Vec<(i64, Value)> = batches::commands(self.qs(), batch_id, 0, None, &[])
             .await?
             .iter()
             .map(|command| {
@@ -428,10 +422,10 @@ impl Call {
                     meta.remove("json");
                 }
                 json["_meta"] = meta;
-                (command.num.to_string(), json)
+                (command.num, json)
             })
             .collect();
-        Ok(json!({ "id": self.param("id"), "data": { "commands": commands } }))
+        Ok(json!({ "id": self.param("id"), "data": { "commands": by_number(commands) } }))
     }
 
     // ---- Importing and running ----
@@ -488,7 +482,7 @@ impl Call {
     }
 
     async fn run_single_command(&self) -> ApiResult {
-        self.require_same_origin()?;
+        self.require_own_page()?;
         let user = self.user().await?;
         let oauth = self.state.oauth.as_ref().ok_or("Login is not configured")?;
         let site = self.site()?;
@@ -521,7 +515,7 @@ impl Call {
 
     /// Starts a batch in the background
     async fn run_batch(&self) -> ApiResult {
-        self.require_same_origin()?;
+        self.require_own_page()?;
         let user = self.user().await?;
         let oauth = self.state.oauth.as_ref().ok_or("Login is not configured")?;
         let site = self.site()?;
@@ -536,7 +530,7 @@ impl Call {
     }
 
     async fn change_batch_status(&self, status: &str) -> ApiResult {
-        self.require_same_origin()?;
+        self.require_own_page()?;
         let user = self.user().await?;
         let batch = self
             .changeable_batch(&user, self.int("batch").unwrap_or(0))
@@ -546,7 +540,7 @@ impl Call {
     }
 
     async fn reset_errors(&self) -> ApiResult {
-        self.require_same_origin()?;
+        self.require_own_page()?;
         let batch_id = self.int("batch_id").unwrap_or(0);
         if batch_id <= 0 {
             return Err(format!("Bad batch ID #{batch_id}").into());
@@ -564,6 +558,35 @@ impl Call {
     }
 }
 
+/// Commands keyed by number, sorted by it. Like PHP's `json_encode`: a list
+/// if the numbers are 0, 1, 2, …
+fn by_number(commands: Vec<(i64, Value)>) -> Value {
+    if commands
+        .iter()
+        .enumerate()
+        .all(|(i, (num, _))| *num == i as i64)
+    {
+        return commands.into_iter().map(|(_, c)| c).collect();
+    }
+    let map: Map<String, Value> = commands
+        .into_iter()
+        .map(|(num, c)| (num.to_string(), c))
+        .collect();
+    map.into()
+}
+
+/// Whether the request was POSTed by the tool's own pages. Not for
+/// `Sec-Fetch-Site: none`: links opened from other apps come with cookies too.
+/// Browsers without Fetch Metadata send `Origin` with every POST.
+fn is_own_page(method: &Method, headers: &HeaderMap, origin: Option<&str>) -> bool {
+    let header = |name| headers.get(name).and_then(|v| v.to_str().ok());
+    *method == Method::POST
+        && match header("sec-fetch-site") {
+            Some(site) => site == "same-origin",
+            None => origin.is_some() && header("origin") == origin,
+        }
+}
+
 /// A JavaScript identifier or property path, so it cannot inject code
 fn is_valid_callback(callback: &str) -> bool {
     callback.len() <= 100
@@ -576,6 +599,43 @@ fn is_valid_callback(callback: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commands_by_number() {
+        assert_eq!(
+            by_number(vec![(0, json!("a")), (1, json!("b"))]),
+            json!(["a", "b"])
+        );
+        assert_eq!(
+            by_number(vec![(0, json!("a")), (2, json!("c"))]),
+            json!({"0": "a", "2": "c"})
+        );
+    }
+
+    #[test]
+    fn own_pages() {
+        fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
+            let mut headers = HeaderMap::new();
+            for (name, value) in pairs {
+                headers.insert(*name, value.parse().unwrap());
+            }
+            headers
+        }
+        fn own(method: Method, pairs: &[(&'static str, &str)]) -> bool {
+            is_own_page(&method, &headers(pairs), Some("https://qs.example"))
+        }
+        assert!(own(Method::POST, &[("sec-fetch-site", "same-origin")]));
+        assert!(own(Method::POST, &[("origin", "https://qs.example")]));
+        assert!(!own(Method::GET, &[("sec-fetch-site", "same-origin")]));
+        for site in ["none", "same-site", "cross-site"] {
+            let pairs = [("sec-fetch-site", site), ("origin", "https://qs.example")];
+            assert!(!own(Method::POST, &pairs));
+        }
+        assert!(!own(Method::POST, &[("origin", "https://evil.example")]));
+        assert!(!own(Method::POST, &[]));
+        let null_origin = headers(&[("origin", "null")]);
+        assert!(!is_own_page(&Method::POST, &null_origin, None));
+    }
 
     #[test]
     fn callbacks() {

@@ -29,10 +29,11 @@ site's `oauth.ini_file`, as in PHP. MediaWiki sends users back to
 fixed callback URL. Without a consumer, batches can be viewed, but no one can
 log in. `/config.json` only shows the public part of the frontend config.
 
-Changes on behalf of the logged-in user must come from the tool's own pages
-(by `Sec-Fetch-Site`, or else `Origin`, which may also be one of
-`valid_origin`). The session is kept in encrypted, `HttpOnly`, `SameSite=Lax`
-cookies.
+Changes on behalf of the logged-in user must be POSTed from the tool's own
+pages (`Sec-Fetch-Site: same-origin`, or else an `Origin` matching
+`toolBase`); PHP's `valid_origin` is not used. The session is kept in
+encrypted, `HttpOnly`, `SameSite=Lax` cookies, so other tools only see a
+login through JSONP `is_logged_in` if they are on the same site.
 
 On Toolforge, `Procfile` starts the web service:
 `toolforge webservice buildservice start --mount=all` (after `./build.sh`).

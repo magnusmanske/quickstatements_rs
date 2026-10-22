@@ -377,7 +377,7 @@
 					});
 				} else {
 					$('#working').show();
-					$.get(me.api, {
+					$.post(me.api, {
 						action: 'reset_errors',
 						batch_id: me.meta.batch.id
 					}, function (d) {
@@ -514,7 +514,7 @@
 				if (me.meta.batch.id > 0) {
 					let params = {action: 'start_batch', batch: me.meta.batch.id};
 					$('#working').show();
-					$.get(me.api, params, function (d) {
+					$.post(me.api, params, function (d) {
 						$('#working').hide();
 						if (d.status != 'OK') {
 							me.action_error = 'The batch could not be started: ' + d.status;

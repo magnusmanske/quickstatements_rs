@@ -2,7 +2,7 @@
 //! All `command` queries are scoped by batch, as the table is huge.
 
 use super::random_string;
-use crate::archive::{StoredCommand, COLUMNS};
+use crate::archive::{has_live_rows, StoredCommand, COLUMNS};
 use crate::error::QsResult;
 use crate::qs_config::{CommandRow, QuickStatements};
 use serde_json::{json, Map, Value};
@@ -129,32 +129,33 @@ pub async fn commands(
         sql += " LIMIT ?";
         params.push(limit.into());
     }
-    let rows: Vec<CommandRow> = qs.get_db_conn().await?.exec(sql, params).await?;
+    let mut conn = qs.get_db_conn().await?;
+    let rows: Vec<CommandRow> = conn.exec(sql, params).await?;
     if !rows.is_empty() {
         return Ok(rows.into_iter().map(StoredCommand::from).collect());
     }
+    // Only for batches without rows: a restored batch keeps its archive file
     let Some(archive) = qs.archive() else {
         return Ok(vec![]);
     };
-    let archived = tokio::task::spawn_blocking(move || archive.read(batch_id))
-        .await
-        .map_err(|e| e.to_string())??;
-    Ok(page_of_commands(
-        archived.unwrap_or_default(),
-        start,
-        limit,
-        statuses,
-    ))
+    if has_live_rows(&mut conn, batch_id).await? {
+        return Ok(vec![]);
+    }
+    let statuses = statuses.to_vec();
+    let archived = tokio::task::spawn_blocking(move || {
+        archive.read_filtered(batch_id, |c| in_page(c, start, &statuses))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(first_by_number(archived.unwrap_or_default(), limit))
 }
 
-/// Selects commands like the SQL query in `commands`
-fn page_of_commands(
-    mut commands: Vec<StoredCommand>,
-    start: i64,
-    limit: Option<u64>,
-    statuses: &[String],
-) -> Vec<StoredCommand> {
-    commands.retain(|c| c.num >= start && (statuses.is_empty() || statuses.contains(&c.status)));
+/// Whether the command is selected by the SQL query in `commands`
+fn in_page(command: &StoredCommand, start: i64, statuses: &[String]) -> bool {
+    command.num >= start && (statuses.is_empty() || statuses.contains(&command.status))
+}
+
+fn first_by_number(mut commands: Vec<StoredCommand>, limit: Option<u64>) -> Vec<StoredCommand> {
     commands.sort_by_key(|c| c.num);
     commands.truncate(limit.map_or(usize::MAX, |l| l as usize));
     commands
@@ -262,10 +263,12 @@ fn is_retryable(json: &str, message: &str) -> bool {
     }
 }
 
-/// Adds the user, or updates their name after a rename
+/// Adds the user, or updates their name after a rename. A changed name
+/// resets the API token: PHP gave out IDs that may now be another user's.
+/// (Assignments run in order, so `api_hash` is reset before the name changes.)
 pub async fn save_user(qs: &QuickStatements, id: i64, name: &str) -> QsResult<()> {
     let sql = format!(
-        "INSERT INTO `{}`.user (id,name) VALUES (:id,:name) ON DUPLICATE KEY UPDATE name=:name",
+        "INSERT INTO `{}`.user (id,name) VALUES (:id,:name) ON DUPLICATE KEY UPDATE api_hash=IF(name=VALUES(name),api_hash,''),name=VALUES(name)",
         qs.auth_db()
     );
     qs.get_db_conn()
@@ -351,24 +354,27 @@ mod tests {
     }
 
     #[test]
-    fn page_of_commands_filters_sorts_and_limits() {
-        let commands = vec![
+    fn archived_pages_filter_sort_and_limit() {
+        let commands = [
             command(3, "DONE"),
             command(0, "ERROR"),
             command(2, "ERROR"),
             command(1, "DONE"),
         ];
-        let nums = |page: Vec<StoredCommand>| page.iter().map(|c| c.num).collect::<Vec<_>>();
-        assert_eq!(
-            nums(page_of_commands(commands.clone(), 0, None, &[])),
-            [0, 1, 2, 3]
-        );
-        assert_eq!(
-            nums(page_of_commands(commands.clone(), 1, Some(2), &[])),
-            [1, 2]
-        );
-        let done = ["DONE".to_string()];
-        assert_eq!(nums(page_of_commands(commands, 2, None, &done)), [3]);
+        let page = |start, limit, statuses: &[String]| {
+            let selected = commands
+                .iter()
+                .filter(|c| in_page(c, start, statuses))
+                .cloned()
+                .collect();
+            first_by_number(selected, limit)
+                .iter()
+                .map(|c| c.num)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(page(0, None, &[]), [0, 1, 2, 3]);
+        assert_eq!(page(1, Some(2), &[]), [1, 2]);
+        assert_eq!(page(2, None, &["DONE".to_string()]), [3]);
     }
 
     #[test]
