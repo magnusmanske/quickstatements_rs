@@ -231,7 +231,7 @@ async fn get_php_commands(
     ]);
     let j = api
         .query_raw(
-            "https://tools.wmflabs.org/quickstatements/api.php",
+            "https://quickstatements.toolforge.org/api.php",
             &params,
             "POST",
         )
