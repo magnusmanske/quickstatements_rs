@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use wikimisc::seppuku::{Seppuku, Verdict};
-use wikimisc::telemetry::{ExitReason, Level, Telemetry};
+use wikimisc::telemetry::{self, ExitReason, Level};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -120,10 +120,12 @@ async fn run_bot(config: Arc<QuickStatements>) -> usize {
 
 /// Pushes metrics to the service dashboard; never prevents startup.
 fn start_telemetry(component: &str, config: &QuickStatements) {
-    Telemetry::builder(component)
-        .config(&config.telemetry_config())
-        .version(env!("CARGO_PKG_VERSION"))
-        .install_or_log();
+    telemetry::install(
+        component,
+        env!("CARGO_PKG_VERSION"),
+        Some(&config.telemetry_config()),
+        true,
+    );
 }
 
 /// Sends the final telemetry push, then exits with status 1.
