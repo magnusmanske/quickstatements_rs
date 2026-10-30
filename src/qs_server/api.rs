@@ -4,15 +4,15 @@
 
 use super::batches::{self, Batch};
 use super::session::{self, User};
-use super::{import, single_command, AppState, MAX_REQUEST_BYTES};
+use super::{AppState, MAX_REQUEST_BYTES, import, single_command};
 use crate::error::QsError;
 use crate::qs_command::LastEntityState;
 use crate::qs_config::QuickStatements;
 use axum::extract::{FromRequest, Multipart, Request, State};
-use axum::http::{header, HeaderMap, Method};
+use axum::http::{HeaderMap, Method, header};
 use axum::response::{Html, IntoResponse, Json, Redirect, Response};
 use axum_extra::extract::cookie::PrivateCookieJar;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use wikimisc::mediawiki::api::Api;
 
@@ -151,7 +151,7 @@ impl Call {
                 return self
                     .import()
                     .await
-                    .unwrap_or_else(|e| json_response(Err(e)))
+                    .unwrap_or_else(|e| json_response(Err(e)));
             }
             "oauth_redirect" => return self.start_login().await,
             "logout" => return self.logout(),
@@ -579,21 +579,19 @@ fn by_number(commands: Vec<(i64, Value)>) -> Value {
 /// `Sec-Fetch-Site: none`: links opened from other apps come with cookies too.
 /// Browsers without Fetch Metadata send `Origin` with every POST.
 fn is_own_page(method: &Method, headers: &HeaderMap, origin: Option<&str>) -> bool {
-    let header = |name| headers.get(name).and_then(|v| v.to_str().ok());
     *method == Method::POST
-        && match header("sec-fetch-site") {
-            Some(site) => site == "same-origin",
-            None => origin.is_some() && header("origin") == origin,
-        }
+        && origin.is_some_and(|origin| wikimisc::server::is_from_origin(headers, origin))
 }
 
-/// A JavaScript identifier or property path, so it cannot inject code
+/// A JavaScript identifier or property path, so it cannot inject code.
 fn is_valid_callback(callback: &str) -> bool {
-    callback.len() <= 100
-        && !callback.starts_with(|c: char| c.is_ascii_digit())
-        && callback
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '.'))
+    wikimisc::server::jsonp::is_valid_callback(
+        callback,
+        wikimisc::server::jsonp::CallbackRules {
+            allow_dotted: true,
+            max_len: 100,
+        },
+    )
 }
 
 #[cfg(test)]
