@@ -77,51 +77,38 @@ impl QuickStatementsBot {
         self.adaptive_delay_ms = (self.adaptive_delay_ms / 2).max(self.min_delay_ms);
     }
 
-    pub async fn start(&mut self) -> Result<(), String> {
-        match self.batch_id {
-            Some(batch_id) => {
-                let config = self.config.clone();
-                // A restarted archived batch needs its commands back first
-                if let Some(archive) = config.archive() {
-                    archive
-                        .restore_batch(&config, batch_id)
-                        .await
-                        .map_err(|e| format!("Cannot restore archived batch: {e}"))?;
-                }
-                config
-                    .restart_batch(batch_id)
-                    .await
-                    .ok_or("Can't (re)start batch".to_string())?;
-                // restart_batch only touches INIT/RUN batches; if the user stopped
-                // the batch in the meantime, its status is unchanged and we bail out.
-                config
-                    .check_batch_not_stopped(batch_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                self.last_state = config.get_last_state_from_batch(batch_id).await;
-                match config.get_api_url(batch_id).await {
-                    Some(url) => {
-                        let mut mw_api = wikimisc::mediawiki::api::Api::new(url)
-                            .await
-                            .map_err(|e| format!("{:?}", e))?;
-                        // Edit pacing is done adaptively by this bot (see
-                        // THROTTLE_BACKOFF_*), not with a fixed delay in the API layer.
-                        mw_api.set_edit_delay(None);
-                        mw_api.set_maxlag(config.maxlag_s());
-                        mw_api.set_max_retry_attempts(1000);
-                        config.set_bot_api_auth(&mut mw_api, batch_id).await?;
-                        self.mw_api = Some(mw_api);
-                    }
-                    None => return Err("No site/API info available".to_string()),
-                }
-
-                config.set_batch_running(batch_id, self.user_id).await;
+    pub async fn start(&mut self) -> QsResult<()> {
+        let Some(batch_id) = self.batch_id else {
+            return Err(QsError::NoBatchId);
+        };
+        let config = self.config.clone();
+        // A restarted archived batch needs its commands back first
+        if let Some(archive) = config.archive() {
+            archive.restore_batch(&config, batch_id).await?;
+        }
+        config
+            .restart_batch(batch_id)
+            .await
+            .ok_or(QsError::CannotRestartBatch(batch_id))?;
+        // restart_batch only touches INIT/RUN batches; if the user stopped
+        // the batch in the meantime, its status is unchanged and we bail out.
+        config.check_batch_not_stopped(batch_id).await?;
+        self.last_state = config.get_last_state_from_batch(batch_id).await;
+        match config.get_api_url(batch_id).await {
+            Some(url) => {
+                let mut mw_api = wikimisc::mediawiki::api::Api::new(url).await?;
+                // Edit pacing is done adaptively by this bot (see
+                // THROTTLE_BACKOFF_*), not with a fixed delay in the API layer.
+                mw_api.set_edit_delay(None);
+                mw_api.set_maxlag(config.maxlag_s());
+                mw_api.set_max_retry_attempts(1000);
+                config.set_bot_api_auth(&mut mw_api, batch_id).await?;
+                self.mw_api = Some(mw_api);
             }
-            None => {
-                return Err("No batch ID set".to_string());
-            }
+            None => return Err(QsError::NoApiInfo(batch_id)),
         }
 
+        config.set_batch_running(batch_id, self.user_id).await;
         Ok(())
     }
 
@@ -157,38 +144,35 @@ impl QuickStatementsBot {
     pub async fn debug_command(
         &mut self,
         command: &mut QuickStatementsCommand,
-    ) -> Result<(HashMap<String, String>, Value), String> {
-        command.insert_last_item_into_sources_and_qualifiers(&self.last_state)?;
+    ) -> QsResult<(HashMap<String, String>, Value)> {
+        command
+            .insert_last_item_into_sources_and_qualifiers(&self.last_state)
+            .map_err(QsError::InvalidCommand)?;
         let main_item = self.prepare_to_execute(command).await?;
-        let action = command.action_to_execute(&main_item)?;
+        let action = command
+            .action_to_execute(&main_item)
+            .map_err(QsError::InvalidCommand)?;
 
         if !action["already_done"].is_null() {
-            return Err("Command is already_done (duplicate)".to_string());
+            return Err(QsError::AlreadyDone);
         }
 
         let mut params: HashMap<String, String> = HashMap::new();
-        for (k, v) in action.as_object().ok_or("Action is not a JSON object")? {
-            params.insert(
-                k.to_string(),
-                v.as_str()
-                    .ok_or(format!(
-                        "Cannot convert param '{}' value to string: {}",
-                        k, v
-                    ))?
-                    .to_string(),
-            );
+        let action = action
+            .as_object()
+            .ok_or_else(|| QsError::InvalidCommand("Action is not a JSON object".into()))?;
+        for (k, v) in action {
+            let value = v.as_str().ok_or_else(|| QsError::InvalidApiParam {
+                name: k.clone(),
+                value: v.to_string(),
+            })?;
+            params.insert(k.clone(), value.to_string());
         }
         self.add_summary(&mut params, command);
 
         // Actually execute the API call
-        let mut mw_api = self.mw_api.to_owned().ok_or("No mw_api set")?;
-        params.insert(
-            "token".to_string(),
-            mw_api
-                .get_edit_token()
-                .await
-                .map_err(|e| format!("get_edit_token: {}", e))?,
-        );
+        let mut mw_api = self.mw_api.to_owned().ok_or(QsError::NoMwApi)?;
+        params.insert("token".to_string(), mw_api.get_edit_token().await?);
 
         let response = match mw_api.post_query_api_json_mut(&params).await {
             Ok(json) => json,
@@ -215,14 +199,14 @@ impl QuickStatementsBot {
 
     /// Returns `Ok(true)` when a command was executed, `Ok(false)` when the batch is done,
     /// or `Err` for transient failures (caller should retry).
-    pub async fn run(&mut self) -> Result<bool, String> {
+    pub async fn run(&mut self) -> QsResult<bool> {
         self.log("[run] Getting next command".to_string());
         let command = match self.get_next_command().await {
             Ok(c) => c,
             Err(e) => {
-                let is_transient = matches!(e, QsError::MysqlAsyncError(_));
+                let is_transient = matches!(&e, QsError::MysqlAsyncError(_));
                 if is_transient {
-                    return Err(format!("Transient DB error in get_next_command: {}", e));
+                    return Err(e);
                 }
                 // Permanent: batch was stopped, or no batch_id set
                 if let Some(batch_id) = self.batch_id {
@@ -287,7 +271,7 @@ impl QuickStatementsBot {
                 self.config.check_batch_not_stopped(batch_id).await?;
                 self.config.get_next_command(batch_id).await
             }
-            None => Err(QsError::NoMatchSetError),
+            None => Err(QsError::NoBatchId),
         }
     }
 
@@ -318,8 +302,8 @@ impl QuickStatementsBot {
     async fn prepare_to_execute(
         &mut self,
         command: &QuickStatementsCommand,
-    ) -> Result<Option<wikibase::Entity>, String> {
-        let command_action = command.get_action()?;
+    ) -> QsResult<Option<wikibase::Entity>> {
+        let command_action = command.get_action().map_err(QsError::InvalidCommand)?;
         self.log(format!("[prepare_to_execute] Action '{}'", command_action));
         // Form/sense creation: resolve LAST but don't load entity
         if command_action == "create" {
@@ -360,7 +344,7 @@ impl QuickStatementsBot {
             self.resolve_current_entity_id();
             let q = match &self.current_entity_id {
                 Some(q) => q.to_string(),
-                None => return Err("No (last) item available".to_string()),
+                None => return Err(QsError::NoItemAvailable),
             };
 
             let item = self.load_entity(q).await?;
@@ -370,11 +354,8 @@ impl QuickStatementsBot {
         }
     }
 
-    async fn load_entity(&mut self, entity_id: String) -> Result<wikibase::Entity, String> {
-        let mw_api = self
-            .mw_api
-            .to_owned()
-            .ok_or("QuickStatementsBot::get_item_from_command  has no mw_api".to_string())?;
+    async fn load_entity(&mut self, entity_id: String) -> QsResult<wikibase::Entity> {
+        let mw_api = self.mw_api.to_owned().ok_or(QsError::NoMwApi)?;
 
         let revision = self
             .entity_revision
@@ -389,7 +370,7 @@ impl QuickStatementsBot {
             .await
         {
             Ok(item) => Ok(item.to_owned()),
-            Err(e) => self.try_create_fake_entity(entity_id, revision, e.to_string()),
+            Err(e) => self.try_create_fake_entity(entity_id, revision, e),
         }
     }
 
@@ -399,51 +380,41 @@ impl QuickStatementsBot {
         &mut self,
         entity_id: String,
         revision: Option<usize>,
-        original_error: String,
-    ) -> Result<wikibase::Entity, String> {
+        original_error: wikibase::WikibaseError,
+    ) -> QsResult<wikibase::Entity> {
         static RE_MEDIA_INFO: LazyLock<Regex> = LazyLock::new(|| {
             Regex::new(r#"^M\d+$"#)
                 .expect("QuickStatementsBot::try_create_fake_entity:RE_MEDIA_INFO does not compile")
         });
 
-        let mw_api = self
-            .mw_api
-            .to_owned()
-            .ok_or("QuickStatementsBot::try_create_fake_entity has no mw_api".to_string())?;
+        let mw_api = self.mw_api.to_owned().ok_or(QsError::NoMwApi)?;
 
-        let the_error = Err(format!(
-            "Error while loading into entities: {} rev. {:?} '{}'",
-            entity_id, revision, original_error
-        ));
+        let entity_load_error = |entity_id: String| QsError::EntityLoadError {
+            entity_id,
+            revision,
+            source: original_error,
+        };
 
-        if revision.is_none()
-            && mw_api.api_url() == COMMONS_API
-            && RE_MEDIA_INFO.is_match(&entity_id)
+        if revision.is_some()
+            || mw_api.api_url() != COMMONS_API
+            || !RE_MEDIA_INFO.is_match(&entity_id)
         {
-            let fake_entity = wikibase::Entity::new_mediainfo(
-                entity_id.to_owned(),
-                vec![],
-                vec![],
-                vec![],
-                false,
-            );
-            let fake_entity_json = json!(fake_entity);
-            self.entities
-                .set_entity_from_json(&fake_entity_json)
-                .map_err(|e| e.to_string())?;
-            match self.entities.get_entity(entity_id) {
-                Some(entity) => Ok(entity),
-                None => the_error,
-            }
-        } else {
-            the_error
+            return Err(entity_load_error(entity_id));
         }
+
+        let fake_entity =
+            wikibase::Entity::new_mediainfo(entity_id.to_owned(), vec![], vec![], vec![], false);
+        let fake_entity_json = json!(fake_entity);
+        self.entities.set_entity_from_json(&fake_entity_json)?;
+        self.entities
+            .get_entity(entity_id.clone())
+            .ok_or_else(|| entity_load_error(entity_id))
     }
 
     async fn check_if_user_is_blocked(
         &self,
         command: &mut QuickStatementsCommand,
-    ) -> Result<bool, String> {
+    ) -> QsResult<bool> {
         // Only check randomly every 20 commands to keep API load down
         if command.id % 20 != 0 {
             return Ok(false);
@@ -453,30 +424,22 @@ impl QuickStatementsBot {
             .config
             .get_user_name(self.user_id)
             .await
-            .ok_or("User not found".to_string())?;
+            .ok_or(QsError::UserNotFound(self.user_id))?;
 
         // Reuse the bot's configured API (already has auth, maxlag, retry settings)
-        let mut mw_api = self
-            .mw_api
-            .clone()
-            .ok_or("No mw_api available for block check".to_string())?;
+        let mut mw_api = self.mw_api.clone().ok_or(QsError::NoMwApi)?;
 
-        QuickStatements::is_user_blocked(&mut mw_api, &user_name)
-            .await
-            .map_err(|e| e.to_string())
+        QuickStatements::is_user_blocked(&mut mw_api, &user_name).await
     }
 
-    pub async fn execute_command(
-        &mut self,
-        command: &mut QuickStatementsCommand,
-    ) -> Result<(), String> {
-        if Ok(true) == self.check_if_user_is_blocked(command).await {
+    pub async fn execute_command(&mut self, command: &mut QuickStatementsCommand) -> QsResult<()> {
+        if matches!(self.check_if_user_is_blocked(command).await, Ok(true)) {
             let _ = self.set_command_status("BLOCKED", None, command).await;
             let _ = self
                 .config
                 .set_batch_status("BLOCKED", "", self.batch_id.unwrap_or(0), self.user_id)
                 .await;
-            return Err("User is blocked".to_string());
+            return Err(QsError::UserBlocked);
         }
         self.log("[execute_command] Init".to_string());
         self.current_property_id = None;
@@ -487,28 +450,36 @@ impl QuickStatementsBot {
         // mark the command ERROR too, or it stays RUN in the DB forever.
         if let Err(e) = command.insert_last_item_into_sources_and_qualifiers(&self.last_state) {
             self.set_command_status("ERROR", Some(&e), command).await?;
-            return Err(e);
+            return Err(QsError::InvalidCommand(e));
         }
         let main_item = match self.prepare_to_execute(command).await {
             Ok(main_item) => main_item,
             Err(e) => {
-                self.set_command_status("ERROR", Some(&e), command).await?;
+                let message = e.to_string();
+                self.set_command_status("ERROR", Some(&message), command)
+                    .await?;
                 return Err(e);
             }
         };
-        let action = command.action_to_execute(&main_item);
+        let action = command
+            .action_to_execute(&main_item)
+            .map_err(QsError::InvalidCommand);
 
         self.log("[execute_command] Go".to_string());
         match action {
             Ok(action) => match self.run_action(action, command).await {
                 Ok(_) => self.set_command_status("DONE", None, command).await,
                 Err(e) => {
-                    self.set_command_status("ERROR", Some(&e), command).await?;
+                    let message = e.to_string();
+                    self.set_command_status("ERROR", Some(&message), command)
+                        .await?;
                     Err(e)
                 }
             },
             Err(e) => {
-                self.set_command_status("ERROR", Some(&e), command).await?;
+                let message = e.to_string();
+                self.set_command_status("ERROR", Some(&message), command)
+                    .await?;
                 Err(e)
             }
         }
@@ -612,11 +583,7 @@ impl QuickStatementsBot {
         params.insert("summary".to_string(), new_summary);
     }
 
-    async fn run_action(
-        &mut self,
-        j: Value,
-        command: &mut QuickStatementsCommand,
-    ) -> Result<(), String> {
+    async fn run_action(&mut self, j: Value, command: &mut QuickStatementsCommand) -> QsResult<()> {
         if !j["already_done"].is_null() {
             return Ok(());
         }
@@ -624,39 +591,27 @@ impl QuickStatementsBot {
         self.log("[run_action] Init".to_string());
 
         let mut params: HashMap<String, String> = HashMap::new();
-        for (k, v) in j
+        let action = j
             .as_object()
-            .ok_or("QuickStatementsBot::run_action: j is not an object".to_string())?
-        {
-            params.insert(
-                k.to_string(),
-                v.as_str()
-                    .ok_or(format!(
-                        "QuickStatementsBot::run_action Can't as_str '{}'",
-                        v
-                    ))?
-                    .to_string(),
-            );
+            .ok_or_else(|| QsError::InvalidCommand("Action is not a JSON object".into()))?;
+        for (k, v) in action {
+            let value = v.as_str().ok_or_else(|| QsError::InvalidApiParam {
+                name: k.clone(),
+                value: v.to_string(),
+            })?;
+            params.insert(k.clone(), value.to_string());
         }
         self.add_summary(&mut params, command);
         self.log("[run_action] Summary added".to_string());
 
-        let mut mw_api = self.mw_api.to_owned().ok_or(format!(
-            "QuickStatementsBot::run_action batch #{} has no mw_api",
-            self.batch_id.unwrap_or(0)
-        ))?;
+        let mut mw_api = self.mw_api.to_owned().ok_or(QsError::NoMwApi)?;
 
         const MAX_JSON_RETRIES: usize = 3;
         const MAX_THROTTLE_RETRIES: usize = 10;
         let mut json_retries = 0usize;
         let mut throttle_retries = 0usize;
         loop {
-            params.insert(
-                "token".to_string(),
-                mw_api.get_edit_token().await.map_err(|e| {
-                    format!("QuickStatementsBot::run_action get_edit_token '{}'", e)
-                })?,
-            );
+            params.insert("token".to_string(), mw_api.get_edit_token().await?);
 
             self.log("[run_action] Pre  post_query_api_json_mut".to_string());
             let res = match mw_api.post_query_api_json_mut(&params).await {
@@ -675,7 +630,7 @@ impl QuickStatementsBot {
                     tokio::time::sleep(Duration::from_secs(30)).await;
                     continue;
                 }
-                Err(e) => return Err(format!("Wiki editing failed: {:?}", e)),
+                Err(e) => return Err(e.into()),
             };
             self.log("[run_action] Post post_query_api_json_mut".to_string());
 
@@ -692,10 +647,10 @@ impl QuickStatementsBot {
                 Some(d) => {
                     throttle_retries += 1;
                     if throttle_retries > MAX_THROTTLE_RETRIES {
-                        return Err(format!(
-                            "Too many throttle retries ({}) for command #{}",
-                            throttle_retries, command.id
-                        ));
+                        return Err(QsError::TooManyThrottleRetries {
+                            retries: throttle_retries,
+                            command_id: command.id,
+                        });
                     }
                     tokio::time::sleep(d).await;
                 }
@@ -710,7 +665,7 @@ impl QuickStatementsBot {
         res: Value,
         params: &HashMap<String, String>,
         command: &mut QuickStatementsCommand,
-    ) -> Result<Option<Duration>, String> {
+    ) -> QsResult<Option<Duration>> {
         static RE_QUAL_OK: LazyLock<Regex> = LazyLock::new(|| {
             Regex::new("^The statement has already a qualifier with hash")
                 .expect("QuickStatementsBot::run_action:RE_QUAL_OK does not compile")
@@ -726,7 +681,9 @@ impl QuickStatementsBot {
                     self.reset_entities(&res, command);
                     Ok(None)
                 } else {
-                    Err(format!("Success flag is '{}' in API result", num))
+                    Err(QsError::ApiResultError(format!(
+                        "Success flag is '{num}' in API result"
+                    )))
                 }
             }
             None => {
@@ -781,7 +738,9 @@ impl QuickStatementsBot {
                     }
                 }
                 log::error!("COMMAND ERROR #{}:\n{:?}\n{}", command.id, params, res);
-                Err("No success flag set in API result".to_string())
+                Err(QsError::ApiResultError(
+                    "No success flag set in API result".to_string(),
+                ))
             }
         }
     }
@@ -794,29 +753,26 @@ impl QuickStatementsBot {
         status: &str,
         message: Option<&str>,
         command: &mut QuickStatementsCommand,
-    ) -> Result<(), String> {
-        if self.batch_id.is_none() {
+    ) -> QsResult<()> {
+        let Some(batch_id) = self.batch_id else {
             return Ok(());
-        }
+        };
 
         // Write LAST state first: if this DB write fails we bail out before
         // updating the command status, keeping the two in sync. In the worst
         // case the LAST state is stale but the command is still RUN/INIT and
         // will be retried.
         self.config
-            .set_last_state_for_batch(self.batch_id.unwrap(), &self.last_state) // unwrap safe
+            .set_last_state_for_batch(batch_id, &self.last_state)
             .await
-            .ok_or(format!(
-                "Can't config.set_last_state_for_batch for batch #{}",
-                self.batch_id.unwrap()
-            ))?;
+            .ok_or(QsError::LastStateUpdateFailed(batch_id))?;
         self.config
             .set_command_status(command, status, message.map(|s| s.to_string()))
             .await
-            .ok_or(format!(
-                "Can't config.set_command_status for batch #{}",
-                self.batch_id.unwrap() // Safe
-            ))?;
+            .ok_or(QsError::CommandStatusUpdateFailed {
+                batch_id,
+                command_id: command.id,
+            })?;
 
         let result = match status {
             "DONE" => "done",
@@ -866,7 +822,7 @@ mod tests {
 
         let result = bot.check_run_action_result(res, &HashMap::new(), &mut command);
 
-        assert_eq!(result, Ok(None));
+        assert_eq!(result.unwrap(), None);
         assert_eq!(bot.last_state.last, Some("Q5".to_string()));
         assert_eq!(bot.entity_revision.front(), Some(&("Q5".to_string(), 123)));
     }
@@ -884,7 +840,7 @@ mod tests {
 
         let result = bot.check_run_action_result(res, &HashMap::new(), &mut command);
 
-        assert_eq!(result, Ok(None));
+        assert_eq!(result.unwrap(), None);
         assert_eq!(bot.last_state.last, Some("Q123".to_string()));
     }
 
@@ -899,7 +855,7 @@ mod tests {
 
         let result = bot.check_run_action_result(res, &HashMap::new(), &mut command);
 
-        assert_eq!(result, Ok(None));
+        assert_eq!(result.unwrap(), None);
         assert_eq!(bot.last_state.last, Some("Q123".to_string()));
     }
 
@@ -911,7 +867,7 @@ mod tests {
 
         let result = bot.check_run_action_result(res, &HashMap::new(), &mut command);
 
-        assert!(result.is_err());
+        assert!(matches!(result, Err(QsError::ApiResultError(_))));
         assert_eq!(bot.last_state.last, None);
     }
 
@@ -923,7 +879,7 @@ mod tests {
 
         let result = bot.check_run_action_result(res, &HashMap::new(), &mut command);
 
-        assert_eq!(result, Ok(Some(Duration::from_millis(5000))));
+        assert_eq!(result.unwrap(), Some(Duration::from_millis(5000)));
     }
 
     // Repeated pushback must double the backoff (capped), and successful edits
@@ -971,12 +927,12 @@ mod tests {
         let second = bot.check_run_action_result(res, &HashMap::new(), &mut command);
 
         assert_eq!(
-            first,
-            Ok(Some(Duration::from_millis(THROTTLE_BACKOFF_MIN_MS)))
+            first.unwrap(),
+            Some(Duration::from_millis(THROTTLE_BACKOFF_MIN_MS))
         );
         assert_eq!(
-            second,
-            Ok(Some(Duration::from_millis(2 * THROTTLE_BACKOFF_MIN_MS)))
+            second.unwrap(),
+            Some(Duration::from_millis(2 * THROTTLE_BACKOFF_MIN_MS))
         );
     }
 
@@ -991,8 +947,8 @@ mod tests {
         let result = bot.check_run_action_result(res, &HashMap::new(), &mut command);
 
         assert_eq!(
-            result,
-            Ok(Some(Duration::from_millis(THROTTLE_BACKOFF_MIN_MS)))
+            result.unwrap(),
+            Some(Duration::from_millis(THROTTLE_BACKOFF_MIN_MS))
         );
     }
 }

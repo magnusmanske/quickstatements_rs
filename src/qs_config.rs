@@ -699,11 +699,8 @@ impl QuickStatements {
         &self,
         mw_api: &mut wikimisc::mediawiki::api::Api,
         batch_id: i64,
-    ) -> Result<(), String> {
-        let oauth_params = self
-            .get_oauth_for_batch(batch_id)
-            .await
-            .map_err(|e| format!("Cannot read OAuth for batch #{}: {}", batch_id, e))?;
+    ) -> QsResult<()> {
+        let oauth_params = self.get_oauth_for_batch(batch_id).await?;
         match oauth_params {
             Some(oauth_params) => {
                 mw_api.set_oauth(Some(oauth_params));
@@ -713,10 +710,9 @@ impl QuickStatements {
                 let filename = self.params["config"]["bot_config_file"]
                     .as_str()
                     .ok_or_else(|| {
-                        format!(
-                            "Neither OAuth nor bot info available for batch #{}",
-                            batch_id
-                        )
+                        QsError::ConfigError(format!(
+                            "Neither OAuth nor bot info available for batch #{batch_id}"
+                        ))
                     })?;
 
                 // Read config file off the async runtime to avoid blocking
@@ -726,21 +722,22 @@ impl QuickStatements {
                     Config::builder()
                         .add_source(config_file)
                         .build()
-                        .map_err(|e| format!("Cannot read bot config '{}': {}", filename, e))
+                        .map_err(|e| {
+                            QsError::ConfigError(format!(
+                                "Cannot read bot config '{filename}': {e}"
+                            ))
+                        })
                 })
                 .await
-                .map_err(|e| format!("spawn_blocking failed: {}", e))??;
+                .map_err(|e| QsError::ConfigError(format!("spawn_blocking failed: {e}")))??;
 
-                let lgname = settings
-                    .get_string("user.user")
-                    .map_err(|e| format!("Bot config missing user.user: {}", e))?;
-                let lgpassword = settings
-                    .get_string("user.pass")
-                    .map_err(|e| format!("Bot config missing user.pass: {}", e))?;
-                mw_api
-                    .login(lgname, lgpassword)
-                    .await
-                    .map_err(|e| format!("Bot login failed: {}", e))?;
+                let lgname = settings.get_string("user.user").map_err(|e| {
+                    QsError::ConfigError(format!("Bot config missing user.user: {e}"))
+                })?;
+                let lgpassword = settings.get_string("user.pass").map_err(|e| {
+                    QsError::ConfigError(format!("Bot config missing user.pass: {e}"))
+                })?;
+                mw_api.login(lgname, lgpassword).await?;
                 Ok(())
             }
         }

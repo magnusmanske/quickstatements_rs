@@ -5,7 +5,7 @@
 //! needs on top of it.
 
 use crate::error::{QsError, QsResult};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
 use wikimisc::mediawiki::api::OAuthParams;
@@ -84,18 +84,12 @@ impl OAuth {
     /// Fetches a request token, and returns it with the URL where the user
     /// authorizes it.
     pub async fn request_token(&self) -> QsResult<(Token, String)> {
-        self.client
-            .initiate(&self.callback)
-            .await
-            .map_err(oauth_error)
+        Ok(self.client.initiate(&self.callback).await?)
     }
 
     /// Exchanges an authorized request token for an access token.
     pub async fn access_token(&self, request: &Token, verifier: &str) -> QsResult<Token> {
-        self.client
-            .access_token(request, verifier)
-            .await
-            .map_err(oauth_error)
+        Ok(self.client.access_token(request, verifier).await?)
     }
 
     /// The user's `userinfo` from `api_url`, or `None` if the token is not
@@ -106,11 +100,7 @@ impl OAuth {
             ("meta", "userinfo"),
             ("uiprop", "blockinfo|groups|rights"),
         ];
-        let response = self
-            .client
-            .api(api_url, Some(token), &params)
-            .await
-            .map_err(oauth_error)?;
+        let response = self.client.api(api_url, Some(token), &params).await?;
         let userinfo = &response["query"]["userinfo"];
         Ok(userinfo["id"]
             .as_i64()
@@ -133,10 +123,6 @@ impl OAuth {
     pub fn api_params(&self, token: &Token) -> OAuthParams {
         OAuthParams::new_from_json(&self.batch_credentials(token))
     }
-}
-
-fn oauth_error(e: impl std::fmt::Display) -> QsError {
-    QsError::StringError(format!("OAuth request failed: {e}"))
 }
 
 /// The `key = value` lines of an ini file without sections, like PHP's `parse_ini_file`.
@@ -163,11 +149,9 @@ mod tests {
 
     #[test]
     fn from_site_without_oauth_is_none() {
-        assert!(
-            OAuth::from_site(&json!({}), "https://qs.example/")
-                .unwrap()
-                .is_none()
-        );
+        assert!(OAuth::from_site(&json!({}), "https://qs.example/")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

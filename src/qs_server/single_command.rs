@@ -1,6 +1,7 @@
 //! Runs one command of a batch that runs in the browser, with the user's
 //! OAuth token. LAST/LAST_FORM/LAST_SENSE travel with each request.
 
+use crate::error::QsResult;
 use crate::qs_bot::QuickStatementsBot;
 use crate::qs_command::{LastEntityState, QuickStatementsCommand};
 use crate::qs_config::QuickStatements;
@@ -34,7 +35,7 @@ pub async fn run(
     (command.json, last)
 }
 
-fn finish(json: &mut Value, last: &mut LastEntityState, result: Result<(), String>) {
+fn finish(json: &mut Value, last: &mut LastEntityState, result: QsResult<()>) {
     let created = json["action"] == "create";
     // The bot puts the wiki's own message (e.g. its error) here
     let wiki_message = json["meta"]["message"]
@@ -50,7 +51,7 @@ fn finish(json: &mut Value, last: &mut LastEntityState, result: Result<(), Strin
         }
         Err(e) => {
             json["status"] = json!("error");
-            json["message"] = json!(wiki_message.unwrap_or(e));
+            json["message"] = json!(wiki_message.unwrap_or_else(|| e.to_string()));
             if created {
                 // Commands with LAST must fail rather than edit an earlier entity
                 *last = LastEntityState::default();
@@ -73,6 +74,7 @@ fn finish(json: &mut Value, last: &mut LastEntityState, result: Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::QsError;
 
     fn state(last: &str) -> LastEntityState {
         LastEntityState {
@@ -106,7 +108,7 @@ mod tests {
         finish(
             &mut json,
             &mut state("Q5"),
-            Err("No success flag".to_string()),
+            Err(QsError::ApiResultError("No success flag".to_string())),
         );
         assert_eq!(json["message"], "The wiki says no");
     }
@@ -115,9 +117,13 @@ mod tests {
     fn failed_create_clears_last() {
         let mut json = json!({"action":"create","type":"item"});
         let mut last = state("Q5");
-        finish(&mut json, &mut last, Err("nope".to_string()));
+        finish(
+            &mut json,
+            &mut last,
+            Err(QsError::InvalidCommand("nope".to_string())),
+        );
         assert_eq!(json["status"], "error");
-        assert_eq!(json["message"], "nope");
+        assert_eq!(json["message"], "Invalid command: nope");
         assert!(last.last.is_none() && last.last_form.is_none());
         assert!(json["item"].is_null());
     }

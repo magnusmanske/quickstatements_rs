@@ -84,8 +84,9 @@ async fn start_batch(config: Arc<QuickStatements>, batch_id: i64, user_id: i64) 
                 }
             });
         }
-        Err(error) => {
+        Err(e) => {
             wikimisc::metrics::counter!("qs_batch_start_failures_total").increment(1);
+            let error = e.to_string();
             let delay = config.requeue_batch(batch_id, user_id, &error).await;
             error!(
                 "Cannot start batch #{}: {} — retrying in {}s",

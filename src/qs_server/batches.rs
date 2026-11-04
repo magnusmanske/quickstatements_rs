@@ -3,7 +3,7 @@
 
 use super::random_string;
 use crate::archive::{has_live_rows, StoredCommand, COLUMNS};
-use crate::error::QsResult;
+use crate::error::{QsError, QsResult};
 use crate::qs_config::{CommandRow, QuickStatements};
 use serde_json::{json, Map, Value};
 use wikimisc::mysql_async::prelude::*;
@@ -146,7 +146,7 @@ pub async fn commands(
         archive.read_filtered(batch_id, |c| in_page(c, start, &statuses))
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(|e| QsError::ArchiveReadError(e.to_string()))??;
     Ok(first_by_number(archived.unwrap_or_default(), limit))
 }
 
@@ -194,7 +194,10 @@ pub async fn create_batch(
         params! {name, user_id, site, "ts" => ts.as_str()},
     )
     .await?;
-    let batch_id = tx.last_insert_id().ok_or("No ID for the new batch")? as i64;
+    let batch_id = tx
+        .last_insert_id()
+        .ok_or_else(|| QsError::DatabaseError("No ID for the new batch".into()))?
+        as i64;
     let sql = format!(
         "INSERT INTO `{}`.batch_oauth (batch_id,serialized,serialized_json) VALUES (:batch_id,'',:json)",
         qs.auth_db()

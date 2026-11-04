@@ -168,10 +168,9 @@ impl ArchiveWriter {
         if self.counts.is_empty() {
             fs::remove_file(&self.tmp)?;
         } else if count_statuses(read_file(&self.tmp)?)? != self.counts {
-            return Err(QsError::StringError(format!(
-                "{} does not read back correctly",
-                self.tmp.display()
-            )));
+            return Err(QsError::ArchiveVerifyError {
+                path: self.tmp.clone(),
+            });
         } else {
             fs::rename(&self.tmp, &self.path)?;
         }
@@ -281,9 +280,7 @@ impl Archive {
         if !status.as_deref().is_some_and(is_finished)
             || live_status_counts(&mut tx, batch_id).await? != counts
         {
-            return Err(QsError::StringError(format!(
-                "Batch #{batch_id} changed while archiving, kept live"
-            )));
+            return Err(QsError::BatchChangedDuringArchive(batch_id));
         }
         let status_counts = serde_json::to_string(&counts)?;
         tx.exec_drop(
