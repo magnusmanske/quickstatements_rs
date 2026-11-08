@@ -4,22 +4,24 @@
 
 use super::batches::{self, Batch};
 use super::session::{self, User};
-use super::{AppState, MAX_REQUEST_BYTES, import, single_command};
+use super::{import, single_command, AppState, MAX_REQUEST_BYTES};
 use crate::error::QsError;
 use crate::qs_command::LastEntityState;
 use crate::qs_config::QuickStatements;
 use axum::extract::{FromRequest, Multipart, Request, State};
-use axum::http::{HeaderMap, Method, header};
+use axum::http::{header, HeaderMap, Method};
 use axum::response::{Html, IntoResponse, Json, Redirect, Response};
 use axum_extra::extract::cookie::PrivateCookieJar;
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use wikimisc::mediawiki::api::Api;
 
 /// Most batches `get_batches_info` returns at once
 const MAX_BATCHES: u64 = 1000;
-/// Most commands `get_commands_from_batch` returns at once
+/// Most commands one API response builds in memory at once
 const MAX_COMMANDS: u64 = 10_000;
+/// Most command JSON `get_batch` builds in memory at once
+const MAX_BATCH_BYTES: u64 = 16 * 1024 * 1024;
 
 /// A failed action. Internal errors are logged, not shown.
 enum ApiError {
@@ -410,6 +412,13 @@ impl Call {
     /// All commands of a batch, by number, with their row as `_meta`
     async fn get_batch(&self) -> ApiResult {
         let batch_id = self.int("id").unwrap_or(0);
+        let size = batches::batch_size(self.qs(), batch_id, MAX_COMMANDS).await?;
+        if size.is_some_and(|(count, bytes)| too_large(count, bytes)) {
+            return Err(format!(
+                "Batch #{batch_id} is too large to load at once; use get_commands_from_batch with start and limit"
+            )
+            .into());
+        }
         let commands: Vec<(i64, Value)> = batches::commands(self.qs(), batch_id, 0, None, &[])
             .await?
             .iter()
@@ -558,6 +567,11 @@ impl Call {
     }
 }
 
+/// Whether `get_batch` would build too much in memory
+fn too_large(count: u64, bytes: Option<u64>) -> bool {
+    count > MAX_COMMANDS || bytes.is_some_and(|bytes| bytes > MAX_BATCH_BYTES)
+}
+
 /// Commands keyed by number, sorted by it. Like PHP's `json_encode`: a list
 /// if the numbers are 0, 1, 2, …
 fn by_number(commands: Vec<(i64, Value)>) -> Value {
@@ -597,6 +611,13 @@ fn is_valid_callback(callback: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_batches_are_rejected() {
+        assert!(!too_large(MAX_COMMANDS, Some(MAX_BATCH_BYTES)));
+        assert!(too_large(MAX_COMMANDS + 1, None));
+        assert!(too_large(1, Some(MAX_BATCH_BYTES + 1)));
+    }
 
     #[test]
     fn commands_by_number() {

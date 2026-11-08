@@ -11,6 +11,8 @@ use wikimisc::mysql_async::{self as my, TxOpts};
 
 /// Commands per multi-row INSERT/UPDATE
 const CHUNK_SIZE: usize = 500;
+/// MySQL's `ER_NO_SUCH_TABLE`
+const ER_NO_SUCH_TABLE: u16 = 1146;
 
 /// (id, name, user, site, status, message, last_item, ts_created, ts_last_change, user name)
 type BatchRow = (
@@ -148,6 +150,58 @@ pub async fn commands(
     .await
     .map_err(|e| QsError::ArchiveReadError(e.to_string()))??;
     Ok(first_by_number(archived.unwrap_or_default(), limit))
+}
+
+/// The number of commands in a batch and their JSON size. The byte size is
+/// omitted when `count` is over `max_count` (so a huge batch is not scanned
+/// just to be rejected); for archived batches it is the compressed file size.
+/// Returns `None` for an unknown batch.
+pub async fn batch_size(
+    qs: &QuickStatements,
+    batch_id: i64,
+    max_count: u64,
+) -> QsResult<Option<(u64, Option<u64>)>> {
+    let mut conn = qs.get_db_conn().await?;
+    let count: u64 = conn
+        .exec_first(
+            "SELECT COUNT(*) FROM command WHERE batch_id=:batch_id",
+            params! {batch_id},
+        )
+        .await?
+        .unwrap_or(0);
+    if count > 0 {
+        if count > max_count {
+            return Ok(Some((count, None)));
+        }
+        let bytes: u64 = conn
+            .exec_first(
+                "SELECT COALESCE(SUM(LENGTH(json)),0) FROM command WHERE batch_id=:batch_id",
+                params! {batch_id},
+            )
+            .await?
+            .unwrap_or(0);
+        return Ok(Some((count, Some(bytes))));
+    }
+
+    let Some(archive) = qs.archive() else {
+        return Ok(None);
+    };
+    let archived = match conn
+        .exec_first::<u64, _, _>(
+            "SELECT num_commands FROM command_archive WHERE batch_id=:batch_id",
+            params! {batch_id},
+        )
+        .await
+    {
+        Ok(count) => count,
+        // An archive sweep creates the table; before then, nothing is archived
+        Err(my::Error::Server(e)) if e.code == ER_NO_SUCH_TABLE => None,
+        Err(e) => return Err(e.into()),
+    };
+    let bytes = std::fs::metadata(archive.path(batch_id))
+        .ok()
+        .map(|metadata| metadata.len());
+    Ok(archived.map(|count| (count, bytes)))
 }
 
 /// Whether the command is selected by the SQL query in `commands`
