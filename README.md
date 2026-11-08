@@ -35,10 +35,17 @@ pages (`Sec-Fetch-Site: same-origin`, or else an `Origin` matching
 encrypted, `HttpOnly`, `SameSite=Lax` cookies, so other tools only see a
 login through JSONP `is_logged_in` if they are on the same site.
 
-On Toolforge, `Procfile` starts the web service:
-`toolforge webservice buildservice start --mount=all` (after `./build.sh`).
-Set `cookie_secret` and `tmp_dir` (e.g. `/data/project/quickstatements/public_html/tmp`,
-where PHP kept them) in `config_rs.json` first.
+On Toolforge, `Procfile` starts the web service. Toolforge reads
+`service.template` from the tool home (not from the repository), so copy it
+there and start the service after `./build.sh`:
+
+    cp service.template ~/service.template
+    toolforge webservice buildservice start
+
+The template requests 2 GiB and one CPU for the web service, because
+`get_batch` builds a whole batch in memory. Set `cookie_secret` and `tmp_dir`
+(e.g. `/data/project/quickstatements/public_html/tmp`, where PHP kept them) in
+`config_rs.json` first.
 
 ### Running your own
 

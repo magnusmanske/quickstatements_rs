@@ -18,10 +18,12 @@ use wikimisc::mediawiki::api::Api;
 
 /// Most batches `get_batches_info` returns at once
 const MAX_BATCHES: u64 = 1000;
-/// Most commands one API response builds in memory at once
+/// Most commands `get_commands_from_batch` returns at once
 const MAX_COMMANDS: u64 = 10_000;
+/// Most commands `get_batch` returns at once
+const MAX_BATCH_COMMANDS: u64 = 500_000;
 /// Most command JSON `get_batch` builds in memory at once
-const MAX_BATCH_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_BATCH_BYTES: u64 = 256 * 1024 * 1024;
 
 /// A failed action. Internal errors are logged, not shown.
 enum ApiError {
@@ -412,7 +414,7 @@ impl Call {
     /// All commands of a batch, by number, with their row as `_meta`
     async fn get_batch(&self) -> ApiResult {
         let batch_id = self.int("id").unwrap_or(0);
-        let size = batches::batch_size(self.qs(), batch_id, MAX_COMMANDS).await?;
+        let size = batches::batch_size(self.qs(), batch_id, MAX_BATCH_COMMANDS).await?;
         if size.is_some_and(|(count, bytes)| too_large(count, bytes)) {
             return Err(format!(
                 "Batch #{batch_id} is too large to load at once; use get_commands_from_batch with start and limit"
@@ -569,7 +571,7 @@ impl Call {
 
 /// Whether `get_batch` would build too much in memory
 fn too_large(count: u64, bytes: Option<u64>) -> bool {
-    count > MAX_COMMANDS || bytes.is_some_and(|bytes| bytes > MAX_BATCH_BYTES)
+    count > MAX_BATCH_COMMANDS || bytes.is_some_and(|bytes| bytes > MAX_BATCH_BYTES)
 }
 
 /// Commands keyed by number, sorted by it. Like PHP's `json_encode`: a list
@@ -614,8 +616,8 @@ mod tests {
 
     #[test]
     fn oversized_batches_are_rejected() {
-        assert!(!too_large(MAX_COMMANDS, Some(MAX_BATCH_BYTES)));
-        assert!(too_large(MAX_COMMANDS + 1, None));
+        assert!(!too_large(MAX_BATCH_COMMANDS, Some(MAX_BATCH_BYTES)));
+        assert!(too_large(MAX_BATCH_COMMANDS + 1, None));
         assert!(too_large(1, Some(MAX_BATCH_BYTES + 1)));
     }
 

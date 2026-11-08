@@ -1,0 +1,8 @@
+# Toolforge webservice settings.
+# `get_batch` builds a whole batch in memory, and the largest batches need
+# more than the 512Mi default. Also stored in the tool home as
+# /data/project/quickstatements/service.template, where Toolforge finds it.
+type: buildservice
+mem: 2Gi
+cpu: 1
+mount: all
