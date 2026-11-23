@@ -275,6 +275,69 @@ impl QuickStatementsBot {
         }
     }
 
+    /// Returns the parent lexeme ID for a form (`L123-F4`) or sense
+    /// (`L123-S4`) ID, or `None` for any other entity ID.
+    fn lexeme_parent_id(entity_id: &str) -> Option<&str> {
+        static RE_SUB_ENTITY: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r"^(L\d+)-[SF]\d+$")
+                .expect("QuickStatementsBot::lexeme_parent_id:RE_SUB_ENTITY does not compile")
+        });
+        RE_SUB_ENTITY
+            .captures(entity_id)
+            .map(|c| c.get(1).expect("capture group 1").as_str())
+    }
+
+    /// Returns `parent` as an entity that stands in for one of its forms or
+    /// senses, carrying that sub-entity's ID and claims.
+    ///
+    /// The wikibase crate cannot deserialize forms/senses (they have
+    /// `representations`/`glosses` instead of `lemmas`), but commands on them
+    /// need the sub-entity's ID and claims for duplicate detection.
+    fn lexeme_sub_entity(parent: &wikibase::Entity, entity_id: &str) -> Option<wikibase::Entity> {
+        let wikibase::Entity::Lexeme(lexeme) = parent else {
+            return None;
+        };
+        let claims = lexeme
+            .forms()
+            .iter()
+            .find(|form| form.id() == entity_id)
+            .map(|form| form.claims())
+            .or_else(|| {
+                lexeme
+                    .senses()
+                    .iter()
+                    .find(|sense| sense.id() == entity_id)
+                    .map(|sense| sense.claims())
+            })?;
+        Some(wikibase::Entity::new_lexeme(
+            entity_id.to_string(),
+            vec![],
+            claims.clone(),
+            String::new(),
+            None,
+            vec![],
+            vec![],
+            false,
+        ))
+    }
+
+    /// Cache key for an entity. Forms and senses are cached through their
+    /// parent lexeme, which carries their claims.
+    fn cache_key(entity_id: &str) -> &str {
+        Self::lexeme_parent_id(entity_id).unwrap_or(entity_id)
+    }
+
+    /// Loads the entity a command acts on. Forms and senses are loaded via
+    /// their parent lexeme, which is cached and carries their claims.
+    async fn load_command_entity(&mut self, entity_id: &str) -> QsResult<wikibase::Entity> {
+        let Some(parent_id) = Self::lexeme_parent_id(entity_id) else {
+            return self.load_entity(entity_id.to_string()).await;
+        };
+        let parent = self.load_entity(parent_id.to_string()).await?;
+        Self::lexeme_sub_entity(&parent, entity_id)
+            .ok_or_else(|| QsError::EntityNotFound(entity_id.to_string()))
+    }
+
     /// Returns true if this command type operates on lexeme sub-entities
     /// and does not require loading the main entity from the API.
     fn is_lexeme_subentity_command(command: &QuickStatementsCommand) -> bool {
@@ -347,8 +410,8 @@ impl QuickStatementsBot {
                 None => return Err(QsError::NoItemAvailable),
             };
 
-            let item = self.load_entity(q).await?;
-            Ok(Some(item.clone()))
+            let item = self.load_command_entity(&q).await?;
+            Ok(Some(item))
         } else {
             Ok(None)
         }
@@ -514,11 +577,12 @@ impl QuickStatementsBot {
             if !matches!(upper.as_str(), "LAST" | "LAST_FORM" | "LAST_SENSE") {
                 self.log("[reset_entities] Start".to_string());
                 self.last_state.last = Some(q.to_string());
-                self.entities.remove_entity(q);
+                let cache_key = Self::cache_key(q);
+                self.entities.remove_entity(cache_key);
                 if let Some(revision_id) = res["pageinfo"]["lastrevid"].as_u64() {
-                    self.entity_revision.retain(|er| er.0 != q);
+                    self.entity_revision.retain(|er| er.0 != cache_key);
                     self.entity_revision
-                        .push_front((q.to_string(), revision_id as usize));
+                        .push_front((cache_key.to_string(), revision_id as usize));
                     self.entity_revision.truncate(5); // Keep only the last 5 around to save RAM
                 }
                 self.log("[reset_entities] End".to_string());
@@ -547,13 +611,18 @@ impl QuickStatementsBot {
                         self.last_state.last_form = None;
                         self.last_state.last_sense = None;
                     }
-                    if let Err(e) = self.entities.set_entity_from_json(entity_json) {
+                    let cache_key = Self::cache_key(&q);
+                    if Self::lexeme_parent_id(&q).is_some() {
+                        // The wikibase crate cannot deserialize forms/senses; drop the
+                        // parent lexeme so its now-stale claims are reloaded next time.
+                        self.entities.remove_entity(cache_key);
+                    } else if let Err(e) = self.entities.set_entity_from_json(entity_json) {
                         log::error!("Failed to set entity from JSON for {}: {}", q, e);
                     }
                     // The full entity is now cached; drop any revision pin so the next
                     // load uses the cache instead of an anonymous fetch from a possibly
                     // lagging replica (which may not even know a new entity yet).
-                    self.entity_revision.retain(|er| er.0 != q);
+                    self.entity_revision.retain(|er| er.0 != cache_key);
                 }
             }
         }
@@ -787,10 +856,79 @@ impl QuickStatementsBot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wikimisc::wikibase::EntityTrait;
 
     fn test_bot() -> QuickStatementsBot {
         let config = Arc::new(QuickStatements::new_for_tests());
         QuickStatementsBot::new(config, Some(1), 0)
+    }
+
+    fn test_lexeme_json() -> Value {
+        json!({
+            "type": "lexeme",
+            "id": "L1",
+            "lemmas": {},
+            "language": "Q1860",
+            "lexicalCategory": "Q1084",
+            "claims": {},
+            "forms": [],
+            "senses": [{
+                "id": "L1-S1",
+                "glosses": {},
+                "claims": {
+                    "P31": [{
+                        "mainsnak": {"snaktype": "novalue", "property": "P31"},
+                        "type": "statement",
+                        "id": "L1-S1$abc",
+                        "rank": "normal"
+                    }]
+                }
+            }]
+        })
+    }
+
+    #[test]
+    fn lexeme_parent_id_detects_forms_and_senses() {
+        assert_eq!(
+            QuickStatementsBot::lexeme_parent_id("L123-S4"),
+            Some("L123")
+        );
+        assert_eq!(
+            QuickStatementsBot::lexeme_parent_id("L123-F4"),
+            Some("L123")
+        );
+        assert_eq!(QuickStatementsBot::lexeme_parent_id("L123"), None);
+        assert_eq!(QuickStatementsBot::lexeme_parent_id("Q123"), None);
+        assert_eq!(QuickStatementsBot::lexeme_parent_id("L123-S"), None);
+    }
+
+    #[test]
+    fn lexeme_sub_entity_uses_sub_entity_claims() {
+        let parent = wikibase::Entity::new_from_json(&test_lexeme_json()).unwrap();
+        let sense = QuickStatementsBot::lexeme_sub_entity(&parent, "L1-S1").unwrap();
+        assert_eq!(sense.id(), "L1-S1");
+        assert_eq!(sense.claims().len(), 1);
+        assert!(QuickStatementsBot::lexeme_sub_entity(&parent, "L1-S2").is_none());
+    }
+
+    // Editing a form/sense makes the cached parent lexeme's claims stale, so it
+    // must be dropped; forms/senses themselves cannot be cached.
+    #[test]
+    fn reset_entities_invalidates_parent_lexeme_for_sub_entity() {
+        let mut bot = test_bot();
+        bot.entities
+            .set_entity_from_json(&test_lexeme_json())
+            .unwrap();
+        assert!(bot.entities.has_entity("L1"));
+
+        let command = QuickStatementsCommand::new_from_json(
+            &json!({"action":"add","what":"statement","item":"L1-S1"}),
+        );
+        bot.reset_entities(&json!({"success":1,"pageinfo":{"lastrevid":42}}), &command);
+
+        assert_eq!(bot.last_state.last, Some("L1-S1".to_string()));
+        assert!(!bot.entities.has_entity("L1"));
+        assert_eq!(bot.entity_revision.front(), Some(&("L1".to_string(), 42)));
     }
 
     #[test]

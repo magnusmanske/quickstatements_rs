@@ -29,7 +29,6 @@ simple_logger = "5"
 num_cpus = "1"
 tokio = { version = "1", features = ["full", "rt-multi-thread"] }
 futures = "*"
-async-recursion = "1"
 thiserror = "2"
 rand = "*"
 axum = { version = "*", features = ["multipart"] }
