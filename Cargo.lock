@@ -2193,7 +2193,7 @@ dependencies = [
  "mimalloc",
  "num_cpus",
  "percent-encoding",
- "rand 0.10.3",
+ "rand 0.9.5",
  "regex",
  "serde",
  "serde_json",

@@ -30,7 +30,7 @@ num_cpus = "1"
 tokio = { version = "1", features = ["full", "rt-multi-thread"] }
 futures = "*"
 thiserror = "2"
-rand = "*"
+rand = "0.9"
 axum = { version = "*", features = ["multipart"] }
 tower-http = { version = "*", features = ["catch-panic"] }
 serde = { version = "1", features = ["derive"] }
